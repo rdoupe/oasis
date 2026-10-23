@@ -9,6 +9,9 @@ use crate::protocol::{ClientSurfaceSize, RenderEncoding};
 use interprocess::TryClone as _;
 
 const INITIAL_RETRY_DELAY: Duration = Duration::from_millis(500);
+/// How often a due attempt rechecks whether the transport it replaces has
+/// finished tearing down. Only runs while a reconnect is waiting.
+const TEARDOWN_RECHECK: Duration = Duration::from_millis(50);
 const MAX_RETRY_DELAY: Duration = Duration::from_secs(120);
 const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
@@ -175,6 +178,27 @@ impl EndpointSupervisors {
             state.target = ConnectTarget::Ssh(profile.clone());
         }
         retired
+    }
+
+    /// When the next scheduled connection attempt is due, so the client
+    /// loop can sleep until then instead of polling `spawn_due`.
+    pub(crate) fn next_attempt_due(&self, now: Instant) -> Option<Instant> {
+        self.endpoints
+            .iter()
+            .filter(|(_, state)| !state.in_flight)
+            .filter_map(|(endpoint_id, state)| {
+                let due = state.next_attempt?;
+                // A previous attempt or retired transport is still tearing down;
+                // it signals completion only through a flag, so recheck soon.
+                let waiting_for_teardown = !state.completed.load(Ordering::Acquire)
+                    || self.retired.contains_key(endpoint_id);
+                Some(if waiting_for_teardown {
+                    due.max(now + TEARDOWN_RECHECK)
+                } else {
+                    due
+                })
+            })
+            .min()
     }
 
     pub(crate) fn spawn_due(

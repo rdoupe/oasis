@@ -6,6 +6,9 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
+/// How long a blocked pipe read sleeps before rechecking an external
+/// cancellation flag. Stopping, finishing and child exit wake it at once.
+const PIPE_IDLE_WAIT: Duration = Duration::from_secs(1);
 
 pub(super) fn cancelled() -> io::Error {
     io::Error::new(
@@ -28,6 +31,8 @@ pub(super) struct PipeControl {
     cancelled: Arc<AtomicBool>,
     stopped: AtomicBool,
     finished: AtomicBool,
+    /// Wakes blocked reads on stop or finish; without one they poll.
+    wake: Option<crate::platform::RemoteBridgeWake>,
 }
 
 impl PipeControl {
@@ -36,14 +41,23 @@ impl PipeControl {
             cancelled,
             stopped: AtomicBool::new(false),
             finished: AtomicBool::new(false),
+            wake: crate::platform::RemoteBridgeWake::new().ok(),
         })
     }
 
     pub(super) fn stop(&self) {
         self.stopped.store(true, Ordering::Release);
+        self.wake_reads();
     }
     pub(super) fn finish_reads(&self) {
         self.finished.store(true, Ordering::Release);
+        self.wake_reads();
+    }
+
+    fn wake_reads(&self) {
+        if let Some(wake) = &self.wake {
+            let _ = wake.cancel();
+        }
     }
 
     fn check(&self) -> io::Result<()> {
@@ -82,7 +96,10 @@ impl io::Read for CancellablePipe {
                     if self.control.finished.load(Ordering::Acquire) {
                         return Ok(0);
                     }
-                    self.pipe.wait(false)?;
+                    match &self.control.wake {
+                        Some(wake) => wake.wait_child_pipe(&self.pipe, false, PIPE_IDLE_WAIT)?,
+                        None => self.pipe.wait(false)?,
+                    }
                 }
                 result => return result,
             }

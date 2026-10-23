@@ -262,3 +262,25 @@ mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
 mod startup_overlays;
+
+/// An idle client must not poll: it sleeps the idle tick unless a shell
+/// deadline, such as a toast expiring, is due sooner.
+#[test]
+fn idle_client_sleeps_until_the_next_shell_deadline() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    let now = std::time::Instant::now();
+    assert_eq!(state.timer_delay(now), CLIENT_IDLE_TICK);
+
+    state.copy_feedback_deadline = Some(now + std::time::Duration::from_millis(300));
+    assert_eq!(
+        state.timer_delay(now),
+        std::time::Duration::from_millis(300)
+    );
+
+    state.copy_feedback_deadline = None;
+    state.set_endpoint_error("could not reach the server");
+    assert!(state.timer_delay(std::time::Instant::now()) <= CLIENT_IDLE_TICK);
+    assert!(state.endpoint_error_deadline.is_some());
+}

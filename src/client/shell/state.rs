@@ -141,6 +141,12 @@ pub(super) struct ShellHitMap {
     pub(super) release_notes_max_scroll: usize,
 }
 
+/// The longest an idle client loop sleeps. Shell deadlines (toasts, fades,
+/// selection scrolling, link clicks) wake it exactly; this bounds how late
+/// connection health checks and transport errors are noticed. It was 100 ms,
+/// which woke an idle client ten times a second.
+pub(crate) const CLIENT_IDLE_TICK: std::time::Duration = std::time::Duration::from_secs(1);
+
 #[derive(Clone)]
 pub(super) struct PaneHit {
     pub(super) rect: Rect,
@@ -1907,11 +1913,41 @@ impl ClientShellState {
         false
     }
 
+    /// How long the client loop may sleep: until the next shell deadline, or
+    /// [`CLIENT_IDLE_TICK`] when nothing is due. Every timed shell state must
+    /// report its deadline here so an idle client does not poll.
     pub(crate) fn timer_delay(&self, now: std::time::Instant) -> std::time::Duration {
-        let default = std::time::Duration::from_millis(100);
+        let default = CLIENT_IDLE_TICK;
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(self.copy_feedback_deadline)
+            .chain(self.selection_highlight_clear_deadline)
+            .chain(
+                self.endpoint_error
+                    .as_ref()
+                    .and(self.endpoint_error_deadline),
+            )
+            .chain(
+                self.pending_workspace_highlight
+                    .as_ref()
+                    .map(|pending| pending.expires_at),
+            )
+            .chain(
+                self.visible_notification
+                    .as_ref()
+                    .map(|visible| visible.deadline),
+            )
+            .chain(
+                self.visible_endpoint_notice
+                    .as_ref()
+                    .map(|visible| visible.deadline),
+            )
+            .chain(
+                self.pending_notifications
+                    .iter()
+                    .map(|pending| pending.deadline),
+            )
             .chain(
                 self.plain_link_pending
                     .as_ref()

@@ -4,6 +4,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use interprocess::local_socket::traits::Stream as _;
+#[cfg(unix)]
+use interprocess::TryClone as _;
 
 use super::EndpointTransport;
 use crate::ipc::LocalStream;
@@ -36,6 +38,10 @@ pub(crate) struct NativeEndpointTransport {
     queued_bytes: Arc<AtomicUsize>,
     stopped: Arc<AtomicBool>,
     error: Arc<Mutex<Option<io::Error>>>,
+    /// Shut down on stop so the endpoint reader, which blocks on the socket
+    /// with no timeout, wakes at once instead of polling a stop flag.
+    #[cfg(unix)]
+    reader_wake: Option<LocalStream>,
 }
 
 impl NativeEndpointTransport {
@@ -44,6 +50,8 @@ impl NativeEndpointTransport {
         lifetime: impl Send + 'static,
     ) -> io::Result<Self> {
         stream.set_nonblocking(true)?;
+        #[cfg(unix)]
+        let reader_wake = stream.try_clone().ok();
         let (sender, receiver) = mpsc::sync_channel::<WriterCommand>(MAX_QUEUED_BATCHES);
         let queued_bytes = Arc::new(AtomicUsize::new(0));
         let stopped = Arc::new(AtomicBool::new(false));
@@ -83,7 +91,17 @@ impl NativeEndpointTransport {
             queued_bytes,
             stopped,
             error,
+            #[cfg(unix)]
+            reader_wake,
         })
+    }
+
+    fn stop(&mut self) {
+        self.stopped.store(true, Ordering::Release);
+        #[cfg(unix)]
+        if let Some(stream) = self.reader_wake.take() {
+            let _ = crate::platform::shutdown_client_stream(&stream);
+        }
     }
 
     fn enqueue_frame(&mut self, frame: Vec<u8>) -> io::Result<()> {
@@ -150,7 +168,7 @@ impl EndpointTransport for NativeEndpointTransport {
     }
 
     fn disconnect(&mut self) {
-        self.stopped.store(true, Ordering::Release);
+        self.stop();
     }
 
     fn flush(&mut self, deadline: Instant) -> io::Result<()> {
@@ -179,7 +197,7 @@ impl EndpointTransport for NativeEndpointTransport {
 
 impl Drop for NativeEndpointTransport {
     fn drop(&mut self) {
-        self.stopped.store(true, Ordering::Release);
+        self.stop();
     }
 }
 
@@ -274,6 +292,36 @@ mod tests {
         let accepting = std::thread::spawn(move || listener.accept().unwrap());
         let client = crate::ipc::connect_local_stream(&path).unwrap();
         (client, accepting.join().unwrap(), path)
+    }
+
+    /// The endpoint reader waits on the socket with no timeout; stopping the
+    /// transport must wake it rather than leave it blocked.
+    #[cfg(unix)]
+    #[test]
+    fn disconnect_wakes_a_reader_blocked_without_a_timeout() {
+        use interprocess::TryClone as _;
+        use std::io::Read as _;
+        let (stream, _peer, path) = streams();
+        let mut reader_stream = stream.try_clone().unwrap();
+        reader_stream.set_nonblocking(true).unwrap();
+        let mut transport = NativeEndpointTransport::with_lifetime(stream, ()).unwrap();
+        let stopped = transport.stop_handle();
+        let (done, finished) = mpsc::channel();
+        std::thread::spawn(move || {
+            let mut reader = crate::client::transport::EndpointReader {
+                stream: &mut reader_stream,
+                stopped: &stopped,
+                deadline: None,
+            };
+            let mut buffer = [0u8; 16];
+            done.send(reader.read(&mut buffer).map_err(|error| error.kind()))
+                .unwrap();
+        });
+        std::thread::sleep(Duration::from_millis(50));
+        assert!(finished.try_recv().is_err(), "reader waits for data");
+        transport.disconnect();
+        assert_eq!(finished.recv_timeout(Duration::from_secs(2)), Ok(Ok(0)));
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -476,6 +524,8 @@ mod tests {
                 queued_bytes: Arc::new(AtomicUsize::new(0)),
                 stopped: Arc::new(AtomicBool::new(false)),
                 error: Arc::new(Mutex::new(None)),
+                #[cfg(unix)]
+                reader_wake: None,
             },
             receiver,
         )

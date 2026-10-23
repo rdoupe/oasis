@@ -421,14 +421,65 @@ pub fn current_process_is_detached_server_daemon() -> bool {
 static TERMINAL_RESIZE_SIGNALLED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
+/// Self-pipe the SIGWINCH handler writes to, so the resize watcher can sleep
+/// until a resize instead of polling. -1 until the watcher installs it.
+#[cfg(unix)]
+static TERMINAL_RESIZE_WAKE: [std::sync::atomic::AtomicI32; 2] = [
+    std::sync::atomic::AtomicI32::new(-1),
+    std::sync::atomic::AtomicI32::new(-1),
+];
+
+/// How long the resize watcher sleeps when no resize is signalled. Unix
+/// terminals signal resizes; the bound only catches cell-size changes that
+/// arrive without one. Windows has no signal and keeps polling.
+#[cfg(unix)]
+pub(crate) const TERMINAL_RESIZE_IDLE_WAIT: std::time::Duration = std::time::Duration::from_secs(1);
+#[cfg(not(unix))]
+pub(crate) const TERMINAL_RESIZE_IDLE_WAIT: std::time::Duration =
+    std::time::Duration::from_millis(100);
+
+#[cfg(target_os = "linux")]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__errno_location() }
+}
+
+#[cfg(target_os = "macos")]
+fn errno_location() -> *mut libc::c_int {
+    unsafe { libc::__error() }
+}
+
 #[cfg(unix)]
 extern "C" fn record_terminal_resize_signal(_signal: libc::c_int) {
     TERMINAL_RESIZE_SIGNALLED.store(true, std::sync::atomic::Ordering::Release);
+    let fd = TERMINAL_RESIZE_WAKE[1].load(std::sync::atomic::Ordering::Relaxed);
+    if fd >= 0 {
+        // write() is async-signal-safe; keep the interrupted code's errno.
+        let errno = errno_location();
+        let saved = unsafe { *errno };
+        let byte = 1u8;
+        unsafe {
+            libc::write(fd, std::ptr::addr_of!(byte).cast(), 1);
+            *errno = saved;
+        }
+    }
 }
 
 /// Records SIGWINCH events that size polling can miss.
 #[cfg(unix)]
 pub(crate) fn watch_terminal_resize_signal() {
+    let mut fds = [-1; 2];
+    if TERMINAL_RESIZE_WAKE[0].load(std::sync::atomic::Ordering::Acquire) < 0
+        && unsafe { libc::pipe(fds.as_mut_ptr()) } == 0
+    {
+        for fd in fds {
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+            }
+        }
+        TERMINAL_RESIZE_WAKE[0].store(fds[0], std::sync::atomic::Ordering::Release);
+        TERMINAL_RESIZE_WAKE[1].store(fds[1], std::sync::atomic::Ordering::Release);
+    }
     let mut action: libc::sigaction = unsafe { std::mem::zeroed() };
     action.sa_sigaction =
         record_terminal_resize_signal as extern "C" fn(libc::c_int) as libc::sighandler_t;
@@ -443,15 +494,33 @@ pub(crate) fn watch_terminal_resize_signal() {
 #[cfg(not(unix))]
 pub(crate) fn watch_terminal_resize_signal() {}
 
-/// Returns whether a terminal size change was signalled since the last call.
+/// Sleeps until a terminal resize is signalled or `timeout` passes, and
+/// returns whether one was signalled since the last call.
 #[cfg(unix)]
-pub(crate) fn take_terminal_resize_signal() -> bool {
+pub(crate) fn wait_terminal_resize_signal(timeout: std::time::Duration) -> bool {
+    let fd = TERMINAL_RESIZE_WAKE[0].load(std::sync::atomic::Ordering::Acquire);
+    if fd < 0 {
+        std::thread::sleep(timeout);
+    } else if !TERMINAL_RESIZE_SIGNALLED.load(std::sync::atomic::Ordering::Acquire) {
+        let mut descriptor = libc::pollfd {
+            fd,
+            events: libc::POLLIN,
+            revents: 0,
+        };
+        let wait_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        unsafe { libc::poll(&mut descriptor, 1, wait_ms) };
+    }
+    if fd >= 0 {
+        let mut buffer = [0u8; 64];
+        while unsafe { libc::read(fd, buffer.as_mut_ptr().cast(), buffer.len()) } > 0 {}
+    }
     TERMINAL_RESIZE_SIGNALLED.swap(false, std::sync::atomic::Ordering::AcqRel)
 }
 
-/// Windows relies on size polling.
+/// Windows has no resize signal and relies on size polling.
 #[cfg(not(unix))]
-pub(crate) fn take_terminal_resize_signal() -> bool {
+pub(crate) fn wait_terminal_resize_signal(timeout: std::time::Duration) -> bool {
+    std::thread::sleep(timeout);
     false
 }
 
@@ -885,15 +954,32 @@ mod tests {
 
     #[test]
     fn terminal_resize_signal_is_recorded_once_per_delivery() {
+        let none = std::time::Duration::ZERO;
         watch_terminal_resize_signal();
-        assert!(!take_terminal_resize_signal());
+        wait_terminal_resize_signal(none);
 
         unsafe {
             libc::raise(libc::SIGWINCH);
         }
 
-        assert!(take_terminal_resize_signal());
-        assert!(!take_terminal_resize_signal());
+        assert!(wait_terminal_resize_signal(none));
+        assert!(!wait_terminal_resize_signal(none));
+    }
+
+    #[test]
+    fn terminal_resize_signal_wakes_a_sleeping_watcher() {
+        watch_terminal_resize_signal();
+        wait_terminal_resize_signal(std::time::Duration::ZERO);
+        let raiser = std::thread::spawn(|| {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            unsafe { libc::kill(libc::getpid(), libc::SIGWINCH) };
+        });
+        let started = std::time::Instant::now();
+        assert!(wait_terminal_resize_signal(std::time::Duration::from_secs(
+            10
+        )));
+        assert!(started.elapsed() < std::time::Duration::from_secs(5));
+        raiser.join().expect("raiser");
     }
 
     #[test]

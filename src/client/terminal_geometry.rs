@@ -158,10 +158,13 @@ pub(super) fn resize_poll_loop(
                 Some(last_cell_size),
             )
         },
-        crate::platform::take_terminal_resize_signal,
+        crate::platform::wait_terminal_resize_signal,
         should_quit,
     );
 }
+
+/// How soon a transient zero-sized grid sample is retried.
+const TRANSIENT_RESIZE_RESAMPLE: Duration = Duration::from_millis(100);
 
 /// The resize watcher loop, with its geometry and resize-signal sources
 /// injected so the transient/recovery behavior is testable without a terminal.
@@ -169,23 +172,28 @@ pub(super) fn resize_poll_loop_with(
     resize_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
     initial_size: (u16, u16, u32, u32, bool),
     mut read_geometry: impl FnMut((u32, u32)) -> io::Result<TerminalGeometry>,
-    mut take_signal: impl FnMut() -> bool,
+    mut wait_signal: impl FnMut(Duration) -> bool,
     should_quit: &Arc<AtomicBool>,
 ) {
     let mut last_size = initial_size;
     // Retained across a transient sample so a resize that lands back on the
     // same size still re-reports (host modes may have been reset).
     let mut signalled = false;
+    // A transient sample is resampled soon; otherwise sleep until a resize.
+    let mut wait = crate::platform::TERMINAL_RESIZE_IDLE_WAIT;
     while !should_quit.load(Ordering::Acquire) {
-        std::thread::sleep(Duration::from_millis(100));
-        signalled |= take_signal();
+        signalled |= wait_signal(wait);
+        wait = crate::platform::TERMINAL_RESIZE_IDLE_WAIT;
         let (cols, rows, cell_width_px, cell_height_px, exact) =
             match read_geometry((last_size.2, last_size.3)) {
                 Ok(size) => size,
                 // A window drag can momentarily report a zero-sized grid. Keep
                 // the last known geometry and the pending signal, then resample
                 // instead of treating the terminal as gone.
-                Err(err) if crate::platform::is_transient_terminal_grid_error(&err) => continue,
+                Err(err) if crate::platform::is_transient_terminal_grid_error(&err) => {
+                    wait = TRANSIENT_RESIZE_RESAMPLE;
+                    continue;
+                }
                 Err(err) => {
                     let _ = resize_tx.blocking_send(ClientLoopEvent::TerminalUnavailable(err));
                     break;

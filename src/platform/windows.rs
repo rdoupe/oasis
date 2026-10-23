@@ -329,15 +329,32 @@ impl RemoteBridgeWake {
         std::thread::sleep(Duration::from_millis(1));
         Ok(())
     }
+
+    pub(crate) fn wait_child_pipe(
+        &self,
+        pipe: &ChildPipe,
+        writing: bool,
+        _timeout: Duration,
+    ) -> std::io::Result<()> {
+        pipe.wait(writing)
+    }
+
+    pub(crate) fn wait_listener<L>(&self, _listener: &L, timeout: Duration) -> std::io::Result<()> {
+        // Named-pipe listeners keep polling accept on Windows.
+        std::thread::sleep(timeout.min(Duration::from_millis(50)));
+        Ok(())
+    }
 }
 
 pub(crate) fn wait_client_stream_readable(
     _stream: &crate::ipc::LocalStream,
-    timeout: Duration,
+    timeout: Option<Duration>,
 ) -> std::io::Result<()> {
     // Sync named pipes have no read timeout. The caller peeks before each read and checks its
     // cancellation flag between polls, including when a frame arrives in several fragments.
-    std::thread::sleep(timeout.min(Duration::from_millis(2)));
+    std::thread::sleep(timeout.map_or(Duration::from_millis(2), |timeout| {
+        timeout.min(Duration::from_millis(2))
+    }));
     Ok(())
 }
 

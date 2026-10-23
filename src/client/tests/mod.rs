@@ -53,7 +53,7 @@ fn resize_poll_loop_keeps_polling_through_a_transient_zero_grid() {
                 Ok((80, 24, 8, 16, true))
             }
         },
-        move || signals.next().unwrap_or(false),
+        move |_| signals.next().unwrap_or(false),
         &should_quit,
     );
 
@@ -94,7 +94,7 @@ fn resize_poll_loop_detaches_once_on_a_real_terminal_failure() {
                 .next()
                 .expect("polling must stop after a real terminal failure")
         },
-        || false,
+        |_| false,
         &should_quit,
     );
 

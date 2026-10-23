@@ -115,15 +115,17 @@ impl io::Read for EndpointReader<'_> {
             if self.stopped.load(Ordering::Acquire) {
                 return Ok(0);
             }
+            // Without a deadline the wait is unbounded: stopping the transport
+            // shuts the socket down, which wakes it.
             let remaining = match self.deadline {
-                Some(deadline) => {
+                Some(deadline) => Some(
                     deadline
                         .checked_duration_since(Instant::now())
                         .ok_or_else(|| {
                             io::Error::new(io::ErrorKind::TimedOut, "handshake response timed out")
-                        })?
-                }
-                None => Duration::from_millis(100),
+                        })?,
+                ),
+                None => None,
             };
             match crate::ipc::poll_local_stream_read_count(self.stream, buffer)? {
                 crate::ipc::LocalStreamReadCount::Data(count) => return Ok(count),

@@ -13,7 +13,7 @@ pub(super) struct WorkspaceNavigationTarget {
 pub(super) struct PendingWorkspaceHighlight {
     pub(super) target: WorkspaceNavigationTarget,
     pub(super) request_id: String,
-    expires_at: std::time::Instant,
+    pub(super) expires_at: std::time::Instant,
 }
 
 impl WorkspaceNavigationTarget {

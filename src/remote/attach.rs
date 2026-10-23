@@ -29,6 +29,9 @@ use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 const BRIDGE_ACCEPT_POLL: Duration = Duration::from_millis(50);
+/// How long idle bridge threads sleep before rechecking an external stop
+/// flag. Dropping the bridge, finished transfers and child exit wake them.
+const BRIDGE_IDLE_WAIT: Duration = Duration::from_secs(1);
 const BRIDGE_IO_POLL: Duration = Duration::from_millis(1);
 const BRIDGE_SOCKET_PERMISSION_MODE: u32 = 0o600;
 const REMOTE_SERVER_SHUTDOWN_CONFIRM_TIMEOUT: Duration = Duration::from_secs(5);
@@ -2997,8 +3000,40 @@ pub(super) struct SshStdioBridge {
     local_socket: PathBuf,
     socket_identity: crate::ipc::SocketFileIdentity,
     should_stop: Arc<AtomicBool>,
+    stop_wake: Arc<BridgeStopWake>,
     failure_rx: mpsc::Receiver<io::Error>,
     thread: Option<JoinHandle<()>>,
+}
+
+/// Wakes a bridge's idle accept loop and its active connection supervisor
+/// when the bridge is dropped, so neither has to poll its stop flag.
+struct BridgeStopWake {
+    accept: Option<crate::platform::RemoteBridgeWake>,
+    connection: std::sync::Mutex<Option<mpsc::Sender<()>>>,
+}
+
+impl BridgeStopWake {
+    fn new() -> Self {
+        Self {
+            accept: crate::platform::RemoteBridgeWake::new().ok(),
+            connection: std::sync::Mutex::new(None),
+        }
+    }
+
+    fn wake(&self) {
+        if let Some(accept) = &self.accept {
+            let _ = accept.cancel();
+        }
+        if let Some(connection) = self.connection.lock().ok().and_then(|slot| slot.clone()) {
+            let _ = connection.send(());
+        }
+    }
+
+    fn set_connection(&self, sender: Option<mpsc::Sender<()>>) {
+        if let Ok(mut slot) = self.connection.lock() {
+            *slot = sender;
+        }
+    }
 }
 
 impl SshStdioBridge {
@@ -3052,6 +3087,8 @@ impl SshStdioBridge {
         }
 
         let thread_stop = Arc::clone(&should_stop);
+        let stop_wake = Arc::new(BridgeStopWake::new());
+        let thread_wake = Arc::clone(&stop_wake);
         let thread_ssh_options = ssh_options.cloned();
         let (failure_tx, failure_rx) = mpsc::sync_channel(1);
         let thread = thread::spawn(move || {
@@ -3065,6 +3102,7 @@ impl SshStdioBridge {
                             thread_ssh_options.as_ref(),
                             noninteractive,
                             &thread_stop,
+                            Some(&thread_wake),
                         ) {
                             let _ =
                                 failure_tx.try_send(io::Error::new(err.kind(), err.to_string()));
@@ -3076,7 +3114,16 @@ impl SshStdioBridge {
                         }
                     }
                     Err(err) if err.kind() == io::ErrorKind::WouldBlock => {
-                        thread::sleep(BRIDGE_ACCEPT_POLL);
+                        let waited = match &thread_wake.accept {
+                            Some(wake) => wake.wait_listener(&listener, BRIDGE_IDLE_WAIT),
+                            None => {
+                                thread::sleep(BRIDGE_ACCEPT_POLL);
+                                Ok(())
+                            }
+                        };
+                        if waited.is_err() {
+                            thread::sleep(BRIDGE_ACCEPT_POLL);
+                        }
                     }
                     Err(err) => {
                         if noninteractive {
@@ -3094,6 +3141,7 @@ impl SshStdioBridge {
             local_socket,
             socket_identity,
             should_stop,
+            stop_wake,
             failure_rx,
             thread: Some(thread),
         })
@@ -3109,6 +3157,7 @@ impl SshStdioBridge {
 impl Drop for SshStdioBridge {
     fn drop(&mut self) {
         self.should_stop.store(true, Ordering::Release);
+        self.stop_wake.wake();
         #[cfg(unix)]
         let _ = crate::ipc::remove_socket_file_if_owned(&self.local_socket, &self.socket_identity);
         if let Some(thread) = self.thread.take() {
@@ -3263,6 +3312,7 @@ fn bridge_connection(
     ssh_options: Option<&ManagedSshOptions>,
     noninteractive: bool,
     bridge_stop: &Arc<AtomicBool>,
+    stop_wake: Option<&BridgeStopWake>,
 ) -> io::Result<()> {
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, ssh_options);
@@ -3281,13 +3331,39 @@ fn bridge_connection(
             Stdio::inherit()
         });
 
-    bridge_child(stream, command, bridge_stop)
+    bridge_child(stream, command, bridge_stop, stop_wake)
 }
 
 fn bridge_child(
     stream: crate::ipc::LocalStream,
     mut command: Command,
     bridge_stop: &Arc<AtomicBool>,
+    stop_wake: Option<&BridgeStopWake>,
+) -> io::Result<()> {
+    // Upload, download and bridge drop wake the supervisor loop below.
+    let (attention_tx, attention_rx) = mpsc::channel::<()>();
+    if let Some(stop_wake) = stop_wake {
+        stop_wake.set_connection(Some(attention_tx.clone()));
+    }
+    let result = bridge_child_supervised(
+        stream,
+        &mut command,
+        bridge_stop,
+        &attention_tx,
+        &attention_rx,
+    );
+    if let Some(stop_wake) = stop_wake {
+        stop_wake.set_connection(None);
+    }
+    result
+}
+
+fn bridge_child_supervised(
+    stream: crate::ipc::LocalStream,
+    command: &mut Command,
+    bridge_stop: &Arc<AtomicBool>,
+    attention_tx: &mpsc::Sender<()>,
+    attention_rx: &mpsc::Receiver<()>,
 ) -> io::Result<()> {
     let upload_stop = Arc::new(BridgeUploadStop::new()?);
 
@@ -3332,18 +3408,22 @@ fn bridge_child(
     let upload_cancel = Arc::clone(&upload_stop);
     let upload_bridge_stop = Arc::clone(bridge_stop);
     let upload_client_closed = Arc::clone(&client_closed);
+    let upload_attention = attention_tx.clone();
     let upload = thread::spawn(move || {
-        copy_local_stream_to_writer(
+        let result = copy_local_stream_to_writer(
             stream_to_child,
             &mut child_stdin,
             &upload_cancel,
             &upload_bridge_stop,
             &upload_client_closed,
-        )
+        );
+        let _ = upload_attention.send(());
+        result
     });
     let download_stop = Arc::clone(&connection_stop);
     let download_bridge_stop = Arc::clone(bridge_stop);
     let download_upload_stop = Arc::clone(&upload_stop);
+    let download_attention = attention_tx.clone();
     let download = thread::spawn(move || {
         let mut child_stdout = io::BufReader::new(child_stdout);
         let result = discard_remote_output_preamble(&mut child_stdout).and_then(|()| {
@@ -3355,6 +3435,7 @@ fn bridge_child(
             )
         });
         download_upload_stop.cancel();
+        let _ = download_attention.send(());
         result
     });
 
@@ -3390,7 +3471,14 @@ fn bridge_child(
                 break (child.0.wait(), false);
             }
         }
-        thread::sleep(BRIDGE_ACCEPT_POLL);
+        // Child exit ends the download, which wakes this loop; the grace
+        // period after a transfer ends still rechecks quickly.
+        let wait = if stopped_at.is_some() {
+            BRIDGE_ACCEPT_POLL
+        } else {
+            BRIDGE_IDLE_WAIT
+        };
+        let _ = attention_rx.recv_timeout(wait);
     };
     upload_stop.cancel();
     if !child_exited {
@@ -3744,7 +3832,7 @@ mod tests {
             let (done_tx, done_rx) = mpsc::channel();
             let worker = thread::spawn(move || {
                 done_tx
-                    .send(bridge_child(server, command, &worker_stop))
+                    .send(bridge_child(server, command, &worker_stop, None))
                     .unwrap();
             });
             let descendant = fixture.ready();
@@ -3784,8 +3872,9 @@ mod tests {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped());
-        let worker =
-            thread::spawn(move || bridge_child(server, command, &Arc::new(AtomicBool::new(false))));
+        let worker = thread::spawn(move || {
+            bridge_child(server, command, &Arc::new(AtomicBool::new(false)), None)
+        });
         let descendant = fixture.ready();
         let mut output = Vec::new();
         client.read_to_end(&mut output).unwrap();

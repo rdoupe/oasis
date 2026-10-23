@@ -798,12 +798,18 @@ async fn run_client_loop(
                 &supervisor_tx,
             );
         }
+        let loop_now = std::time::Instant::now();
         let timer_delay = state
             .shell
             .as_ref()
-            .map_or(Duration::from_millis(100), |shell| {
-                shell.timer_delay(std::time::Instant::now())
-            });
+            .map_or(shell::CLIENT_IDLE_TICK, |shell| shell.timer_delay(loop_now))
+            .min(
+                supervisors
+                    .next_attempt_due(loop_now)
+                    .map_or(shell::CLIENT_IDLE_TICK, |due| {
+                        due.saturating_duration_since(loop_now)
+                    }),
+            );
         let timer_deadline = client_timer.deadline(std::time::Instant::now(), timer_delay);
         let immediate_event = scheduled_activation.take();
         #[cfg(windows)]

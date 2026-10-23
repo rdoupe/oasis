@@ -196,7 +196,7 @@ pub(crate) fn write_client_stream(
 
 pub(crate) fn wait_client_stream_readable(
     stream: &crate::ipc::LocalStream,
-    timeout: std::time::Duration,
+    timeout: Option<std::time::Duration>,
 ) -> std::io::Result<()> {
     use std::os::fd::{AsFd as _, AsRawFd as _};
     let crate::ipc::LocalStream::UdSocket(stream) = stream;
@@ -205,8 +205,9 @@ pub(crate) fn wait_client_stream_readable(
         events: libc::POLLIN,
         revents: 0,
     };
-    // Bound cancellation latency without polling idle connections hundreds of times per second.
-    let wait_ms = timeout.as_millis().clamp(1, 100) as i32;
+    // A deadline is rechecked at least every 100 ms. With none, the caller is
+    // woken by data, hangup, or its transport shutting the socket down.
+    let wait_ms = timeout.map_or(-1, |timeout| timeout.as_millis().clamp(1, 100) as i32);
     let result = unsafe { libc::poll(&mut descriptor, 1, wait_ms) };
     if result < 0 {
         let error = std::io::Error::last_os_error();
@@ -308,6 +309,61 @@ impl RemoteBridgeWake {
                 return Err(error);
             }
         }
+    }
+
+    /// Waits until `pipe` is ready, this wake is cancelled, or `timeout` passes.
+    pub(crate) fn wait_child_pipe(
+        &self,
+        pipe: &ChildPipe,
+        writing: bool,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        self.wait_fd(
+            pipe.0.as_raw_fd(),
+            if writing { libc::POLLOUT } else { libc::POLLIN },
+            timeout,
+        )
+    }
+
+    /// Waits until `listener` has a connection, this wake is cancelled, or
+    /// `timeout` passes.
+    pub(crate) fn wait_listener(
+        &self,
+        listener: &crate::ipc::LocalListener,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        self.wait_fd(local_listener_raw_fd(listener), libc::POLLIN, timeout)
+    }
+
+    fn wait_fd(
+        &self,
+        fd: std::os::fd::RawFd,
+        events: libc::c_short,
+        timeout: std::time::Duration,
+    ) -> std::io::Result<()> {
+        use std::os::fd::AsRawFd as _;
+        let mut descriptors = [
+            libc::pollfd {
+                fd,
+                events,
+                revents: 0,
+            },
+            libc::pollfd {
+                fd: self.reader.as_raw_fd(),
+                events: libc::POLLIN,
+                revents: 0,
+            },
+        ];
+        let wait_ms = timeout.as_millis().min(i32::MAX as u128) as i32;
+        // SAFETY: both descriptors remain borrowed and the array has two entries.
+        if unsafe { libc::poll(descriptors.as_mut_ptr(), 2, wait_ms) } < 0 {
+            let error = std::io::Error::last_os_error();
+            if error.kind() != std::io::ErrorKind::Interrupted {
+                return Err(error);
+            }
+        }
+        Ok(())
     }
 }
 
