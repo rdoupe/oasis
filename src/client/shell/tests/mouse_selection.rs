@@ -1458,8 +1458,10 @@ fn plain_click_opening_can_be_turned_off() {
     assert!(fire_plain_click(&mut state).is_empty());
 }
 
+/// Agent UIs such as Claude Code capture the mouse but never open links, so the
+/// app still gets the click and a link under it opens as well.
 #[test]
-fn mouse_reporting_pane_gets_plain_clicks_instead_of_link_opening() {
+fn mouse_reporting_pane_gets_plain_clicks_and_still_opens_links() {
     let (mut state, down) = plain_click_state();
     let mut pane_surface = surface();
     pane_surface.panes[0].mouse_reporting = true;
@@ -1469,10 +1471,34 @@ fn mouse_reporting_pane_gets_plain_clicks_instead_of_link_opening() {
     assert!(matches!(&press.requests[..],
         [ClientMessage::ClientShellPaneInput { events, .. }]
             if matches!(&events[..], [ClientPaneInputEvent::Mouse { .. }])));
-    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
         kind: MouseEventKind::Up(MouseButton::Left),
         ..down
     })]);
+    assert!(matches!(&release.requests[..],
+        [ClientMessage::ClientShellPaneInput { events, .. }]
+            if matches!(&events[..], [ClientPaneInputEvent::Mouse { .. }])));
+    assert_eq!(fire_plain_click(&mut state).len(), 1);
+}
+
+#[test]
+fn mouse_reporting_pane_drag_does_not_open_links() {
+    let (mut state, down) = plain_click_state();
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("mouse-reporting frame");
+    state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    for kind in [
+        MouseEventKind::Drag(MouseButton::Left),
+        MouseEventKind::Up(MouseButton::Left),
+    ] {
+        state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+            kind,
+            column: down.column + 3,
+            ..down
+        })]);
+    }
     assert!(state.plain_link_pending.is_none());
     assert!(fire_plain_click(&mut state).is_empty());
 }

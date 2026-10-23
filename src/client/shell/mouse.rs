@@ -384,6 +384,23 @@ impl ClientShellState {
         }
     }
 
+    /// Arms a plain-click link activation when the left button comes back up
+    /// on the cell it went down on, in a pane whose app receives the mouse.
+    fn arm_plain_link_on_release(&mut self, mouse: MouseEvent) {
+        let Some(press) = self.plain_link_press.take() else {
+            return;
+        };
+        let point = (mouse.column, mouse.row);
+        if mouse.kind == MouseEventKind::Up(MouseButton::Left)
+            && super::contains(press.inner_rect, point)
+            && mouse.row.saturating_sub(press.inner_rect.y) == press.viewport_row
+            && mouse.column.saturating_sub(press.inner_rect.x) == press.col
+        {
+            self.plain_link_pending =
+                Some((press, std::time::Instant::now() + PLAIN_LINK_CLICK_DELAY));
+        }
+    }
+
     fn push_pane_link_activation(
         &mut self,
         click: ClientPlainLinkClick,
@@ -988,8 +1005,12 @@ impl ClientShellState {
                     gesture.last_position = position;
                 }
                 self.push_pane_mouse_event(&hit, mouse, modifiers, outcome);
+                if matches!(mouse.kind, MouseEventKind::Drag(_)) {
+                    self.plain_link_press = None;
+                }
                 if mouse.kind == MouseEventKind::Up(button) {
                     self.pane_mouse_gesture = None;
+                    self.arm_plain_link_on_release(mouse);
                 }
                 return;
             }
@@ -2313,6 +2334,18 @@ impl ClientShellState {
                     .cloned();
                 if let Some(hit) = pane_hit {
                     if hit.mouse_reporting && super::contains(hit.inner_rect, point) {
+                        // The app gets the click too; a link under it still opens,
+                        // because agent UIs capture the mouse but never open links.
+                        if mouse.modifiers.is_empty() && self.plain_click_may_open(&hit.pane_id) {
+                            self.plain_link_press = Some(ClientPlainLinkClick {
+                                pane_id: hit.pane_id.clone(),
+                                inner_rect: hit.inner_rect,
+                                scroll: hit.scroll,
+                                viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
+                                col: mouse.column.saturating_sub(hit.inner_rect.x),
+                                events: Vec::new(),
+                            });
+                        }
                         self.push_pane_mouse_event(&hit, mouse, mouse.modifiers, outcome);
                         self.pane_mouse_gesture = Some(ClientPaneMouseGesture {
                             last_position: self.pane_mouse_position(&hit, mouse),

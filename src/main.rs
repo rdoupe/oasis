@@ -266,7 +266,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 
 # Open links, files and folders with a plain click in the focused pane.
 # Clicks that focus a pane, drag a selection, or double-click never open.
-# Ctrl-click opens in any case.
+# Ctrl-click opens in any case. Apps that capture the mouse still get the click.
 # click_opens_links = true
 
 # Host cursor policy: "auto", "native", or "drawn".
