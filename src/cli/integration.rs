@@ -26,7 +26,7 @@ fn integration_status(args: &[String]) -> std::io::Result<i32> {
         [] => false,
         [flag] if flag == "--outdated-only" => true,
         _ => {
-            eprintln!("usage: herdr integration status [--outdated-only]");
+            eprintln!("usage: oasis integration status [--outdated-only]");
             return Ok(2);
         }
     };
@@ -147,13 +147,13 @@ fn parse_integration_target(
 ) -> std::io::Result<Option<IntegrationCommandTarget>> {
     let Some(target) = args.first().map(|arg| arg.as_str()) else {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
+            "usage: oasis integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     };
     if args.len() != 1 {
         eprintln!(
-            "usage: herdr integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
+            "usage: oasis integration {action} <pi|omp|claude|codex|copilot|devin|droid|kimi|opencode|kilo|hermes|qodercli|qwen|letta|cursor|mastracode|grok>"
         );
         return Ok(None);
     }
@@ -192,42 +192,42 @@ fn parse_integration_target(
 }
 
 fn print_integration_help() {
-    eprintln!("herdr integration commands:");
-    eprintln!("  herdr integration install pi");
-    eprintln!("  herdr integration install omp");
-    eprintln!("  herdr integration install claude");
-    eprintln!("  herdr integration install codex");
-    eprintln!("  herdr integration install copilot");
-    eprintln!("  herdr integration install devin");
-    eprintln!("  herdr integration install droid");
-    eprintln!("  herdr integration install kimi");
-    eprintln!("  herdr integration install opencode");
-    eprintln!("  herdr integration install kilo");
-    eprintln!("  herdr integration install hermes");
-    eprintln!("  herdr integration install qodercli");
-    eprintln!("  herdr integration install qwen");
-    eprintln!("  herdr integration install letta");
-    eprintln!("  herdr integration install cursor");
-    eprintln!("  herdr integration install mastracode");
-    eprintln!("  herdr integration install antigravity-cli");
-    eprintln!("  herdr integration install grok");
-    eprintln!("  herdr integration uninstall pi");
-    eprintln!("  herdr integration uninstall omp");
-    eprintln!("  herdr integration uninstall claude");
-    eprintln!("  herdr integration uninstall codex");
-    eprintln!("  herdr integration uninstall copilot");
-    eprintln!("  herdr integration uninstall devin");
-    eprintln!("  herdr integration uninstall droid");
-    eprintln!("  herdr integration uninstall kimi");
-    eprintln!("  herdr integration uninstall opencode");
-    eprintln!("  herdr integration uninstall kilo");
-    eprintln!("  herdr integration uninstall hermes");
-    eprintln!("  herdr integration uninstall qodercli");
-    eprintln!("  herdr integration uninstall qwen");
-    eprintln!("  herdr integration uninstall letta");
-    eprintln!("  herdr integration uninstall cursor");
-    eprintln!("  herdr integration uninstall mastracode");
-    eprintln!("  herdr integration uninstall antigravity-cli");
-    eprintln!("  herdr integration uninstall grok");
-    eprintln!("  herdr integration status [--outdated-only]");
+    eprintln!("oasis integration commands:");
+    eprintln!("  oasis integration install pi");
+    eprintln!("  oasis integration install omp");
+    eprintln!("  oasis integration install claude");
+    eprintln!("  oasis integration install codex");
+    eprintln!("  oasis integration install copilot");
+    eprintln!("  oasis integration install devin");
+    eprintln!("  oasis integration install droid");
+    eprintln!("  oasis integration install kimi");
+    eprintln!("  oasis integration install opencode");
+    eprintln!("  oasis integration install kilo");
+    eprintln!("  oasis integration install hermes");
+    eprintln!("  oasis integration install qodercli");
+    eprintln!("  oasis integration install qwen");
+    eprintln!("  oasis integration install letta");
+    eprintln!("  oasis integration install cursor");
+    eprintln!("  oasis integration install mastracode");
+    eprintln!("  oasis integration install antigravity-cli");
+    eprintln!("  oasis integration install grok");
+    eprintln!("  oasis integration uninstall pi");
+    eprintln!("  oasis integration uninstall omp");
+    eprintln!("  oasis integration uninstall claude");
+    eprintln!("  oasis integration uninstall codex");
+    eprintln!("  oasis integration uninstall copilot");
+    eprintln!("  oasis integration uninstall devin");
+    eprintln!("  oasis integration uninstall droid");
+    eprintln!("  oasis integration uninstall kimi");
+    eprintln!("  oasis integration uninstall opencode");
+    eprintln!("  oasis integration uninstall kilo");
+    eprintln!("  oasis integration uninstall hermes");
+    eprintln!("  oasis integration uninstall qodercli");
+    eprintln!("  oasis integration uninstall qwen");
+    eprintln!("  oasis integration uninstall letta");
+    eprintln!("  oasis integration uninstall cursor");
+    eprintln!("  oasis integration uninstall mastracode");
+    eprintln!("  oasis integration uninstall antigravity-cli");
+    eprintln!("  oasis integration uninstall grok");
+    eprintln!("  oasis integration status [--outdated-only]");
 }

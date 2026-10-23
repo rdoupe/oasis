@@ -370,7 +370,7 @@ pub(crate) fn integration_update_instructions(
         .iter()
         .map(|target| {
             format!(
-                "`herdr integration install {}`",
+                "`oasis integration install {}`",
                 integration_target_label(*target)
             )
         })
@@ -470,7 +470,7 @@ pub(crate) fn integration_status_at(
 
     // Grok only invokes the hook when the herdr-owned `hooks/herdr.json`
     // registers it, so a current hook script with a missing or broken config
-    // is a nonfunctional install: report it as outdated so `herdr integration
+    // is a nonfunctional install: report it as outdated so `oasis integration
     // status` flags it and a reinstall rewrites both files.
     if target == crate::api::schema::IntegrationTarget::Grok
         && state == super::IntegrationStatusKind::Current

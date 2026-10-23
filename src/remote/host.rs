@@ -54,7 +54,7 @@ fn ensure_remote_server_running() -> io::Result<()> {
             return Ok(());
         }
         return Err(io::Error::other(
-            "remote herdr server needs one final update before this bridge can attach; rerun `herdr --remote` from an interactive terminal to approve it",
+            "remote herdr server needs one final update before this bridge can attach; rerun `oasis --remote` from an interactive terminal to approve it",
         ));
     }
 

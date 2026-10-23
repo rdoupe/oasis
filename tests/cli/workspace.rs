@@ -646,7 +646,7 @@ fn config_check_rejects_json_output() {
     assert!(checked.stdout.is_empty());
     assert_eq!(
         String::from_utf8_lossy(&checked.stderr),
-        "usage: herdr config check\n"
+        "usage: oasis config check\n"
     );
 
     cleanup_test_base(&base);
@@ -688,7 +688,7 @@ fn worktree_cli_rejects_local_argument_errors_before_socket_use() {
         assert_eq!(
             output.status.code(),
             Some(2),
-            "herdr {} should fail as local parse error; stdout={} stderr={}",
+            "oasis {} should fail as local parse error; stdout={} stderr={}",
             args.join(" "),
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)

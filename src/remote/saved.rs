@@ -146,7 +146,7 @@ impl SavedSshApiBridge {
 
 pub(crate) fn saved_ssh_bootstrap_command(target: &str, session: &str) -> String {
     format!(
-        "herdr --remote {} --session {}",
+        "oasis --remote {} --session {}",
         super::shell_quote(target),
         super::shell_quote(session)
     )
@@ -225,7 +225,7 @@ mod tests {
     fn bootstrap_command_preserves_the_explicit_remote_session() {
         assert_eq!(
             saved_ssh_bootstrap_command("build host", "agent work"),
-            "herdr --remote 'build host' --session 'agent work'"
+            "oasis --remote 'build host' --session 'agent work'"
         );
     }
 

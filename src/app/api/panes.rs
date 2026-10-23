@@ -4668,7 +4668,7 @@ mod tests {
     fn pane_report_metadata_rejects_invalid_applies_to_source() {
         let (mut app, pane_id) = app_with_test_workspace();
         let mut params = metadata_params(pane_id);
-        params.applies_to_source = Some("herdr source".into());
+        params.applies_to_source = Some("oasis source".into());
 
         let response = app.handle_pane_report_metadata("req".into(), params);
 

@@ -1349,7 +1349,7 @@ async fn layout_ctrl_chords_match_ghostty_direct() {
     // #1079. Keystrokes from a Kitty host on Russian, German, Turkish, French,
     // Nordic and Polish layouts, built like Ghostty builds them. `ghostty` is
     // what Ghostty sends the app directly (recorded from libghostty, and
-    // checked against it below); `herdr` is what the pane gets through Herdr.
+    // checked against it below); `oasis` is what the pane gets through Herdr.
     use ffi::*;
     const CTRL: u16 = ghostty::MOD_CTRL;
     const ALT: u16 = ghostty::MOD_ALT;

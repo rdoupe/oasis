@@ -26,7 +26,7 @@ pub(crate) fn request(args: &[String]) -> Result<Request, ParseError> {
         }
         _ => args,
     };
-    projection::parse(command().bin_name("herdr notification"), args, |matches| {
+    projection::parse(command().bin_name("oasis notification"), args, |matches| {
         let matches = matches
             .subcommand_matches("show")
             .ok_or_else(|| ParseError::Usage("missing notification show command".into()))?;

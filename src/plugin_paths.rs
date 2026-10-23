@@ -123,7 +123,7 @@ fn plugin_config_path_component(value: &str) -> String {
     component
 }
 
-fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
+pub(crate) fn copy_dir_all(source: &Path, destination: &Path) -> std::io::Result<()> {
     std::fs::create_dir_all(destination)?;
     for entry in std::fs::read_dir(source)? {
         let entry = entry?;

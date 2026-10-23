@@ -19,8 +19,9 @@ pub(crate) fn init_file_logging(file_name: &str) {
         return;
     };
 
-    let filter =
-        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new("herdr=info"));
+    // Log targets start with the binary crate's name, which differs from the package name.
+    let filter = EnvFilter::try_from_env("HERDR_LOG")
+        .unwrap_or_else(|_| EnvFilter::new(concat!(env!("CARGO_CRATE_NAME"), "=info")));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -44,7 +45,7 @@ pub(crate) fn startup(role: &'static str) {
         subsystem = role,
         outcome = "started",
         pid = std::process::id(),
-        "herdr starting"
+        "oasis starting"
     );
 }
 
@@ -54,7 +55,7 @@ pub(crate) fn shutdown(role: &'static str) {
         subsystem = role,
         outcome = "completed",
         pid = std::process::id(),
-        "herdr exiting"
+        "oasis exiting"
     );
 }
 

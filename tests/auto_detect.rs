@@ -105,7 +105,7 @@ fn spawn_server(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_oasis"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -125,7 +125,7 @@ fn spawn_server(
     }
 }
 
-/// Spawn `herdr` (no subcommand) — the auto-detect launch path.
+/// Spawn `oasis` (no subcommand) — the auto-detect launch path.
 fn spawn_herdr_auto(
     config_home: &Path,
     runtime_dir: &Path,
@@ -150,7 +150,7 @@ fn spawn_herdr_auto(
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_oasis"));
     support::isolate_herdr_test_process(&mut cmd);
     // No subcommand → auto-detect launch.
     cmd.env("XDG_CONFIG_HOME", config_home);
@@ -202,7 +202,7 @@ fn wait_for_log_contains(path: &Path, needle: &str, timeout: Duration) {
 }
 
 fn run_cli(socket_path: &Path, args: &[&str]) -> std::process::Output {
-    let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut command = Command::new(env!("CARGO_BIN_EXE_oasis"));
     command.args(args);
     command.env("HERDR_SOCKET_PATH", socket_path);
     command.output().unwrap()
@@ -251,13 +251,13 @@ fn session_attach_without_terminal_leaves_no_session() {
     register_runtime_dir(&runtime_dir);
     let name = "no-tty";
     let app_dir = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "oasis-dev"
     } else {
         "herdr"
     };
     let session_dir = config_home.join(app_dir).join("sessions").join(name);
     let run = |args: &[&str]| {
-        let mut command = Command::new(env!("CARGO_BIN_EXE_herdr"));
+        let mut command = Command::new(env!("CARGO_BIN_EXE_oasis"));
         command
             .args(args)
             .env("XDG_CONFIG_HOME", &config_home)
@@ -306,7 +306,7 @@ fn session_attach_without_terminal_leaves_no_session() {
     assert_eq!(before.stdout, after.stdout, "session inventory changed");
 }
 
-/// Running `herdr` with no server present starts a server
+/// Running `oasis` with no server present starts a server
 /// and attaches as client.
 #[test]
 fn auto_detect_no_server_spawns_server_and_attaches() {
@@ -327,7 +327,7 @@ fn auto_detect_no_server_spawns_server_and_attaches() {
         "client socket should not exist initially"
     );
 
-    // Run `herdr` (no subcommand) — should auto-detect, spawn server, attach as client.
+    // Run `oasis` (no subcommand) — should auto-detect, spawn server, attach as client.
     let herdr = spawn_herdr_auto(&config_home, &runtime_dir, &api_socket, &client_socket);
 
     // Wait for both sockets to appear (server was spawned).
@@ -355,7 +355,7 @@ fn auto_detect_no_server_spawns_server_and_attaches() {
     cleanup_spawned_herdr(herdr, base);
 }
 
-/// Running `herdr` with a server already running attaches
+/// Running `oasis` with a server already running attaches
 /// as client directly (no second server).
 #[test]
 fn auto_detect_server_running_attaches_directly() {
@@ -376,7 +376,7 @@ fn auto_detect_server_running_attaches_directly() {
     // Verify server is running.
     assert!(process_exists(server_pid), "server should be running");
 
-    // Run `herdr` (no subcommand) — should detect the running server and attach.
+    // Run `oasis` (no subcommand) — should detect the running server and attach.
     let client = spawn_herdr_auto(&config_home, &runtime_dir, &api_socket, &client_socket);
 
     // Wait a moment for the client to attach.
@@ -418,7 +418,7 @@ fn auto_detect_socket_path_consistency() {
     let api_socket = runtime_dir.join("herdr.sock");
     let client_socket = runtime_dir.join("herdr-client.sock");
 
-    // Run `herdr` with custom socket paths.
+    // Run `oasis` with custom socket paths.
     let herdr = spawn_herdr_auto(&config_home, &runtime_dir, &api_socket, &client_socket);
 
     // Wait for both sockets to appear at the custom paths.
@@ -465,7 +465,7 @@ fn cli_subcommands_work_through_server() {
     wait_for_socket(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(10));
 
-    // Test `herdr workspace list` through the server's API socket.
+    // Test `oasis workspace list` through the server's API socket.
     let output = run_cli(&api_socket, &["workspace", "list"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -479,7 +479,7 @@ fn cli_subcommands_work_through_server() {
         "workspace list output should contain 'result': {stdout}"
     );
 
-    // Test `herdr pane list` through the server's API socket.
+    // Test `oasis pane list` through the server's API socket.
     let output = run_cli(&api_socket, &["pane", "list"]);
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
@@ -496,7 +496,7 @@ fn cli_subcommands_work_through_server() {
 }
 
 /// Verify that the server spawned by auto-detect
-/// persists after the client exits, and a new `herdr` can reattach.
+/// persists after the client exits, and a new `oasis` can reattach.
 #[test]
 fn auto_detect_server_persists_and_reattaches() {
     let _lock = test_lock();
@@ -506,7 +506,7 @@ fn auto_detect_server_persists_and_reattaches() {
     let api_socket = runtime_dir.join("herdr.sock");
     let client_socket = runtime_dir.join("herdr-client.sock");
 
-    // Run `herdr` — auto-detect spawns server + attaches client.
+    // Run `oasis` — auto-detect spawns server + attaches client.
     let mut client1 = spawn_herdr_auto(&config_home, &runtime_dir, &api_socket, &client_socket);
     wait_for_socket(&api_socket, Duration::from_secs(10));
     wait_for_socket(&client_socket, Duration::from_secs(10));
@@ -541,7 +541,7 @@ fn auto_detect_server_persists_and_reattaches() {
         "client socket should still exist after client exit"
     );
 
-    // Run `herdr` again — should detect the running server and reattach.
+    // Run `oasis` again — should detect the running server and reattach.
     let client2 = spawn_herdr_auto(&config_home, &runtime_dir, &api_socket, &client_socket);
     thread::sleep(Duration::from_millis(500));
 
@@ -575,7 +575,7 @@ fn auto_detect_default_socket_path_from_config_dir() {
     // Don't set HERDR_SOCKET_PATH or HERDR_CLIENT_SOCKET_PATH.
     // The default paths should come from the app config directory, not XDG_RUNTIME_DIR.
     let app_dir_name = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "oasis-dev"
     } else {
         "herdr"
     };
@@ -601,7 +601,7 @@ fn auto_detect_default_socket_path_from_config_dir() {
         })
         .unwrap();
 
-    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_herdr"));
+    let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_oasis"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", &config_home);
@@ -655,7 +655,7 @@ fn auto_detect_writes_client_and_server_logs_to_separate_files() {
     wait_for_socket(&client_socket, Duration::from_secs(10));
 
     let app_dir_name = if cfg!(debug_assertions) {
-        "herdr-dev"
+        "oasis-dev"
     } else {
         "herdr"
     };
@@ -711,7 +711,7 @@ fn auto_detect_respects_nested_guard_before_auto_attach() {
         .map(|workspaces| workspaces.len())
         .unwrap_or(0);
 
-    let output = Command::new(env!("CARGO_BIN_EXE_herdr"))
+    let output = Command::new(env!("CARGO_BIN_EXE_oasis"))
         .env("XDG_CONFIG_HOME", &config_home)
         .env("XDG_RUNTIME_DIR", &runtime_dir)
         .env("HERDR_SOCKET_PATH", &api_socket)

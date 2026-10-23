@@ -65,7 +65,7 @@ mod workspace;
 mod worktree;
 
 const DEFAULT_CONFIG: &str = r##"# herdr configuration
-# Place this file at ~/.config/herdr/config.toml
+# Place this file at ~/.config/oasis/config.toml
 
 # Show first-run notification setup on startup.
 # Missing also shows onboarding; set false after you've chosen.
@@ -121,7 +121,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # kitty_graphics = true
 
 [update]
-# Update channel used by background version checks and `herdr update`.
+# Update channel used by background version checks and `oasis update`.
 # Stable builds default to "stable". Windows preview builds default to "preview"
 # so existing preview installs stay there until explicitly switched.
 # channel = "stable"
@@ -402,7 +402,7 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # startup_per_agent_delay_ms = 100
 
 [remote]
-# Whether herdr manages the ssh config used for `herdr --remote`.
+# Whether herdr manages the ssh config used for `oasis --remote`.
 # When true (default), herdr runs remote ssh through a generated config that
 # includes your ~/.ssh/config first and adds ServerAliveInterval/
 # ServerAliveCountMax as fallbacks (so any keepalive values you set yourself
@@ -513,10 +513,11 @@ fn main() -> io::Result<()> {
         Ok(args) => args,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'oasis --help' for usage");
             std::process::exit(2);
         }
     };
+    config::import_legacy_settings();
     #[cfg(windows)]
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
@@ -528,7 +529,7 @@ fn main() -> io::Result<()> {
         Ok(args) => args,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'oasis --help' for usage");
             std::process::exit(2);
         }
     };
@@ -536,7 +537,7 @@ fn main() -> io::Result<()> {
         Ok(parsed) => parsed,
         Err(err) => {
             eprintln!("error: {err}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'oasis --help' for usage");
             std::process::exit(2);
         }
     };
@@ -551,7 +552,7 @@ fn main() -> io::Result<()> {
         })
     {
         eprintln!("error: --remote can only be used with the default launch command");
-        eprintln!("run 'herdr --help' for usage");
+        eprintln!("run 'oasis --help' for usage");
         std::process::exit(2);
     }
 
@@ -586,7 +587,7 @@ fn main() -> io::Result<()> {
             }
             Err(err) => {
                 eprintln!("{err}");
-                eprintln!("usage: herdr update [--handoff]");
+                eprintln!("usage: oasis update [--handoff]");
                 std::process::exit(2);
             }
         };
@@ -605,93 +606,93 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--help" || a == "-h") {
         platform::begin_cli_output();
-        println!("herdr — terminal workspace manager for AI coding agents");
+        println!("oasis — terminal workspace manager for AI coding agents");
         println!();
-        println!("Usage: herdr [options]");
-        println!("       herdr --session <name> [options]");
-        println!("       herdr --machine <label-or-id> <command>");
-        println!("       herdr --remote <ssh-target> [--session <name>]");
-        println!("       herdr session attach <name>");
-        println!("       herdr completion zsh");
-        println!("       herdr update [--handoff]");
-        println!("       herdr channel set <stable|preview>");
-        println!("       herdr machine <subcommand> ...");
-        println!("       herdr server stop");
-        println!("       herdr server reload-config");
-        println!("       herdr api <subcommand> ...");
-        println!("       herdr completion <shell>");
-        println!("       herdr config <subcommand> ...");
-        println!("       herdr channel <subcommand> ...");
-        println!("       herdr workspace <subcommand> ...");
-        println!("       herdr worktree <subcommand> ...");
-        println!("       herdr tab <subcommand> ...");
-        println!("       herdr notification <subcommand> ...");
-        println!("       herdr agent <subcommand> ...");
-        println!("       herdr pane <subcommand> ...");
-        println!("       herdr session <subcommand> ...");
-        println!("       herdr integration <subcommand> ...");
+        println!("Usage: oasis [options]");
+        println!("       oasis --session <name> [options]");
+        println!("       oasis --machine <label-or-id> <command>");
+        println!("       oasis --remote <ssh-target> [--session <name>]");
+        println!("       oasis session attach <name>");
+        println!("       oasis completion zsh");
+        println!("       oasis update [--handoff]");
+        println!("       oasis channel set <stable|preview>");
+        println!("       oasis machine <subcommand> ...");
+        println!("       oasis server stop");
+        println!("       oasis server reload-config");
+        println!("       oasis api <subcommand> ...");
+        println!("       oasis completion <shell>");
+        println!("       oasis config <subcommand> ...");
+        println!("       oasis channel <subcommand> ...");
+        println!("       oasis workspace <subcommand> ...");
+        println!("       oasis worktree <subcommand> ...");
+        println!("       oasis tab <subcommand> ...");
+        println!("       oasis notification <subcommand> ...");
+        println!("       oasis agent <subcommand> ...");
+        println!("       oasis pane <subcommand> ...");
+        println!("       oasis session <subcommand> ...");
+        println!("       oasis integration <subcommand> ...");
         println!();
         println!("Common commands:");
         for (command, description) in [
-            ("herdr", "Launch or attach to the persistent session"),
+            ("oasis", "Launch or attach to the persistent session"),
             (
-                "herdr status [server|client]",
+                "oasis status [server|client]",
                 "Show local client and running server status",
             ),
-            ("herdr update", "Download and install the latest version"),
-            ("herdr completion zsh", "Generate shell completions for zsh"),
+            ("oasis update", "Download and install the latest version"),
+            ("oasis completion zsh", "Generate shell completions for zsh"),
             (
-                "herdr server stop",
+                "oasis server stop",
                 "Stop the running server via the API socket",
             ),
             (
-                "herdr channel set <stable|preview>",
+                "oasis channel set <stable|preview>",
                 "Choose the stable or preview update channel",
             ),
             (
-                "herdr server reload-config",
+                "oasis server reload-config",
                 "Reload config.toml in the running server",
             ),
             (
-                "herdr config reset-keys",
+                "oasis config reset-keys",
                 "Back up config.toml and remove custom keybindings",
             ),
             (
-                "herdr channel <subcommand>",
+                "oasis channel <subcommand>",
                 "Manage the stable or preview update channel",
             ),
-            ("herdr machine <subcommand>", "Manage saved SSH machines"),
+            ("oasis machine <subcommand>", "Manage saved SSH machines"),
             (
-                "herdr api <subcommand>",
+                "oasis api <subcommand>",
                 "Inspect socket API metadata and live runtime state",
             ),
             (
-                "herdr workspace <subcommand>",
+                "oasis workspace <subcommand>",
                 "Workspace helpers over the socket API",
             ),
             (
-                "herdr worktree <subcommand>",
+                "oasis worktree <subcommand>",
                 "Git worktree helpers over the socket API",
             ),
-            ("herdr tab <subcommand>", "Tab helpers over the socket API"),
+            ("oasis tab <subcommand>", "Tab helpers over the socket API"),
             (
-                "herdr notification <subcommand>",
+                "oasis notification <subcommand>",
                 "Notification helpers over the socket API",
             ),
             (
-                "herdr agent <subcommand>",
+                "oasis agent <subcommand>",
                 "Agent/terminal helpers over the socket API",
             ),
             (
-                "herdr pane <subcommand>",
+                "oasis pane <subcommand>",
                 "Pane control helpers over the socket API",
             ),
             (
-                "herdr session <subcommand>",
+                "oasis session <subcommand>",
                 "Manage named persistent sessions",
             ),
             (
-                "herdr integration <subcommand>",
+                "oasis integration <subcommand>",
                 "Manage built-in agent integrations",
             ),
         ] {
@@ -699,7 +700,7 @@ fn main() -> io::Result<()> {
         }
         println!();
         println!("Advanced commands:");
-        println!("  {:<32} Run as headless server", "herdr server");
+        println!("  {:<32} Run as headless server", "oasis server");
         println!();
         println!("Options:");
         println!("  --session <name>    Use or create a named persistent session");
@@ -724,7 +725,7 @@ fn main() -> io::Result<()> {
 
     if args.iter().any(|a| a == "--version" || a == "-V") {
         platform::begin_cli_output();
-        println!("herdr {}", crate::build_info::version());
+        println!("oasis {}", crate::build_info::version());
         return Ok(());
     }
 
@@ -757,7 +758,7 @@ fn main() -> io::Result<()> {
         let arg_name = arg.split_once('=').map(|(name, _)| name).unwrap_or(arg);
         if arg.starts_with('-') && !known_flags.contains(&arg_name) {
             eprintln!("unknown option: {arg}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'oasis --help' for usage");
             std::process::exit(2);
         }
         if !arg.starts_with('-')
@@ -779,7 +780,7 @@ fn main() -> io::Result<()> {
             .contains(&arg.as_str())
         {
             eprintln!("unknown command: {arg}");
-            eprintln!("run 'herdr --help' for usage");
+            eprintln!("run 'oasis --help' for usage");
             std::process::exit(2);
         }
     }

@@ -6,7 +6,7 @@ mod completion;
 mod machine;
 
 pub(super) fn command() -> Command {
-    let command = Command::new("herdr")
+    let command = Command::new("oasis")
         .about("terminal workspace manager for AI coding agents")
         .disable_help_flag(true)
         .disable_version_flag(true)
@@ -442,13 +442,13 @@ mod tests {
                 let mut output = Vec::new();
                 assert!(
                     super::write_requested_help(&args, &mut output, || {}).unwrap(),
-                    "help was not handled for herdr {} {flag}",
+                    "help was not handled for oasis {} {flag}",
                     path.join(" ")
                 );
                 let output = String::from_utf8(output).unwrap();
                 assert!(
-                    output.contains(&format!("Usage: herdr {}", path.join(" "))),
-                    "unexpected help for herdr {}: {output}",
+                    output.contains(&format!("Usage: oasis {}", path.join(" "))),
+                    "unexpected help for oasis {}: {output}",
                     path.join(" ")
                 );
             }
@@ -518,7 +518,7 @@ mod tests {
             for option in options {
                 assert!(
                     option_arg(&cmd, option).is_required_set(),
-                    "herdr {} --{option} should be required",
+                    "oasis {} --{option} should be required",
                     path.join(" ")
                 );
             }
@@ -567,7 +567,7 @@ mod tests {
         .unwrap();
         assert!(String::from_utf8(help)
             .unwrap()
-            .contains("Usage: herdr agent rename <TARGET> <NAME>|--clear"));
+            .contains("Usage: oasis agent rename <TARGET> <NAME>|--clear"));
     }
 
     #[test]
@@ -582,7 +582,7 @@ mod tests {
                     .render_long_help()
                     .to_string()
                     .contains("--json"),
-                "herdr worktree {subcommand} should not advertise --json"
+                "oasis worktree {subcommand} should not advertise --json"
             );
         }
     }
@@ -676,7 +676,7 @@ mod tests {
         let mut output = Vec::new();
         assert!(
             super::write_requested_help(&args, &mut output, || {}).unwrap(),
-            "help was not handled for herdr {}",
+            "help was not handled for oasis {}",
             path.join(" ")
         );
         String::from_utf8(output).unwrap()
@@ -688,7 +688,7 @@ mod tests {
             let help = long_help(&[group]);
             assert!(
                 help.contains(super::super::AGENT_HELP_FOOTER),
-                "herdr {group} is missing agent resources: {help}"
+                "oasis {group} is missing agent resources: {help}"
             );
         }
 

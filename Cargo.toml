@@ -20,6 +20,12 @@ include = [
     "Cargo.toml",
 ]
 
+# Oasis is a fork of Herdr: the package keeps Herdr's name so upstream merges
+# stay clean, and only the command users type is renamed.
+[[bin]]
+name = "oasis"
+path = "src/main.rs"
+
 [workspace]
 members = ["crates/ghostty-vt"]
 default-members = [".", "crates/ghostty-vt"]

@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-HERDR_BIN="${HERDR_BIN:-$ROOT/target/debug/herdr}"
+HERDR_BIN="${HERDR_BIN:-$ROOT/target/debug/oasis}"
 BASE="${BASE:-$(mktemp -d /tmp/herdr-handoff-smoke.XXXXXX)}"
 CONFIG_HOME="$BASE/config"
 RUNTIME_DIR="$BASE/runtime"

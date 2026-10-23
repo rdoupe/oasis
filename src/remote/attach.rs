@@ -1595,7 +1595,7 @@ pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteH
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         format!(
-            "matching Herdr is not ready on {}; run `herdr --remote {}` interactively to install or update it",
+            "matching Herdr is not ready on {}; run `oasis --remote {}` interactively to install or update it",
             ssh.target(),
             ssh.target()
         ),
@@ -2665,7 +2665,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `herdr` to that path"
+        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `oasis` to that path"
     );
     Ok(())
 }
@@ -2743,7 +2743,7 @@ fn preview_assets_for_build<'a>(
     }
     let build = manifest.builds.get(build_id).ok_or_else(|| {
         io::Error::other(format!(
-            "preview manifest no longer includes build {build_id}; run `herdr update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
+            "preview manifest no longer includes build {build_id}; run `oasis update` locally or set {REMOTE_BINARY_ENV_VAR}=target/release/herdr"
         ))
     })?;
     Ok((build.protocol, &build.assets))
@@ -3813,7 +3813,7 @@ mod tests {
             configure_remote_client_environment(
                 &mut command,
                 &root.join(bridge),
-                "herdr --remote dev",
+                "oasis --remote dev",
                 RemoteKeybindings::Local,
                 "dev",
                 "agents",
@@ -4895,7 +4895,7 @@ mod tests {
     #[test]
     fn windows_bridge_returns_application_exit_while_descendant_is_running() {
         let pid_file = std::env::temp_dir().join(format!(
-            "herdr bridge descendant {}-{}.pid",
+            "oasis bridge descendant {}-{}.pid",
             std::process::id(),
             std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -5433,33 +5433,33 @@ function Get-Process {
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "oasis",
                 "host name",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Local,
                 false,
             ),
-            "herdr --remote 'host name'"
+            "oasis --remote 'host name'"
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "oasis",
                 "host",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Server,
                 false,
             ),
-            "herdr --remote host --remote-keybindings server"
+            "oasis --remote host --remote-keybindings server"
         );
         assert_eq!(
             reattach_command(
-                "herdr",
+                "oasis",
                 "host",
                 crate::session::DEFAULT_SESSION_NAME,
                 RemoteKeybindings::Local,
                 true,
             ),
-            "herdr --remote host --handoff"
+            "oasis --remote host --handoff"
         );
     }
 
