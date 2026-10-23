@@ -2334,6 +2334,7 @@ async fn run_client_loop(
                         let shell = state.shell.as_mut().expect("checked shell mode");
                         let mut outcome = shell.tick_selection_autoscroll(now);
                         shell.tick_plain_link_click(now, &mut outcome);
+                        shell.tick_link_hover(&mut outcome);
                         for expired in expired_endpoints {
                             if !shell.endpoint_is_active(&expired.endpoint_id) {
                                 continue;

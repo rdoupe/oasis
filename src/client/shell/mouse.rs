@@ -347,7 +347,7 @@ impl ClientShellState {
 
     /// Whether a plain press in `pane_id` may open a link: the pane must
     /// already be focused, so the click that focuses a pane never opens.
-    fn plain_click_may_open(&self, pane_id: &str) -> bool {
+    pub(super) fn plain_click_may_open(&self, pane_id: &str) -> bool {
         self.config.click_opens_links
             && self.config.mouse_capture
             && !self.replaying_url_click

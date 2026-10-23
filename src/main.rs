@@ -264,7 +264,8 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # or Cmd+C when the host forwards it, copies and clears it.
 # copy_on_select = true
 
-# Open links, files and folders with a plain click in the focused pane.
+# Open links, files and folders with a plain click in the focused pane,
+# and underline links there on a plain hover.
 # Clicks that focus a pane, drag a selection, or double-click never open.
 # Ctrl-click opens in any case. Apps that capture the mouse still get the click.
 # click_opens_links = true

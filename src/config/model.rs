@@ -952,7 +952,8 @@ pub struct UiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
-    /// Open links and local paths with a plain click in the focused pane. Default: true.
+    /// Open links and local paths with a plain click in the focused pane, and
+    /// underline links there on a plain hover. Default: true.
     pub click_opens_links: bool,
     /// Host cursor policy. Default: auto.
     pub host_cursor: HostCursorModeConfig,

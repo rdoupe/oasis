@@ -1917,6 +1917,8 @@ impl ClientShellState {
                     .as_ref()
                     .map(|(_, deadline)| *deadline),
             )
+            // A redraw left the hovered link unresolved: resolve it on the next turn.
+            .chain(self.link_hover_resolve_due().then_some(now))
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

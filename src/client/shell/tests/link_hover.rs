@@ -151,9 +151,11 @@ fn ctrl_hover_coalesces_motion_and_ignores_old_replies() {
 }
 
 #[test]
-fn ctrl_hover_clears_on_release_content_change_and_focus_loss() {
-    for clear in 0..4 {
+fn ctrl_hover_clears_on_release_focus_loss_and_keys() {
+    for clear in 0..3 {
         let mut state = hover_state();
+        // Plain hover would keep the underline after Ctrl is released.
+        state.config.click_opens_links = false;
         let mouse = hover_mouse(&state, 1, 0);
         let id = hover_request(&state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]));
         assert!(resolve_hover(&mut state, &id));
@@ -165,12 +167,6 @@ fn ctrl_hover_clears_on_release_content_change_and_focus_loss() {
                 })]);
             }
             1 => {
-                let mut next = surface();
-                next.surface_revision += 1;
-                next.panes[0].content_revision += 2;
-                state.set_pane_surface(next);
-            }
-            2 => {
                 state.handle_raw_events(vec![RawInputEvent::OuterFocusLost]);
             }
             _ => {
@@ -187,13 +183,76 @@ fn ctrl_hover_clears_on_release_content_change_and_focus_loss() {
     }
 }
 
-#[test]
-fn ctrl_hover_content_patch_removes_all_old_underlines() {
+fn underlined_cells(state: &mut ClientShellState) -> usize {
+    let frame = state.compose(106, 20).unwrap();
+    let pane = &state.hits.panes[0];
+    (0..2)
+        .flat_map(|row| (0..4).map(move |col| (row, col)))
+        .filter(|(row, col)| {
+            let idx = usize::from(pane.inner_rect.y + row) * usize::from(frame.width)
+                + usize::from(pane.inner_rect.x + col);
+            frame.cells[idx].modifier & Modifier::UNDERLINED.bits() != 0
+        })
+        .count()
+}
+
+fn hovered_state() -> ClientShellState {
     let mut state = hover_state();
     let mouse = hover_mouse(&state, 1, 0);
     let id = hover_request(&state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]));
     assert!(resolve_hover(&mut state, &id));
-    state.compose(106, 20).unwrap();
+    assert_eq!(underlined_cells(&mut state), 6);
+    state
+}
+
+/// Delivers redraw `n` (1, 2, ...) of the hovered pane.
+fn redraw(state: &mut ClientShellState, n: u64) {
+    let mut next = surface();
+    next.surface_revision += n;
+    next.panes[0].content_revision += 2 * n;
+    state.set_pane_surface(next);
+}
+
+/// Agent UIs redraw constantly; a new content revision must not blink the
+/// underline off. It stays and is re-resolved on the next client turn.
+#[test]
+fn hover_survives_redraws_and_re_resolves_the_new_revision() {
+    let mut state = hovered_state();
+    redraw(&mut state, 1);
+    assert_eq!(
+        underlined_cells(&mut state),
+        6,
+        "redraw keeps the underline"
+    );
+    let now = std::time::Instant::now();
+    assert_eq!(state.timer_delay(now), std::time::Duration::ZERO);
+
+    let mut outcome = ClientShellInput::default();
+    state.tick_link_hover(&mut outcome);
+    let id = hover_request(&outcome);
+    assert!(
+        state.timer_delay(now) > std::time::Duration::ZERO,
+        "one request in flight"
+    );
+    let mut idle = ClientShellInput::default();
+    state.tick_link_hover(&mut idle);
+    assert!(idle.actions.is_empty());
+
+    // The link scrolled away: an empty resolve removes every underline.
+    state.handle_endpoint_result(
+        "boot-1",
+        &id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkResolved {
+            regions: Vec::new(),
+        }),
+    );
+    assert_eq!(underlined_cells(&mut state), 0);
+    assert!(state.timer_delay(now) > std::time::Duration::ZERO);
+}
+
+#[test]
+fn hover_survives_content_patches() {
+    let mut state = hovered_state();
     let mut pane = surface().panes.remove(0);
     pane.content_revision = 2;
     let patch = crate::protocol::PaneSurfacePatch {
@@ -213,16 +272,100 @@ fn ctrl_hover_content_patch_removes_all_old_underlines() {
         state.apply_pane_surface_patch(patch),
         ClientPaneSurfacePatchOutcome::Applied(None)
     ));
-    assert!(state.link_hover.is_none());
-    let frame = state.compose(106, 20).unwrap();
-    let pane = &state.hits.panes[0];
-    for row in 0..2 {
-        for col in 0..4 {
-            let idx = usize::from(pane.inner_rect.y + row) * usize::from(frame.width)
-                + usize::from(pane.inner_rect.x + col);
-            assert_eq!(frame.cells[idx].modifier & Modifier::UNDERLINED.bits(), 0);
-        }
+    assert_eq!(underlined_cells(&mut state), 6);
+    let mut outcome = ClientShellInput::default();
+    state.tick_link_hover(&mut outcome);
+    hover_request(&outcome);
+}
+
+#[test]
+fn hover_drops_when_the_pane_scrolls() {
+    let mut state = hovered_state();
+    let mut next = surface();
+    next.surface_revision += 1;
+    next.panes[0].content_revision += 2;
+    if let Some(scroll) = next.panes[0].scroll.as_mut() {
+        scroll.offset_from_bottom += 1;
+    } else {
+        next.panes[0].inner_rect.y += 1;
     }
+    state.set_pane_surface(next);
+    assert!(state.link_hover.is_none());
+}
+
+#[test]
+fn hover_keeps_its_underline_when_the_reply_is_stale() {
+    let mut state = hovered_state();
+    redraw(&mut state, 1);
+    let mut outcome = ClientShellInput::default();
+    state.tick_link_hover(&mut outcome);
+    let id = hover_request(&outcome);
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &id,
+        Err(ClientShellEndpointError {
+            code: Some("stale_content".into()),
+            message: "pane content changed".into(),
+        }),
+    );
+    assert!(
+        actions.is_empty(),
+        "a stale reply waits for the next redraw"
+    );
+    assert_eq!(underlined_cells(&mut state), 6);
+    redraw(&mut state, 2);
+    let mut outcome = ClientShellInput::default();
+    state.tick_link_hover(&mut outcome);
+    hover_request(&outcome);
+}
+
+#[test]
+fn plain_hover_underlines_only_in_the_focused_pane_when_enabled() {
+    let plain = |state: &ClientShellState| MouseEvent {
+        modifiers: KeyModifiers::empty(),
+        ..hover_mouse(state, 1, 0)
+    };
+
+    let mut state = hover_state();
+    let id = hover_request(&state.handle_raw_events(vec![RawInputEvent::Mouse(plain(&state))]));
+    assert!(resolve_hover(&mut state, &id));
+    assert_eq!(underlined_cells(&mut state), 6);
+
+    let mut state = hover_state();
+    let mut unfocused = snapshot();
+    unfocused.focused_pane_id = Some("pane_other".into());
+    state.set_snapshot(Box::new(unfocused));
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(plain(&state))]);
+    assert!(outcome.actions.is_empty());
+    assert!(state.link_hover.is_none());
+    // Ctrl hover still works outside the focused pane.
+    let ctrl = hover_mouse(&state, 1, 0);
+    hover_request(&state.handle_raw_events(vec![RawInputEvent::Mouse(ctrl)]));
+
+    let mut state = hover_state();
+    state.config.click_opens_links = false;
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(plain(&state))]);
+    assert!(outcome.actions.is_empty());
+    assert!(state.link_hover.is_none());
+}
+
+#[test]
+fn plain_hover_works_in_panes_whose_app_captures_the_mouse() {
+    let mut state = hover_state();
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).unwrap();
+    let mouse = MouseEvent {
+        modifiers: KeyModifiers::empty(),
+        ..hover_mouse(&state, 1, 0)
+    };
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(outcome.actions.iter().any(|action| matches!(
+        action,
+        ClientShellAction::Endpoint { request, .. }
+            if matches!(request.method, crate::api::schema::Method::PaneLinkResolve(_))
+    )));
 }
 
 #[test]

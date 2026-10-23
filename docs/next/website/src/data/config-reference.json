@@ -921,7 +921,7 @@
           "key": "ui.click_opens_links",
           "type": "boolean",
           "default": "true",
-          "description": "Open links, files and folders with a plain click in the focused pane. Clicks that focus a pane, drag a selection, or double-click never open; Ctrl+click always does. In panes whose app captures the mouse, such as Claude Code, the app still receives the click."
+          "description": "Open links, files and folders with a plain click in the focused pane, and underline links there on a plain hover. Clicks that focus a pane, drag a selection, or double-click never open; Ctrl+click always does. In panes whose app captures the mouse, such as Claude Code, the app still receives the click."
         },
         {
           "key": "ui.host_cursor",

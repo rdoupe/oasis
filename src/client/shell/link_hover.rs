@@ -15,11 +15,11 @@ pub(super) struct LinkHoverTarget {
 }
 
 impl LinkHoverTarget {
-    fn same_content(&self, other: &Self) -> bool {
+    /// Same pane geometry and scroll position, whatever the content revision.
+    fn same_place(&self, other: &Self) -> bool {
         self.pane_id == other.pane_id
             && self.inner_rect == other.inner_rect
             && self.source_rect == other.source_rect
-            && self.content_revision == other.content_revision
             && self.offset_from_bottom == other.offset_from_bottom
     }
 }
@@ -68,21 +68,112 @@ impl ClientShellState {
                 .any(|hit| hit.pane_id == target.pane_id && hit.inner_rect == target.inner_rect)
     }
 
+    /// Keeps a hover across redraws of its pane. Agent UIs redraw constantly, so
+    /// a new content revision keeps the underline shown and re-resolves it; only
+    /// a moved, resized, scrolled or closed pane drops it.
     pub(super) fn invalidate_link_hover(&mut self) {
-        if self
-            .link_hover
-            .as_ref()
-            .is_some_and(|hover| !self.link_hover_target_current(&hover.target))
-        {
-            self.clear_link_hover();
+        let Some(hover) = self.link_hover.as_ref() else {
+            return;
+        };
+        if self.link_hover_target_current(&hover.target) {
+            return;
+        }
+        let revision = self.pane_surface.as_ref().and_then(|surface| {
+            surface
+                .panes
+                .iter()
+                .find(|pane| {
+                    pane.pane_id == hover.target.pane_id
+                        && pane.inner_rect == hover.target.source_rect
+                        && pane.scroll.map(|scroll| scroll.offset_from_bottom)
+                            == hover.target.offset_from_bottom
+                })
+                .map(|pane| pane.content_revision)
+        });
+        let retargeted = revision.map(|content_revision| LinkHoverTarget {
+            content_revision,
+            ..hover.target.clone()
+        });
+        match retargeted.filter(|target| self.link_hover_target_current(target)) {
+            Some(target) => self.retarget_link_hover(target),
+            None => {
+                self.clear_link_hover();
+            }
         }
     }
 
-    pub(super) fn update_link_hover(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
-        if mouse.kind != MouseEventKind::Moved
-            || !mouse.modifiers.contains(KeyModifiers::CONTROL)
-            || !self.link_hover_allowed()
+    /// Points the hover at a newer content revision of the same place, keeping
+    /// its regions until a resolve says otherwise.
+    fn retarget_link_hover(&mut self, target: LinkHoverTarget) {
+        let explicit = self.explicit_link_regions(&target);
+        let Some(hover) = self.link_hover.as_mut() else {
+            return;
+        };
+        let pointer_moved = hover.target.row != target.row || hover.target.col != target.col;
+        if !pointer_moved {
+            if hover.target.content_revision == target.content_revision {
+                return;
+            }
+        } else {
+            hover.target.row = target.row;
+            hover.target.col = target.col;
+        }
+        hover.target.content_revision = target.content_revision;
+        match explicit {
+            Some(regions) => {
+                hover.regions = regions;
+                hover.resolved = true;
+            }
+            // An odd revision is mid-update: resolve once the pane settles.
+            None => hover.resolved = !target.content_revision.is_multiple_of(2),
+        }
+    }
+
+    /// Whether a hover is waiting to be resolved and nothing is in flight.
+    pub(super) fn link_hover_resolve_due(&self) -> bool {
+        self.link_hover
+            .as_ref()
+            .is_some_and(|hover| !hover.resolved)
+            && !self
+                .pending_requests
+                .values()
+                .any(|pending| matches!(pending.kind, PendingEndpointKind::PaneLinkResolve { .. }))
+    }
+
+    /// Issues the resolve a redraw left pending. One-shot: a request is sent,
+    /// or the hover is settled or dropped, so this never re-arms itself.
+    pub(crate) fn tick_link_hover(&mut self, outcome: &mut ClientShellInput) {
+        if !self.link_hover_resolve_due() {
+            return;
+        }
+        if self
+            .link_hover
+            .as_ref()
+            .is_some_and(|hover| self.link_hover_target_current(&hover.target))
         {
+            self.request_link_hover(outcome);
+            if let Some(hover) = self.link_hover.as_mut() {
+                if !hover.resolved
+                    && !self.pending_requests.values().any(|pending| {
+                        matches!(pending.kind, PendingEndpointKind::PaneLinkResolve { .. })
+                    })
+                {
+                    hover.resolved = true;
+                }
+            }
+        } else {
+            outcome.repaint |= self.clear_link_hover();
+        }
+    }
+
+    /// Whether a plain (unmodified) hover may underline in this pane: the
+    /// same rule as a plain click opening it.
+    fn plain_hover_allowed(&self, pane_id: &str) -> bool {
+        self.plain_click_may_open(pane_id)
+    }
+
+    pub(super) fn update_link_hover(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
+        if mouse.kind != MouseEventKind::Moved || !self.link_hover_allowed() {
             outcome.repaint |= self.clear_link_hover();
             return;
         }
@@ -95,6 +186,12 @@ impl ClientShellState {
             outcome.repaint |= self.clear_link_hover();
             return;
         };
+        let wanted = mouse.modifiers.contains(KeyModifiers::CONTROL)
+            || (mouse.modifiers.is_empty() && self.plain_hover_allowed(&hit.pane_id));
+        if !wanted {
+            outcome.repaint |= self.clear_link_hover();
+            return;
+        }
         let Some(pane) = self.pane_surface.as_ref().and_then(|surface| {
             surface
                 .panes
@@ -113,19 +210,30 @@ impl ClientShellState {
             row: mouse.row.saturating_sub(hit.inner_rect.y),
             col: mouse.column.saturating_sub(hit.inner_rect.x),
         };
-        if !self.link_hover_target_current(&target) || !target.content_revision.is_multiple_of(2) {
+        if !self.link_hover_target_current(&target) {
             outcome.repaint |= self.clear_link_hover();
             return;
         }
         if self.link_hover.as_ref().is_some_and(|hover| {
-            hover.target.same_content(&target)
-                && (hover.target == target
+            hover.target.same_place(&target)
+                && ((hover.target.row == target.row && hover.target.col == target.col)
                     || hover
                         .regions
                         .iter()
                         .any(|region| region_contains(region, target.col, target.row)))
         }) {
+            // Still over the same link: keep the underline, follow redraws.
+            let mut keep = target;
+            if let Some(hover) = self.link_hover.as_ref() {
+                keep.row = hover.target.row;
+                keep.col = hover.target.col;
+            }
+            self.retarget_link_hover(keep);
             self.request_link_hover(outcome);
+            return;
+        }
+        if !target.content_revision.is_multiple_of(2) {
+            outcome.repaint |= self.clear_link_hover();
             return;
         }
         outcome.repaint |= self.clear_link_hover();
@@ -192,7 +300,24 @@ impl ClientShellState {
             .as_ref()
             .err()
             .is_some_and(|error| error.code.as_deref() == Some("endpoint_cancelled"));
+        let stale = result
+            .as_ref()
+            .err()
+            .is_some_and(|error| error.code.as_deref() == Some("stale_content"));
         let mut outcome = ClientShellInput::default();
+        if stale {
+            // The pane redrew while the request was in flight. Keep what is
+            // shown; the next surface for the new revision re-resolves it.
+            if let Some(hover) = self
+                .link_hover
+                .as_mut()
+                .filter(|hover| hover.target == target)
+            {
+                hover.resolved = true;
+            }
+            self.request_link_hover(&mut outcome);
+            return (outcome.repaint, outcome.actions);
+        }
         if self.link_hover_target_current(&target)
             && self
                 .link_hover
