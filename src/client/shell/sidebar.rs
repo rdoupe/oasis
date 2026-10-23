@@ -51,14 +51,28 @@ pub(in crate::client::shell) fn render_sidebar_footer(
     let palette = &config.palette;
     let base = Style::default().fg(palette.overlay0);
     let right = footer.right().saturating_sub(1);
-    let x = super::render::put_segment(buffer, footer.x, footer.y, right, " 🌴 oasis", base);
     let leader = config.keybinds.primary_prefix_label();
-    let hint_width = super::render::display_width(&leader) + " leader ".len() as u16;
-    if x.saturating_add(hint_width) < right {
-        let key_x = right - hint_width;
-        let after = super::render::put_segment(
+    let hint_width = "leader: ".len() as u16 + super::render::display_width(&leader) + 1;
+    // A narrow sidebar drops the name before it drops the leader hint.
+    let full_mark = " 🌴 oasis";
+    let mark = if footer.x + super::render::display_width(full_mark) + hint_width < right {
+        full_mark
+    } else {
+        " 🌴"
+    };
+    let x = super::render::put_segment(buffer, footer.x, footer.y, right, mark, base);
+    if x.saturating_add(hint_width) <= right {
+        let label_end = super::render::put_segment(
             buffer,
-            key_x,
+            right - hint_width,
+            footer.y,
+            right,
+            "leader: ",
+            base,
+        );
+        super::render::put_segment(
+            buffer,
+            label_end,
             footer.y,
             right,
             &leader,
@@ -66,7 +80,6 @@ pub(in crate::client::shell) fn render_sidebar_footer(
                 .fg(palette.accent)
                 .add_modifier(Modifier::BOLD),
         );
-        super::render::put_segment(buffer, after, footer.y, right, " leader ", base);
     }
 }
 

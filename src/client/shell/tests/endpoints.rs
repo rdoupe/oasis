@@ -3035,8 +3035,20 @@ fn expanded_sidebar_footer_shows_the_leader_key_and_collapse_toggle() {
         let footer = (0..toggle.x)
             .map(|x| buffer[(x, toggle.y)].symbol())
             .collect::<String>();
-        assert!(footer.contains("oasis"), "{footer:?}");
-        assert!(footer.contains("ctrl+b leader"), "{footer:?}");
+        assert!(footer.contains("🌴"), "{footer:?}");
+        assert!(footer.contains("leader: ctrl+b"), "{footer:?}");
         assert_eq!(buffer[(toggle.x, toggle.y)].symbol(), "«");
+
+        state.sidebar_width = 36;
+        state.sidebar_width_manual = true;
+        state.invalidate_pane_surface();
+        let frame = state.compose(100, 28).expect("wide sidebar");
+        let buffer = frame.to_ratatui_buffer().expect("sidebar buffer");
+        let toggle = state.hits.sidebar_toggle;
+        let footer = (0..toggle.x)
+            .map(|x| buffer[(x, toggle.y)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("oasis"), "{footer:?}");
+        assert!(footer.contains("leader: ctrl+b"), "{footer:?}");
     }
 }
