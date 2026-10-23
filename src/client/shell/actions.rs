@@ -662,10 +662,17 @@ impl ClientShellState {
                 return self.complete_word_selection_row(pane_id, absolute_row, generation, result);
             }
             PendingEndpointKind::PaneLinkActivate {
+                endpoint_id,
                 pane_id,
                 inner_rect,
                 fallback_events,
             } => {
+                tracing::info!(
+                    endpoint = %endpoint_id.storage_key(),
+                    pane_id = %pane_id,
+                    success = result.is_ok(),
+                    "pane link activation completed"
+                );
                 let completed_before_release = !fallback_events.iter().any(|event| {
                     event.kind
                         == crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)
@@ -702,6 +709,15 @@ impl ClientShellState {
                     }) if crate::app::actions::safe_web_url(&url).is_some() && replay.is_some() => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, vec![ClientShellAction::OpenSafeWebUrl(url)])
+                    }
+                    Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+                        url: Some(path),
+                        handled: false,
+                    }) if endpoint_id.is_local()
+                        && crate::app::actions::safe_local_open_target(&path).is_some() =>
+                    {
+                        self.url_click_consumes_until_up = completed_before_release;
+                        (false, vec![ClientShellAction::OpenSafeLocalPath(path)])
                     }
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated { .. }) => {
                         (false, replay_action(replay))

@@ -331,11 +331,13 @@ impl App {
         id: String,
         params: PaneLinkActivateParams,
     ) -> String {
+        let parsed_pane_id = self
+            .parse_pane_id(&params.pane_id)
+            .map(|(_, pane_id)| pane_id);
         let (pane_id, url) =
             match self.read_checked_pane_link(&id, &params, "activation", |runtime, col, row| {
-                runtime
-                    .link_target_at(col, row)
-                    .and_then(crate::app::actions::url_from_link_target)
+                let pane_id = parsed_pane_id?;
+                crate::app::actions::link_or_local_path_at_runtime_cell(runtime, pane_id, col, row)
             }) {
                 Ok(value) => value,
                 Err(error) => return error,
@@ -941,6 +943,54 @@ action = "open"
             "activation must not write to the PTY"
         );
         std::fs::remove_dir_all(root).expect("remove test plugin");
+    }
+
+    #[tokio::test]
+    async fn pane_link_activation_reports_existing_local_paths() {
+        let mut app = test_app();
+        app.state.workspaces = vec![crate::workspace::Workspace::test_new("local-path")];
+        app.state.ensure_test_terminals();
+        app.state.active = Some(0);
+        let pane_id = app.state.workspaces[0].tabs[0].root_pane;
+        let public_id = app.public_pane_id(0, pane_id).unwrap();
+        let terminal_id = app.state.workspaces[0].tabs[0].panes[&pane_id]
+            .attached_terminal_id
+            .clone();
+        let root = unique_temp_path("local-path-link");
+        let file = root.join("render.png");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&file, b"png").unwrap();
+        let (dir, name) = (format!("{}/", root.display()), "render.png");
+        let (runtime, _rx) = crate::terminal::TerminalRuntime::test_with_channel(120, 4);
+        runtime.test_process_pty_bytes(
+            format!("open {}\r\nsplit {dir}\r\n{name} end\r\n", file.display()).as_bytes(),
+        );
+        app.terminal_runtimes.insert(terminal_id, runtime);
+        let mut activate = |viewport_row, col| {
+            let response = app.handle_pane_link_activate(
+                "click".into(),
+                PaneLinkActivateParams {
+                    pane_id: public_id.clone(),
+                    viewport_row,
+                    col,
+                    content_revision: None,
+                    offset_from_bottom: None,
+                },
+            );
+            match response_result(&response) {
+                ResponseResult::PaneLinkActivated { url, handled } => {
+                    assert!(!handled);
+                    url
+                }
+                other => panic!("unexpected response {other:?}"),
+            }
+        };
+        let expected = Some(file.to_string_lossy().into_owned());
+
+        assert_eq!(activate(0, 8), expected, "single-row absolute path");
+        assert_eq!(activate(2, 2), expected, "hard-wrapped continuation row");
+        assert_eq!(activate(0, 1), None, "plain word");
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     fn test_app() -> App {

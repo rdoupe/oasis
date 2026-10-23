@@ -186,6 +186,47 @@ fn ctrl_click_routes_link_activation_through_endpoint_then_client_host() {
 }
 
 #[test]
+fn ctrl_click_routes_existing_local_path_to_the_client_host() {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.hits.panes[0].clone();
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x + 2,
+        row: pane.inner_rect.y + 1,
+        modifiers: KeyModifiers::CONTROL,
+    };
+    let activate = state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    let request_id = match &activate.actions[..] {
+        [ClientShellAction::Endpoint { request, .. }] => request.id.clone(),
+        _ => panic!("expected link activation request"),
+    };
+    let path = std::env::temp_dir().join(format!(
+        "herdr-client-media-link-test-{}.png",
+        std::process::id()
+    ));
+    std::fs::write(&path, b"not decoded during link validation").unwrap();
+
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        &request_id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+            url: Some(path.to_string_lossy().into_owned()),
+            handled: false,
+        }),
+    );
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::OpenSafeLocalPath(selected)]
+            if selected == path.to_str().unwrap()
+    ));
+
+    std::fs::remove_file(path).unwrap();
+}
+
+#[test]
 fn ctrl_click_without_a_link_replays_the_original_gesture() {
     let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
     state.set_snapshot(Box::new(snapshot()));

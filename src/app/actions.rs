@@ -1041,6 +1041,7 @@ impl AppState {
     }
 }
 
+#[cfg(test)]
 pub(super) fn url_from_link_target(target: crate::ghostty::LinkTarget) -> Option<String> {
     match target {
         crate::ghostty::LinkTarget::Uri(uri) => Some(uri),
@@ -1052,6 +1053,356 @@ pub(super) fn url_from_link_target(target: crate::ghostty::LinkTarget) -> Option
 
 pub(crate) fn safe_web_url(url: &str) -> Option<&str> {
     (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+}
+
+/// Resolves the clicked link target to a safe web URL or, failing that, an
+/// existing local file or directory.
+pub(super) fn link_or_local_path_at_runtime_cell(
+    runtime: &crate::terminal::TerminalRuntime,
+    pane_id: PaneId,
+    col: u16,
+    row: u16,
+) -> Option<String> {
+    match runtime.link_target_at(col, row) {
+        Some(crate::ghostty::LinkTarget::Uri(uri)) => Some(uri),
+        Some(crate::ghostty::LinkTarget::Text { text, clicked_byte }) => {
+            url_at_byte(&text, clicked_byte)
+                .map(str::to_owned)
+                .or_else(|| {
+                    local_path_at_runtime_cell(
+                        runtime,
+                        pane_id,
+                        col,
+                        row,
+                        Some((&text, clicked_byte)),
+                    )
+                })
+        }
+        None => local_path_at_runtime_cell(runtime, pane_id, col, row, None),
+    }
+}
+
+/// Resolves an existing local file or directory under the clicked viewport cell.
+/// Each viewport row is read separately so table columns and hard-wrapped paths
+/// can be joined across rows; `logical_line` is the soft-wrap-joined line Ghostty
+/// reported for the click, with the clicked byte.
+fn local_path_at_runtime_cell(
+    runtime: &crate::terminal::TerminalRuntime,
+    pane_id: PaneId,
+    col: u16,
+    row: u16,
+    logical_line: Option<(&str, usize)>,
+) -> Option<String> {
+    let (height, width) = runtime.current_size();
+    if row >= height || col >= width {
+        return None;
+    }
+    // Without a known cwd only absolute paths resolve: relative joins stay
+    // relative and safe_local_open_target rejects them.
+    let cwd = runtime
+        .foreground_cwd()
+        .or_else(|| runtime.cwd())
+        .unwrap_or_default();
+    let metrics = runtime.scroll_metrics();
+    let rows = (0..height)
+        .map(|viewport_row| {
+            let absolute = crate::selection::absolute_row_for_viewport(viewport_row, metrics);
+            runtime
+                .extract_selection(&crate::selection::Selection::line_range(
+                    pane_id,
+                    absolute,
+                    absolute,
+                    width.saturating_sub(1),
+                ))
+                .unwrap_or_default()
+                .replace('\n', " ")
+        })
+        .collect::<Vec<_>>();
+    let visible_text = rows.join("\n");
+    let clicked_row = usize::from(row);
+    resolved_table_path_at_visible_cell(&visible_text, clicked_row, col, &cwd)
+        .or_else(|| {
+            resolved_hard_wrapped_path_at_visible_cell(&visible_text, clicked_row, col, &cwd)
+        })
+        .or_else(|| {
+            let (line, clicked_byte) = logical_line?;
+            let logical_col = display_width(line.get(..clicked_byte)?);
+            resolved_local_path_at_column(line, logical_col, &cwd)
+        })
+        .or_else(|| resolved_local_path_at_column(&rows[clicked_row], col, &cwd))
+}
+
+pub(crate) fn safe_local_open_target(path: &str) -> Option<std::path::PathBuf> {
+    let file_uri_path = path
+        .starts_with("file://")
+        .then(|| crate::pane::parse_file_uri_cwd(path))
+        .flatten();
+    let path = file_uri_path
+        .as_deref()
+        .unwrap_or_else(|| std::path::Path::new(path));
+    if !path.is_absolute() {
+        return None;
+    }
+    let metadata = path.metadata().ok()?;
+    if metadata.is_dir() {
+        return Some(path.to_path_buf());
+    }
+    if !metadata.is_file() {
+        return None;
+    }
+    if local_file_is_executable(path, &metadata) {
+        return path.parent().map(std::path::Path::to_path_buf);
+    }
+    Some(path.to_path_buf())
+}
+
+#[cfg(unix)]
+fn local_file_is_executable(_path: &std::path::Path, metadata: &std::fs::Metadata) -> bool {
+    use std::os::unix::fs::PermissionsExt;
+    metadata.permissions().mode() & 0o111 != 0
+}
+
+#[cfg(not(unix))]
+fn local_file_is_executable(path: &std::path::Path, _metadata: &std::fs::Metadata) -> bool {
+    path.extension()
+        .and_then(std::ffi::OsStr::to_str)
+        .is_some_and(|extension| {
+            ["bat", "cmd", "com", "exe"]
+                .iter()
+                .any(|candidate| extension.eq_ignore_ascii_case(candidate))
+        })
+}
+
+fn resolved_local_path_at_column(row: &str, col: u16, cwd: &std::path::Path) -> Option<String> {
+    let candidate = local_path_at_column(row, col)?;
+    let expanded = crate::worktree::expand_tilde_path(candidate);
+    let candidate = expanded.as_path();
+    let resolved = if candidate.is_absolute() {
+        candidate.to_path_buf()
+    } else {
+        cwd.join(candidate)
+    };
+    safe_local_open_target(resolved.to_str()?)?;
+    Some(resolved.to_string_lossy().into_owned())
+}
+
+fn local_path_at_column(row: &str, col: u16) -> Option<&str> {
+    let cells = text_cells(row);
+    let clicked_idx = cell_index_at_column(&cells, col)?;
+    let span = quoted_path_span_at_column(&cells, clicked_idx)
+        .or_else(|| token_span_at_column(&cells, clicked_idx))?;
+    let start_byte = byte_index_for_cell(row, span.start);
+    let end_byte = byte_index_after_cell(row, span.end);
+    row.get(start_byte..end_byte)
+}
+
+fn resolved_table_path_at_visible_cell(
+    visible_text: &str,
+    clicked_row: usize,
+    clicked_col: u16,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    let rows = visible_text.lines().collect::<Vec<_>>();
+    let clicked = rows.get(clicked_row)?;
+    cell_index_at_column(&text_cells(clicked), clicked_col)?;
+
+    let (record_start, column_start, column_end) = (0..clicked_row).rev().find_map(|row| {
+        table_rule_column_at(rows[row], clicked_col)
+            .map(|(start, end)| (row.saturating_add(1), start, end))
+    })?;
+    let record_end = (clicked_row.saturating_add(1)..rows.len())
+        .find(|row| table_rule_column_at(rows[*row], clicked_col).is_some())
+        .unwrap_or(rows.len());
+    if clicked_row < record_start || clicked_row >= record_end {
+        return None;
+    }
+
+    let mut path = String::new();
+    let mut started = false;
+    let mut depth = 0usize;
+    let mut start_position = None;
+    let mut end_position = None;
+    for (row_index, row) in rows.iter().enumerate().take(record_end).skip(record_start) {
+        let segment = text_in_columns(row, column_start, column_end);
+        let segment = segment.trim();
+        for (char_index, ch) in segment.char_indices() {
+            if !started {
+                if ch == '(' {
+                    started = true;
+                    depth = 1;
+                    start_position = Some((row_index, display_width(&segment[..char_index])));
+                }
+                continue;
+            }
+            match ch {
+                '(' => {
+                    depth = depth.saturating_add(1);
+                    path.push(ch);
+                }
+                ')' => {
+                    depth = depth.saturating_sub(1);
+                    if depth == 0 {
+                        end_position = Some((row_index, display_width(&segment[..char_index])));
+                        break;
+                    }
+                    path.push(ch);
+                }
+                _ => path.push(ch),
+            }
+        }
+        if end_position.is_some() {
+            break;
+        }
+    }
+
+    let ((start_row, start_offset), (end_row, end_offset)) = (start_position?, end_position?);
+    let clicked_offset = clicked_col.saturating_sub(column_start);
+    let after_start = clicked_row > start_row || clicked_offset > start_offset;
+    let before_end = clicked_row < end_row || clicked_offset < end_offset;
+    if !after_start || !before_end || path.is_empty() {
+        return None;
+    }
+
+    let expanded = crate::worktree::expand_tilde_path(&path);
+    let resolved = if expanded.is_absolute() {
+        expanded
+    } else {
+        cwd.join(expanded)
+    };
+    safe_local_open_target(resolved.to_str()?)?;
+    Some(resolved.to_string_lossy().into_owned())
+}
+
+fn table_rule_column_at(row: &str, col: u16) -> Option<(u16, u16)> {
+    let cells = text_cells(row);
+    let mut start = 0usize;
+    while start < cells.len() {
+        if !is_table_rule_cell(cells[start].ch) {
+            start += 1;
+            continue;
+        }
+        let mut end = start;
+        while end + 1 < cells.len() && is_table_rule_cell(cells[end + 1].ch) {
+            end += 1;
+        }
+        let span = CellSpan { start, end };
+        let (start_col, end_col) = span.columns(&cells);
+        if end.saturating_sub(start) >= 2 && col >= start_col && col <= end_col {
+            return Some((start_col, end_col));
+        }
+        start = end.saturating_add(1);
+    }
+    None
+}
+
+fn is_table_rule_cell(ch: char) -> bool {
+    matches!(ch, '━' | '─' | '═' | '╌' | '╍')
+}
+
+fn text_in_columns(row: &str, start_col: u16, end_col: u16) -> String {
+    text_cells(row)
+        .into_iter()
+        .filter(|cell| cell.start_col >= start_col && cell.end_col <= end_col)
+        .map(|cell| cell.ch)
+        .collect()
+}
+
+fn display_width(text: &str) -> u16 {
+    text.chars()
+        .map(|ch| u16::from(crate::ghostty::unicode_codepoint_width(ch as u32)))
+        .fold(0u16, u16::saturating_add)
+}
+
+fn resolved_hard_wrapped_path_at_visible_cell(
+    visible_text: &str,
+    clicked_row: usize,
+    clicked_col: u16,
+    cwd: &std::path::Path,
+) -> Option<String> {
+    const MAX_JOINED_ROWS: usize = 6;
+
+    let rows = visible_text.lines().collect::<Vec<_>>();
+    let clicked = rows.get(clicked_row)?;
+    let clicked_fragment = local_path_at_column(clicked, clicked_col)?;
+    let clicked_fragment = trim_path_fragment(clicked_fragment);
+    if clicked_fragment.is_empty() {
+        return None;
+    }
+
+    let first_row = clicked_row.saturating_sub(MAX_JOINED_ROWS - 1);
+    let last_row = clicked_row
+        .saturating_add(MAX_JOINED_ROWS - 1)
+        .min(rows.len().saturating_sub(1));
+    for start_row in (first_row..=clicked_row).rev() {
+        let Some(first) = rows[start_row]
+            .split_whitespace()
+            .next_back()
+            .map(trim_path_fragment)
+            .filter(|fragment| path_can_start(fragment))
+        else {
+            continue;
+        };
+        let selected_fragment = if start_row == clicked_row {
+            first
+        } else {
+            rows[clicked_row]
+                .split_whitespace()
+                .next()
+                .map(trim_path_fragment)?
+        };
+        if selected_fragment != clicked_fragment {
+            continue;
+        }
+        let mut candidate = first.to_owned();
+        for (end_row, row_text) in rows.iter().enumerate().take(last_row + 1).skip(start_row) {
+            if end_row > start_row {
+                let Some(fragment) = row_text
+                    .split_whitespace()
+                    .next()
+                    .map(trim_path_fragment)
+                    .filter(|fragment| !fragment.is_empty())
+                else {
+                    break;
+                };
+                candidate.push_str(fragment);
+            }
+            if end_row < clicked_row || start_row > clicked_row {
+                continue;
+            }
+            if end_row < last_row && candidate.ends_with(['/', '-']) {
+                continue;
+            }
+            let expanded = crate::worktree::expand_tilde_path(trim_path_fragment(&candidate));
+            let resolved = if expanded.is_absolute() {
+                expanded
+            } else {
+                cwd.join(expanded)
+            };
+            if safe_local_open_target(resolved.to_str()?).is_some() {
+                return Some(resolved.to_string_lossy().into_owned());
+            }
+        }
+    }
+    None
+}
+
+fn trim_path_fragment(fragment: &str) -> &str {
+    fragment
+        .trim_matches(|ch| {
+            matches!(
+                ch,
+                '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\'' | '`' | ',' | ';' | '!'
+            )
+        })
+        .trim_end_matches(['.', ':', '?'])
+}
+
+fn path_can_start(fragment: &str) -> bool {
+    fragment.starts_with('/')
+        || fragment.starts_with("./")
+        || fragment.starts_with("../")
+        || fragment.starts_with("~/")
+        || (fragment.contains('/') && !fragment.contains("://"))
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2565,6 +2916,205 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+    }
+
+    #[test]
+    fn local_path_at_column_recognizes_files_and_directories() {
+        let selected_path = |row: &str, click: &str| {
+            local_path_at_column(row, col_of(row, click)).map(str::to_owned)
+        };
+
+        assert_eq!(
+            selected_path("open /tmp/render.png", "render"),
+            Some("/tmp/render.png".into())
+        );
+        assert_eq!(
+            selected_path("open ./docs/README.md", "README"),
+            Some("./docs/README.md".into())
+        );
+        assert_eq!(
+            selected_path("open ./clips/demo.MP4", "demo"),
+            Some("./clips/demo.MP4".into())
+        );
+        assert_eq!(
+            selected_path("open \"/tmp/render output/frame 1.jpg\"", "frame"),
+            Some("/tmp/render output/frame 1.jpg".into())
+        );
+        assert_eq!(
+            selected_path("edit ./src/app/actions.rs", "actions"),
+            Some("./src/app/actions.rs".into())
+        );
+        assert_eq!(selected_path("version 1.2.3", "1.2"), Some("1.2.3".into()));
+    }
+
+    #[test]
+    fn safe_local_open_target_handles_files_directories_and_executables() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-local-link-test-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let image = root.join("frame.png");
+        let text = root.join("notes.md");
+        std::fs::write(&image, b"not decoded during link validation").unwrap();
+        std::fs::write(&text, b"notes").unwrap();
+
+        assert_eq!(
+            safe_local_open_target(image.to_str().unwrap()),
+            Some(image.clone())
+        );
+        assert_eq!(
+            safe_local_open_target(text.to_str().unwrap()),
+            Some(text.clone())
+        );
+        assert_eq!(
+            safe_local_open_target(&format!("file://{}", text.display())),
+            Some(text.clone())
+        );
+        assert_eq!(
+            safe_local_open_target(root.to_str().unwrap()),
+            Some(root.clone())
+        );
+        assert_eq!(safe_local_open_target("relative.png"), None);
+        assert_eq!(
+            safe_local_open_target(root.join("missing.mp4").to_str().unwrap()),
+            None
+        );
+        assert_eq!(
+            resolved_local_path_at_column("open ./notes.md", 8, &root),
+            Some(root.join("./notes.md").to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            resolved_local_path_at_column("open ./frame.png", 8, &root),
+            Some(root.join("./frame.png").to_string_lossy().into_owned())
+        );
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let executable = root.join("herdr");
+            std::fs::write(&executable, b"binary placeholder").unwrap();
+            std::fs::set_permissions(&executable, std::fs::Permissions::from_mode(0o755)).unwrap();
+            assert_eq!(
+                safe_local_open_target(executable.to_str().unwrap()),
+                Some(root.clone())
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn wrapped_local_path_uses_one_logical_token() {
+        let row = "open /tmp/a-very-long-directory/README.md";
+        let clicked_byte = row.find("README").unwrap();
+        let logical_col = display_width(&row[..clicked_byte]);
+
+        assert_eq!(logical_col, col_of(row, "README"));
+        assert_eq!(
+            local_path_at_column(row, logical_col),
+            Some("/tmp/a-very-long-directory/README.md")
+        );
+    }
+
+    #[test]
+    fn table_wrapped_parenthesized_path_reconstructs_one_column() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-table-path-test-{}", std::process::id()));
+        let video = root
+            .join("omarchy-doctrine")
+            .join("dist")
+            .join("omarchy-doctrine.mp4");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"video fixture").unwrap();
+        let table = concat!(
+            "  Time        Screensaver preview        Format / version\n",
+            "  ━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━  ━━━━━━━━━━━━━━━━━━━━━━━━━\n",
+            "   21:39:02    Omarchy Doctrine —         Full graphics, Star\n",
+            "               opening crawl (omarchy-    Wars-style · 96s\n",
+            "               doctrine/dist/omarchy-\n",
+            "               doctrine.mp4)\n",
+            "  ──────────  ─────────────────────────  ─────────────────────────\n",
+        );
+        let rows = table.lines().collect::<Vec<_>>();
+
+        for clicked_row in [4usize, 5usize] {
+            let clicked_col = col_of(rows[clicked_row], "doctrine");
+            assert_eq!(
+                resolved_table_path_at_visible_cell(table, clicked_row, clicked_col, &root),
+                Some(video.to_string_lossy().into_owned())
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prose_hard_wrapped_path_reconstructs_across_rows() {
+        let root =
+            std::env::temp_dir().join(format!("herdr-hard-wrap-test-{}", std::process::id()));
+        let document = root.join("LOCAL-DEPLOYMENT.md");
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(&document, b"deployment notes").unwrap();
+        let prefix = format!("Deployment documented in {}/LOCAL-", root.display());
+        let visible = format!("{prefix}\n  DEPLOYMENT.md.\n");
+        let rows = visible.lines().collect::<Vec<_>>();
+
+        assert_eq!(
+            resolved_hard_wrapped_path_at_visible_cell(
+                &visible,
+                0,
+                col_of(rows[0], "LOCAL"),
+                std::path::Path::new("/"),
+            ),
+            Some(document.to_string_lossy().into_owned())
+        );
+        assert_eq!(
+            resolved_hard_wrapped_path_at_visible_cell(
+                &visible,
+                1,
+                col_of(rows[1], "DEPLOYMENT"),
+                std::path::Path::new("/"),
+            ),
+            Some(document.to_string_lossy().into_owned())
+        );
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn prose_hard_wrapped_bare_relative_media_path_reconstructs_across_rows() {
+        let root = std::env::temp_dir().join(format!(
+            "herdr-relative-hard-wrap-test-{}",
+            std::process::id()
+        ));
+        let video = root
+            .join("omarchy-dangerous-gfx/dist/build.aIifVV9Y")
+            .join("zelda-omarchy-usb-animated.mp4");
+        std::fs::create_dir_all(video.parent().unwrap()).unwrap();
+        std::fs::write(&video, b"video fixture").unwrap();
+        let visible = concat!(
+            "Square-logo USB version (omarchy-dangerous-gfx/dist/\n",
+            "  build.aIifVV9Y/zelda-omarchy-usb-animated.mp4)\n",
+        );
+        let rows = visible.lines().collect::<Vec<_>>();
+
+        for clicked_row in [0usize, 1usize] {
+            let click = if clicked_row == 0 {
+                "omarchy-dangerous"
+            } else {
+                "zelda-omarchy"
+            };
+            assert_eq!(
+                resolved_hard_wrapped_path_at_visible_cell(
+                    visible,
+                    clicked_row,
+                    col_of(rows[clicked_row], click),
+                    &root,
+                ),
+                Some(video.to_string_lossy().into_owned())
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

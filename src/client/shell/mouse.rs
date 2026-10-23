@@ -963,6 +963,13 @@ impl ClientShellState {
             {
                 let viewport_row = mouse.row.saturating_sub(hit.inner_rect.y);
                 let col = mouse.column.saturating_sub(hit.inner_rect.x);
+                tracing::info!(
+                    pane_id = %hit.pane_id,
+                    viewport_row,
+                    col,
+                    endpoint = %self.active_endpoint_id.storage_key(),
+                    "requesting pane link activation for control-click"
+                );
                 let content_revision = self
                     .pane_surface
                     .as_ref()
@@ -988,6 +995,7 @@ impl ClientShellState {
                         },
                     ),
                     PendingEndpointKind::PaneLinkActivate {
+                        endpoint_id: self.active_endpoint_id.clone(),
                         pane_id,
                         inner_rect: hit.inner_rect,
                         fallback_events: vec![mouse],

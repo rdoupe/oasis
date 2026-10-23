@@ -662,7 +662,7 @@ fn sanitized_osc_debug_payload(payload: &[u8]) -> String {
     sanitized
 }
 
-fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
+pub(crate) fn parse_file_uri_cwd(uri: &str) -> Option<PathBuf> {
     let rest = uri.strip_prefix("file://")?;
     let path = if rest.starts_with('/') {
         rest

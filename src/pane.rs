@@ -43,6 +43,7 @@ use self::agent_detection::{
     QUIET_DETECTION_PARK,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
+pub(crate) use self::osc::parse_file_uri_cwd;
 #[cfg(test)]
 pub(crate) use self::terminal::test_encode_key_for_app;
 #[cfg(unix)]

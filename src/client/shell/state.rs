@@ -248,6 +248,7 @@ pub(crate) enum ClientShellAction {
     },
     ClipboardWrite(Vec<u8>),
     OpenSafeWebUrl(String),
+    OpenSafeLocalPath(String),
     ActivateEndpoint {
         endpoint_id: ClientEndpointId,
         target: Option<ClientEndpointFocusTarget>,
@@ -656,6 +657,7 @@ pub(super) enum PendingEndpointKind {
         target: super::link_hover::LinkHoverTarget,
     },
     PaneLinkActivate {
+        endpoint_id: ClientEndpointId,
         pane_id: String,
         inner_rect: Rect,
         fallback_events: Vec<crossterm::event::MouseEvent>,

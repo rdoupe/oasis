@@ -451,6 +451,7 @@ fn cancelled_link_activation_does_not_replay_mouse_input() {
             offset_from_bottom: None,
         }),
         PendingEndpointKind::PaneLinkActivate {
+            endpoint_id: ClientEndpointId::Local,
             pane_id,
             inner_rect,
             fallback_events: vec![MouseEvent {

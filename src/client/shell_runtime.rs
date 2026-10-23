@@ -55,6 +55,17 @@ pub(super) fn dispatch_client_shell_actions(
                     }
                 }
             }
+            shell::ClientShellAction::OpenSafeLocalPath(path) => {
+                if let Some(target) = crate::app::actions::safe_local_open_target(&path) {
+                    match crate::platform::open_url(&target.to_string_lossy()) {
+                        Ok(Some(child)) => detached_process_children.push(child),
+                        Ok(None) => {}
+                        Err(err) => {
+                            warn!(err = %err, path = %path, "failed to open pane local path")
+                        }
+                    }
+                }
+            }
             shell::ClientShellAction::ReplayMouse(events) => replay_mouse.extend(events),
             shell::ClientShellAction::Keybind(action) => {
                 debug!(
