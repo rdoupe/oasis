@@ -91,6 +91,11 @@ pub enum AppEvent {
     },
     /// The current Codex input screen is visible during managed startup.
     CodexPromptObserved { pane_id: PaneId, ready: bool },
+    /// The agent's footer shows a different set of background work.
+    BackgroundActivityObserved {
+        pane_id: PaneId,
+        activity: crate::detect::activity::BackgroundActivity,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,

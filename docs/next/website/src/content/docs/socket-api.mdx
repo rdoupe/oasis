@@ -724,6 +724,8 @@ If no native session reference is stored, the field is omitted.
 
 `PaneInfo` and `AgentInfo` expose optional `terminal_title` and `terminal_title_stripped` fields. `terminal_title` is the latest OSC 0/2 title after safety normalization. `terminal_title_stripped` removes one recognized leading activity or spinner glyph and following whitespace. These server-owned values are ephemeral across a cold restart and are independent of the metadata `title` and semantic agent state.
 
+`PaneInfo` and `AgentInfo` also expose an optional `background_activity` object with `shells`, `monitors`, `agents` and `mcp_tasks` counts (omitted when zero) and `loop_next`, the next scheduled wakeup as the agent shows it. It is read from Claude Code's footer during screen detection, is omitted when nothing is running, and changes emit `pane.updated`.
+
 Use `pane.report_metadata` when a user hook wants to customize presentation without taking over lifecycle state from a Herdr integration.
 
 ```json

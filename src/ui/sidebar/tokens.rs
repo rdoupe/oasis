@@ -103,6 +103,25 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::TerminalTitleStripped => context
                             .terminal_title_stripped
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
+                        AgentSidebarToken::Background => {
+                            background_summary(context.tokens).map(ResolvedTokenKind::Custom)
+                        }
+                        AgentSidebarToken::Shells => {
+                            counted_activity(context.tokens, "shells", "shell")
+                                .map(ResolvedTokenKind::Custom)
+                        }
+                        AgentSidebarToken::Monitors => {
+                            counted_activity(context.tokens, "monitors", "monitor")
+                                .map(ResolvedTokenKind::Custom)
+                        }
+                        AgentSidebarToken::Subagents => {
+                            counted_activity(context.tokens, "agents", "agent")
+                                .map(ResolvedTokenKind::Custom)
+                        }
+                        AgentSidebarToken::Wakeup => context
+                            .tokens
+                            .get("oasis:loop_next")
+                            .map(|next| ResolvedTokenKind::Custom(format!("next {next}"))),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -119,6 +138,33 @@ pub(crate) fn agent_rows(
             (!resolved.is_empty()).then_some(resolved)
         })
         .collect()
+}
+
+/// `"2 shells"` from the reserved `oasis:<key>` count the server attaches.
+fn counted_activity(
+    tokens: &std::collections::HashMap<String, String>,
+    key: &str,
+    noun: &str,
+) -> Option<String> {
+    let count = tokens.get(&format!("oasis:{key}"))?;
+    let plural = if count == "1" { "" } else { "s" };
+    Some(format!("{count} {noun}{plural}"))
+}
+
+fn background_summary(tokens: &std::collections::HashMap<String, String>) -> Option<String> {
+    let parts = [
+        counted_activity(tokens, "shells", "shell"),
+        counted_activity(tokens, "monitors", "monitor"),
+        counted_activity(tokens, "agents", "agent"),
+        counted_activity(tokens, "mcp_tasks", "MCP task"),
+        tokens
+            .get("oasis:loop_next")
+            .map(|next| format!("next {next}")),
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>();
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 pub(crate) struct SpaceTokenContext<'a> {
@@ -583,5 +629,24 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
                 "2 changes".into()
             ))]]
         );
+    }
+
+    #[test]
+    fn background_tokens_read_reserved_activity_keys() {
+        let tokens = std::collections::HashMap::from([
+            ("oasis:shells".to_owned(), "1".to_owned()),
+            ("oasis:agents".to_owned(), "3".to_owned()),
+            ("oasis:loop_next".to_owned(), "19:10".to_owned()),
+        ]);
+        assert_eq!(
+            background_summary(&tokens).as_deref(),
+            Some("1 shell · 3 agents · next 19:10")
+        );
+        assert_eq!(
+            counted_activity(&tokens, "agents", "agent").as_deref(),
+            Some("3 agents")
+        );
+        assert_eq!(counted_activity(&tokens, "monitors", "monitor"), None);
+        assert_eq!(background_summary(&std::collections::HashMap::new()), None);
     }
 }

@@ -3,6 +3,7 @@
 //! Each pane's live bottom-of-buffer text is read periodically and matched
 //! against known agent output patterns to determine state.
 
+pub mod activity;
 pub mod manifest;
 pub mod manifest_update;
 

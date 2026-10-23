@@ -529,8 +529,64 @@ pub struct PaneInfo {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_session: Option<AgentSessionInfo>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub background_activity: Option<BackgroundActivityInfo>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scroll: Option<PaneScrollInfo>,
     pub revision: u64,
+}
+
+/// Background work an agent's own UI lists as still running after its turn:
+/// shells, monitors, subagents and MCP tasks, plus a scheduled wakeup.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct BackgroundActivityInfo {
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub shells: u16,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub monitors: u16,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub agents: u16,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub mcp_tasks: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub loop_next: Option<String>,
+}
+
+fn is_zero(value: &u16) -> bool {
+    *value == 0
+}
+
+impl BackgroundActivityInfo {
+    pub(crate) fn from_activity(
+        activity: &crate::detect::activity::BackgroundActivity,
+    ) -> Option<Self> {
+        (!activity.is_empty()).then(|| Self {
+            shells: activity.shells,
+            monitors: activity.monitors,
+            agents: activity.agents,
+            mcp_tasks: activity.mcp_tasks,
+            loop_next: activity.loop_next.clone(),
+        })
+    }
+
+    /// Reserved sidebar token pairs for the TUI wire. User token keys are
+    /// limited to `[A-Za-z0-9_-]`, so the `oasis:` prefix cannot collide.
+    pub(crate) fn sidebar_tokens(&self) -> Vec<(String, String)> {
+        [
+            ("oasis:shells", self.shells),
+            ("oasis:monitors", self.monitors),
+            ("oasis:agents", self.agents),
+            ("oasis:mcp_tasks", self.mcp_tasks),
+        ]
+        .into_iter()
+        .filter(|(_, count)| *count > 0)
+        .map(|(key, count)| (key.to_owned(), count.to_string()))
+        .chain(
+            self.loop_next
+                .clone()
+                .map(|next| ("oasis:loop_next".to_owned(), next)),
+        )
+        .collect()
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]

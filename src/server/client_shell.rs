@@ -157,6 +157,9 @@ pub(super) fn snapshot_with_completions(
             let mut state_labels = agent.state_labels.into_iter().collect::<Vec<_>>();
             state_labels.sort_by(|left, right| left.0.cmp(&right.0));
             let mut tokens = agent.tokens.into_iter().collect::<Vec<_>>();
+            if let Some(activity) = agent.background_activity.as_ref() {
+                tokens.extend(activity.sidebar_tokens());
+            }
             tokens.sort_by(|left, right| left.0.cmp(&right.0));
             protocol::ClientShellAgent {
                 pane_id,

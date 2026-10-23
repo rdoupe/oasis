@@ -4392,6 +4392,54 @@ mod tests {
     }
 
     #[test]
+    fn background_activity_reaches_pane_info_and_clears() {
+        let (mut app, pane_id) = app_with_test_workspace();
+        let (_, internal_pane_id) = app.parse_pane_id(&pane_id).unwrap();
+        let get_pane = |app: &mut crate::app::App| {
+            let response = app.handle_api_request(crate::api::schema::Request {
+                id: "get".into(),
+                method: crate::api::schema::Method::PaneGet(PaneTarget {
+                    pane_id: pane_id.clone(),
+                }),
+            });
+            let success: SuccessResponse = serde_json::from_str(&response).unwrap();
+            let ResponseResult::PaneInfo { pane } = success.result else {
+                panic!("expected pane info");
+            };
+            pane
+        };
+        let before = get_pane(&mut app).revision;
+        app.handle_internal_event(crate::events::AppEvent::BackgroundActivityObserved {
+            pane_id: internal_pane_id,
+            activity: crate::detect::activity::BackgroundActivity {
+                shells: 2,
+                monitors: 1,
+                loop_next: Some("19:10".into()),
+                ..Default::default()
+            },
+        });
+        let pane = get_pane(&mut app);
+        assert!(pane.revision > before);
+        let activity = pane.background_activity.expect("activity");
+        assert_eq!((activity.shells, activity.monitors), (2, 1));
+        assert_eq!(
+            activity.sidebar_tokens(),
+            vec![
+                ("oasis:shells".to_owned(), "2".to_owned()),
+                ("oasis:monitors".to_owned(), "1".to_owned()),
+                ("oasis:loop_next".to_owned(), "19:10".to_owned()),
+            ]
+        );
+        assert!(pane.tokens.is_empty(), "user tokens stay separate");
+
+        app.handle_internal_event(crate::events::AppEvent::BackgroundActivityObserved {
+            pane_id: internal_pane_id,
+            activity: Default::default(),
+        });
+        assert_eq!(get_pane(&mut app).background_activity, None);
+    }
+
+    #[test]
     fn pane_metadata_tokens_patch_and_clear_through_dispatcher() {
         let (mut app, pane_id) = app_with_test_workspace();
         for (tokens, expected) in [

@@ -57,6 +57,34 @@ impl App {
         }
     }
 
+    fn handle_background_activity_observed(
+        &mut self,
+        pane_id: crate::layout::PaneId,
+        activity: crate::detect::activity::BackgroundActivity,
+    ) {
+        let Some(ws_idx) = self
+            .state
+            .workspaces
+            .iter()
+            .position(|workspace| workspace.pane_state(pane_id).is_some())
+        else {
+            return;
+        };
+        let Some(terminal) = self.state.workspaces[ws_idx]
+            .pane_state(pane_id)
+            .map(|pane| pane.attached_terminal_id.clone())
+            .and_then(|terminal_id| self.state.terminals.get_mut(&terminal_id))
+        else {
+            return;
+        };
+        if terminal.background_activity == activity {
+            return;
+        }
+        terminal.background_activity = activity;
+        terminal.revision = terminal.revision.saturating_add(1);
+        self.emit_pane_updated(ws_idx, pane_id);
+    }
+
     fn handle_git_status_refreshed(
         &mut self,
         results: Vec<crate::workspace::WorkspaceGitStatus>,
@@ -120,6 +148,11 @@ impl App {
         } = ev
         {
             self.handle_git_status_refreshed(results, cache_updates);
+            return Vec::new();
+        }
+
+        if let AppEvent::BackgroundActivityObserved { pane_id, activity } = ev {
+            self.handle_background_activity_observed(pane_id, activity);
             return Vec::new();
         }
 

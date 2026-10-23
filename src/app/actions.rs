@@ -1817,6 +1817,8 @@ impl AppState {
                 })
                 .into_iter()
                 .collect(),
+            // Handled by the app, which emits the pane update clients read.
+            AppEvent::BackgroundActivityObserved { .. } => Vec::new(),
             AppEvent::StateChanged {
                 pane_id,
                 agent,

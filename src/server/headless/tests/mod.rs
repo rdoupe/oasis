@@ -8335,3 +8335,60 @@ fn no_handle_internal_event_bypass_in_module() {
         bypass_lines.join("\n  ")
     );
 }
+
+#[tokio::test]
+async fn background_activity_reaches_client_shell_agent_tokens() {
+    let mut server = test_headless_server();
+    let workspace = crate::workspace::Workspace::test_new("activity");
+    let pane_id = workspace.tabs[0].root_pane;
+    server.app.state.workspaces = vec![workspace];
+    server.app.state.ensure_test_terminals();
+    server.app.state.active = Some(0);
+    let (writer, control_rx, _render_rx) = test_client_writer();
+    server.handle_server_event(ServerEvent::ClientShellConnected {
+        client_id: 79,
+        surface_cols: 80,
+        surface_rows: 24,
+        cell_width_px: 0,
+        cell_height_px: 0,
+        pixel_mouse: false,
+        direct_graphics: false,
+        endpoint_keybindings: false,
+        mouse_capture: false,
+        surface_active: false,
+        surface_reuse: false,
+        surface_delta: false,
+        surface_scroll: false,
+        writer,
+    });
+    let _ = client_shell_projection(&control_rx);
+    server.app.state.handle_app_event(AppEvent::StateChanged {
+        pane_id,
+        agent: Some(crate::detect::Agent::Claude),
+        state: crate::detect::AgentState::Idle,
+        visible_blocker: false,
+        visible_working: false,
+        process_exited: false,
+        observed_at: Instant::now(),
+    });
+    server
+        .app
+        .handle_internal_event(AppEvent::BackgroundActivityObserved {
+            pane_id,
+            activity: crate::detect::activity::BackgroundActivity {
+                monitors: 1,
+                agents: 2,
+                ..Default::default()
+            },
+        });
+    server.render_and_stream();
+    let (snapshot, _) = client_shell_projection(&control_rx);
+    let agent = &snapshot.agents[0];
+    assert!(agent
+        .tokens
+        .contains(&("oasis:monitors".to_owned(), "1".to_owned())));
+    assert!(agent
+        .tokens
+        .contains(&("oasis:agents".to_owned(), "2".to_owned())));
+    shutdown_test_runtimes(&mut server);
+}

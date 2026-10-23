@@ -335,6 +335,33 @@ async fn publish_codex_prompt_observation(
     }
 }
 
+/// Publishes the agent's background work when it changes. Rides on the
+/// detection pass that already read the screen, so it adds no wakeups.
+async fn publish_background_activity(
+    state_events: &mpsc::Sender<AppEvent>,
+    pane_id: PaneId,
+    agent: Option<Agent>,
+    content: &str,
+    process_exited: bool,
+    last: &mut crate::detect::activity::BackgroundActivity,
+) {
+    let activity = if process_exited {
+        Some(crate::detect::activity::BackgroundActivity::default())
+    } else {
+        crate::detect::activity::background_activity(agent, content)
+    };
+    let Some(activity) = activity.filter(|activity| activity != last) else {
+        return;
+    };
+    *last = activity.clone();
+    if let Err(err) = state_events
+        .send(AppEvent::BackgroundActivityObserved { pane_id, activity })
+        .await
+    {
+        warn!(pane = pane_id.raw(), %err, "failed to deliver background activity");
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 struct AgentDetectionPublishUpdate {
     state: AgentState,
@@ -967,6 +994,7 @@ fn spawn_basic_detection_task(
         let mut agent_startup_grace_until = None;
         let mut pending_idle = PendingIdleConfirmation::default();
         let mut last_codex_prompt_ready = false;
+        let mut last_background_activity = crate::detect::activity::BackgroundActivity::default();
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
         let mut quiet_detection = QuietDetection::default();
@@ -1210,6 +1238,15 @@ fn spawn_basic_detection_task(
                 screen_detection.as_ref(),
                 process_exited,
                 &mut last_codex_prompt_ready,
+            )
+            .await;
+            publish_background_activity(
+                &state_events,
+                pane_id,
+                agent,
+                content,
+                process_exited,
+                &mut last_background_activity,
             )
             .await;
             let Some(screen_detection) = screen_detection else {
@@ -2907,6 +2944,8 @@ impl PaneRuntime {
                 let mut agent_startup_grace_until = None;
                 let mut pending_idle = PendingIdleConfirmation::default();
                 let mut last_codex_prompt_ready = false;
+                let mut last_background_activity =
+                    crate::detect::activity::BackgroundActivity::default();
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
                 let mut quiet_detection = QuietDetection::default();
@@ -3233,6 +3272,15 @@ impl PaneRuntime {
                         screen_detection.as_ref(),
                         process_exited,
                         &mut last_codex_prompt_ready,
+                    )
+                    .await;
+                    publish_background_activity(
+                        &state_events,
+                        pane_id,
+                        agent,
+                        content,
+                        process_exited,
+                        &mut last_background_activity,
                     )
                     .await;
                     let Some(screen_detection) = screen_detection else {

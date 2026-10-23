@@ -145,6 +145,8 @@ pub struct TerminalState {
     agent_name_owner: Option<AgentNameOwner>,
     managed_agent: Option<ManagedAgent>,
     codex_prompt_ready: bool,
+    /// Background work the agent's footer lists; shared runtime state.
+    pub background_activity: crate::detect::activity::BackgroundActivity,
     managed_agent_launch_session: Option<crate::agent_resume::PersistedAgentSession>,
     hook_report_sequences: HashMap<String, u64>,
     suppressed_full_lifecycle_hook_reports: HashMap<String, SuppressedFullLifecycleHookReport>,
@@ -185,6 +187,7 @@ impl TerminalState {
             agent_name_owner: None,
             managed_agent: None,
             codex_prompt_ready: false,
+            background_activity: crate::detect::activity::BackgroundActivity::default(),
             managed_agent_launch_session: None,
             hook_report_sequences: HashMap::new(),
             suppressed_full_lifecycle_hook_reports: HashMap::new(),
