@@ -249,6 +249,8 @@ pub(super) fn render_expanded(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    let (area, footer) = super::sidebar::split_sidebar_footer(area);
+    super::sidebar::render_sidebar_footer(buffer, footer, config);
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
@@ -563,9 +565,14 @@ pub(super) fn render_expanded(
         state.agent_scroll,
         hits,
     );
+    // The collapse toggle ends the footer row when there is one.
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
+        if footer.is_empty() {
+            area.bottom().saturating_sub(1)
+        } else {
+            footer.y
+        },
         u16::from(area.width > 1),
         u16::from(area.height > 0),
     );

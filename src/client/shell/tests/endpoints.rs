@@ -3020,3 +3020,23 @@ fn navigator_foreign_workspace_heading_keeps_the_workspace_target() {
         }] if activated == &endpoint_id && workspace_id == "ws_1"
     ));
 }
+
+#[test]
+fn expanded_sidebar_footer_shows_the_leader_key_and_collapse_toggle() {
+    for saved_machine in [false, true] {
+        let (mut state, _) = state_with_scrollable_agents();
+        if !saved_machine {
+            state.set_endpoint_catalog(&[]);
+        }
+        let frame = state.compose(100, 28).expect("expanded sidebar");
+        let buffer = frame.to_ratatui_buffer().expect("sidebar buffer");
+        let toggle = state.hits.sidebar_toggle;
+        assert_eq!(toggle.y, 27, "toggle sits on the footer row");
+        let footer = (0..toggle.x)
+            .map(|x| buffer[(x, toggle.y)].symbol())
+            .collect::<String>();
+        assert!(footer.contains("oasis"), "{footer:?}");
+        assert!(footer.contains("ctrl+b leader"), "{footer:?}");
+        assert_eq!(buffer[(toggle.x, toggle.y)].symbol(), "«");
+    }
+}

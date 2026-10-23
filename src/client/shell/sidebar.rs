@@ -24,6 +24,52 @@ pub(in crate::client::shell) fn workspace_active_background(
     }
 }
 
+/// Sidebars shorter than this keep every row for spaces and agents.
+const SIDEBAR_FOOTER_MIN_HEIGHT: u16 = 10;
+
+/// Splits the bottom row off an expanded sidebar for its status footer. The
+/// footer skips the divider column so dragging the sidebar edge still works,
+/// and leaves its last cell for the collapse toggle.
+pub(in crate::client::shell) fn split_sidebar_footer(area: Rect) -> (Rect, Rect) {
+    if area.height < SIDEBAR_FOOTER_MIN_HEIGHT || area.width < 2 {
+        return (area, Rect::default());
+    }
+    let body = Rect::new(area.x, area.y, area.width, area.height - 1);
+    let footer = Rect::new(area.x, area.bottom() - 1, area.width - 1, 1);
+    (body, footer)
+}
+
+/// The sidebar's status line: the oasis mark and the leader (prefix) key.
+pub(in crate::client::shell) fn render_sidebar_footer(
+    buffer: &mut Buffer,
+    footer: Rect,
+    config: &ClientShellConfig,
+) {
+    if footer.is_empty() {
+        return;
+    }
+    let palette = &config.palette;
+    let base = Style::default().fg(palette.overlay0);
+    let right = footer.right().saturating_sub(1);
+    let x = super::render::put_segment(buffer, footer.x, footer.y, right, " 🌴 oasis", base);
+    let leader = config.keybinds.primary_prefix_label();
+    let hint_width = super::render::display_width(&leader) + " leader ".len() as u16;
+    if x.saturating_add(hint_width) < right {
+        let key_x = right - hint_width;
+        let after = super::render::put_segment(
+            buffer,
+            key_x,
+            footer.y,
+            right,
+            &leader,
+            Style::default()
+                .fg(palette.accent)
+                .add_modifier(Modifier::BOLD),
+        );
+        super::render::put_segment(buffer, after, footer.y, right, " leader ", base);
+    }
+}
+
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
 ) -> (Rect, Option<u16>, Rect) {
@@ -211,6 +257,8 @@ pub(crate) fn render_sidebar(
     } else {
         Rect::new(area.right().saturating_sub(1), area.y, 1, area.height)
     };
+    let (area, footer) = split_sidebar_footer(area);
+    render_sidebar_footer(buffer, footer, config);
     let (workspace_area, detail_area) =
         crate::ui::expanded_sidebar_sections(area, state.sidebar_section_split);
     hits.sidebar_section_divider =
@@ -439,9 +487,14 @@ pub(crate) fn render_sidebar(
         hits,
     );
 
+    // The collapse toggle ends the footer row when there is one.
     hits.sidebar_toggle = Rect::new(
         area.right().saturating_sub(2),
-        area.bottom().saturating_sub(1),
+        if footer.is_empty() {
+            area.bottom().saturating_sub(1)
+        } else {
+            footer.y
+        },
         u16::from(area.width > 1),
         u16::from(area.height > 0),
     );
