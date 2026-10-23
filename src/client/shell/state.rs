@@ -30,6 +30,7 @@ pub(crate) struct ClientShellConfig {
     pub(super) toast_delay_seconds: u64,
     pub(super) toast_position: crate::config::ToastHerdrPosition,
     pub(super) copy_on_select: bool,
+    pub(super) click_opens_links: bool,
     pub(super) clipboard_toast_enabled: bool,
     pub(super) clipboard_toast_position: crate::config::ToastClipboardPosition,
     pub(super) theme_name: String,
@@ -661,6 +662,8 @@ pub(super) enum PendingEndpointKind {
         pane_id: String,
         inner_rect: Rect,
         fallback_events: Vec<crossterm::event::MouseEvent>,
+        /// A plain click: a miss does nothing instead of replaying the click.
+        plain_click: bool,
     },
     CopyMotion {
         pane_id: String,
@@ -774,6 +777,22 @@ pub(super) struct ClientPaneClick {
     pub(super) viewport_row: u16,
     pub(super) col: u16,
     pub(super) at: std::time::Instant,
+}
+
+/// How long a plain click waits before opening its link, so the first click of
+/// a double-click never opens anything.
+pub(super) const PLAIN_LINK_CLICK_DELAY: std::time::Duration =
+    std::time::Duration::from_millis(350);
+
+/// A plain left press in the focused pane that may open the link under it.
+#[derive(Clone, Debug)]
+pub(super) struct ClientPlainLinkClick {
+    pub(super) pane_id: String,
+    pub(super) inner_rect: Rect,
+    pub(super) scroll: Option<crate::pane::ScrollMetrics>,
+    pub(super) viewport_row: u16,
+    pub(super) col: u16,
+    pub(super) events: Vec<crossterm::event::MouseEvent>,
 }
 
 impl ClientPaneClick {
@@ -922,6 +941,10 @@ pub(crate) struct ClientShellState {
     pub(super) replaying_url_click: bool,
     pub(super) selection: Option<crate::selection::Selection<String>>,
     pub(super) last_pane_click: Option<ClientPaneClick>,
+    /// The press of a plain click that may open a link once released in place.
+    pub(super) plain_link_press: Option<ClientPlainLinkClick>,
+    /// A released plain click waiting out the double-click window.
+    pub(super) plain_link_pending: Option<(ClientPlainLinkClick, std::time::Instant)>,
     pub(super) selection_autoscroll: Option<ClientSelectionAutoscroll>,
     pub(super) selection_autoscroll_deadline: Option<std::time::Instant>,
     pub(super) selection_highlight_clear_deadline: Option<std::time::Instant>,
@@ -1090,6 +1113,8 @@ impl ClientShellState {
             replaying_url_click: false,
             selection: None,
             last_pane_click: None,
+            plain_link_press: None,
+            plain_link_pending: None,
             selection_autoscroll: None,
             selection_autoscroll_deadline: None,
             selection_highlight_clear_deadline: None,
@@ -1283,6 +1308,8 @@ impl ClientShellState {
         self.replaying_url_click = false;
         self.selection = None;
         self.last_pane_click = None;
+        self.plain_link_press = None;
+        self.plain_link_pending = None;
         self.selection_autoscroll = None;
         self.selection_autoscroll_deadline = None;
         self.selection_highlight_clear_deadline = None;
@@ -1885,6 +1912,11 @@ impl ClientShellState {
         self.selection_autoscroll_deadline
             .into_iter()
             .chain(self.selection_repaint_deadline)
+            .chain(
+                self.plain_link_pending
+                    .as_ref()
+                    .map(|(_, deadline)| *deadline),
+            )
             .min()
             .map(|deadline| deadline.saturating_duration_since(now).min(default))
             .unwrap_or(default)

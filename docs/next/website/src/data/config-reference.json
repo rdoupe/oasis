@@ -918,6 +918,12 @@
           "description": "Automatically copy text selected by mouse drag or double-click. When disabled, Ctrl+C or a host-forwarded Cmd+C copies and clears the retained selection."
         },
         {
+          "key": "ui.click_opens_links",
+          "type": "boolean",
+          "default": "true",
+          "description": "Open links, files and folders with a plain click in the focused pane. Clicks that focus a pane, drag a selection, or double-click never open; Ctrl+click always does."
+        },
+        {
           "key": "ui.host_cursor",
           "type": "enum",
           "default": "auto",

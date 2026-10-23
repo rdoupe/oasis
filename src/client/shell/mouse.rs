@@ -345,6 +345,92 @@ impl ClientShellState {
         self.selection_repaint_deadline.is_none()
     }
 
+    /// Whether a plain press in `pane_id` may open a link: the pane must
+    /// already be focused, so the click that focuses a pane never opens.
+    fn plain_click_may_open(&self, pane_id: &str) -> bool {
+        self.config.click_opens_links
+            && self.config.mouse_capture
+            && !self.replaying_url_click
+            && self.overlay.is_none()
+            && self.popup_terminal_id.is_none()
+            && self.mode == ClientShellMode::Terminal
+            && self.focused_pane_id().as_deref() == Some(pane_id)
+    }
+
+    /// Opens the link under a plain click once the double-click window has
+    /// passed without a second press. One-shot: nothing re-arms it.
+    pub(crate) fn tick_plain_link_click(
+        &mut self,
+        now: std::time::Instant,
+        outcome: &mut ClientShellInput,
+    ) {
+        if self
+            .plain_link_pending
+            .as_ref()
+            .is_none_or(|(_, deadline)| now < *deadline)
+        {
+            return;
+        }
+        let Some((click, _)) = self.plain_link_pending.take() else {
+            return;
+        };
+        let pane_still_there = self
+            .hits
+            .panes
+            .iter()
+            .any(|hit| hit.pane_id == click.pane_id && hit.inner_rect == click.inner_rect);
+        if pane_still_there && self.plain_click_may_open(&click.pane_id) {
+            self.push_pane_link_activation(click, true, outcome);
+        }
+    }
+
+    fn push_pane_link_activation(
+        &mut self,
+        click: ClientPlainLinkClick,
+        plain_click: bool,
+        outcome: &mut ClientShellInput,
+    ) {
+        tracing::info!(
+            pane_id = %click.pane_id,
+            viewport_row = click.viewport_row,
+            col = click.col,
+            plain_click,
+            endpoint = %self.active_endpoint_id.storage_key(),
+            "requesting pane link activation"
+        );
+        let content_revision = self
+            .pane_surface
+            .as_ref()
+            .and_then(|surface| {
+                surface
+                    .panes
+                    .iter()
+                    .find(|pane| pane.pane_id == click.pane_id)
+            })
+            .map(|pane| pane.content_revision);
+        self.push_endpoint_method_with_kind(
+            crate::api::schema::Method::PaneLinkActivate(
+                crate::api::schema::PaneLinkActivateParams {
+                    pane_id: click.pane_id.clone(),
+                    viewport_row: click.viewport_row,
+                    col: click.col,
+                    content_revision,
+                    offset_from_bottom: click
+                        .scroll
+                        .map(|metrics| metrics.offset_from_bottom as u64),
+                },
+            ),
+            PendingEndpointKind::PaneLinkActivate {
+                endpoint_id: self.active_endpoint_id.clone(),
+                pane_id: click.pane_id,
+                inner_rect: click.inner_rect,
+                fallback_events: click.events,
+                plain_click,
+            },
+            outcome,
+        );
+    }
+
     pub(crate) fn tick_selection_autoscroll(
         &mut self,
         now: std::time::Instant,
@@ -682,6 +768,10 @@ impl ClientShellState {
     /// the sidebar toggle takes precedence over the agent scrollbar beneath it.
     pub(super) fn handle_mouse(&mut self, mouse: MouseEvent, outcome: &mut ClientShellInput) {
         self.update_link_hover(mouse, outcome);
+        if matches!(mouse.kind, MouseEventKind::Down(_)) {
+            self.plain_link_press = None;
+            self.plain_link_pending = None;
+        }
         let point = (mouse.column, mouse.row);
         if self.mode == ClientShellMode::Navigate
             && self.workspace_preview_action_blocked()
@@ -961,45 +1051,17 @@ impl ClientShellState {
                 .find(|hit| super::contains(hit.inner_rect, point))
                 .cloned()
             {
-                let viewport_row = mouse.row.saturating_sub(hit.inner_rect.y);
-                let col = mouse.column.saturating_sub(hit.inner_rect.x);
-                tracing::info!(
-                    pane_id = %hit.pane_id,
-                    viewport_row,
-                    col,
-                    endpoint = %self.active_endpoint_id.storage_key(),
-                    "requesting pane link activation for control-click"
-                );
-                let content_revision = self
-                    .pane_surface
-                    .as_ref()
-                    .and_then(|surface| {
-                        surface
-                            .panes
-                            .iter()
-                            .find(|pane| pane.pane_id == hit.pane_id)
-                    })
-                    .map(|pane| pane.content_revision);
                 self.last_pane_click = None;
-                let pane_id = hit.pane_id.clone();
-                self.push_endpoint_method_with_kind(
-                    crate::api::schema::Method::PaneLinkActivate(
-                        crate::api::schema::PaneLinkActivateParams {
-                            pane_id: pane_id.clone(),
-                            viewport_row,
-                            col,
-                            content_revision,
-                            offset_from_bottom: hit
-                                .scroll
-                                .map(|metrics| metrics.offset_from_bottom as u64),
-                        },
-                    ),
-                    PendingEndpointKind::PaneLinkActivate {
-                        endpoint_id: self.active_endpoint_id.clone(),
-                        pane_id,
+                self.push_pane_link_activation(
+                    ClientPlainLinkClick {
+                        pane_id: hit.pane_id,
                         inner_rect: hit.inner_rect,
-                        fallback_events: vec![mouse],
+                        scroll: hit.scroll,
+                        viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
+                        col: mouse.column.saturating_sub(hit.inner_rect.x),
+                        events: vec![mouse],
                     },
+                    false,
                     outcome,
                 );
                 return;
@@ -1769,6 +1831,17 @@ impl ClientShellState {
                 .selection
                 .as_mut()
                 .is_some_and(crate::selection::Selection::finish);
+            if let Some(mut press) = self.plain_link_press.take() {
+                let released_in_place = !copied
+                    && super::contains(press.inner_rect, point)
+                    && mouse.row.saturating_sub(press.inner_rect.y) == press.viewport_row
+                    && mouse.column.saturating_sub(press.inner_rect.x) == press.col;
+                if released_in_place {
+                    press.events.push(mouse);
+                    self.plain_link_pending =
+                        Some((press, std::time::Instant::now() + PLAIN_LINK_CLICK_DELAY));
+                }
+            }
             if copied && self.config.copy_on_select {
                 self.request_selection_copy(outcome, true);
                 self.selection = None;
@@ -2269,6 +2342,16 @@ impl ClientShellState {
                         } else {
                             if mouse.modifiers.is_empty() {
                                 self.last_pane_click = Some(click);
+                                if self.plain_click_may_open(&hit.pane_id) {
+                                    self.plain_link_press = Some(ClientPlainLinkClick {
+                                        pane_id: hit.pane_id.clone(),
+                                        inner_rect: hit.inner_rect,
+                                        scroll: hit.scroll,
+                                        viewport_row: mouse.row.saturating_sub(hit.inner_rect.y),
+                                        col: mouse.column.saturating_sub(hit.inner_rect.x),
+                                        events: vec![mouse],
+                                    });
+                                }
                             }
                             self.selection = Some(crate::selection::Selection::anchor(
                                 hit.pane_id.clone(),

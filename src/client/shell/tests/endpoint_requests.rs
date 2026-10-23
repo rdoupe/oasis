@@ -460,6 +460,7 @@ fn cancelled_link_activation_does_not_replay_mouse_input() {
                 row: inner_rect.y,
                 modifiers: KeyModifiers::NONE,
             }],
+            plain_click: false,
         },
         &mut outcome,
     );

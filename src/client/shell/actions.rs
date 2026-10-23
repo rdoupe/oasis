@@ -666,6 +666,7 @@ impl ClientShellState {
                 pane_id,
                 inner_rect,
                 fallback_events,
+                plain_click,
             } => {
                 tracing::info!(
                     endpoint = %endpoint_id.storage_key(),
@@ -677,15 +678,16 @@ impl ClientShellState {
                     event.kind
                         == crossterm::event::MouseEventKind::Up(crossterm::event::MouseButton::Left)
                 });
-                let replay = (self.config.mouse_capture
+                let target_visible = self.config.mouse_capture
                     && self.mode == ClientShellMode::Terminal
                     && self.overlay.is_none()
                     && self
                         .hits
                         .panes
                         .iter()
-                        .any(|hit| hit.pane_id == pane_id && hit.inner_rect == inner_rect))
-                .then_some(fallback_events);
+                        .any(|hit| hit.pane_id == pane_id && hit.inner_rect == inner_rect);
+                // A plain click already acted as a click; a miss changes nothing.
+                let replay = (target_visible && !plain_click).then_some(fallback_events);
                 if replay.is_none() {
                     self.url_click_consumes_until_up = completed_before_release;
                 }
@@ -706,7 +708,7 @@ impl ClientShellState {
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
                         url: Some(url),
                         handled: false,
-                    }) if crate::app::actions::safe_web_url(&url).is_some() && replay.is_some() => {
+                    }) if crate::app::actions::safe_web_url(&url).is_some() && target_visible => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, vec![ClientShellAction::OpenSafeWebUrl(url)])
                     }

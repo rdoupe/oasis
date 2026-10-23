@@ -952,6 +952,8 @@ pub struct UiConfig {
     pub mouse_capture: bool,
     /// Copy text selected with the mouse. Default: true.
     pub copy_on_select: bool,
+    /// Open links and local paths with a plain click in the focused pane. Default: true.
+    pub click_opens_links: bool,
     /// Host cursor policy. Default: auto.
     pub host_cursor: HostCursorModeConfig,
     /// Modifier that lets right-click gestures pass through to pane apps. Empty disables it.
@@ -1206,6 +1208,7 @@ impl Default for UiConfig {
             mobile_width_threshold: DEFAULT_MOBILE_WIDTH_THRESHOLD,
             mouse_capture: true,
             copy_on_select: true,
+            click_opens_links: true,
             host_cursor: HostCursorModeConfig::Auto,
             right_click_passthrough_modifier: RightClickPassthroughModifierConfig::default(),
             redraw_on_focus_gained: true,
@@ -1758,6 +1761,13 @@ copy_on_select = false
 "#;
         let config: Config = toml::from_str(toml).unwrap();
         assert!(!config.ui.copy_on_select);
+    }
+
+    #[test]
+    fn click_opens_links_default_on_and_parse() {
+        assert!(Config::default().ui.click_opens_links);
+        let config: Config = toml::from_str("[ui]\nclick_opens_links = false\n").unwrap();
+        assert!(!config.ui.click_opens_links);
     }
 
     #[test]

@@ -240,6 +240,14 @@ impl ClientShellState {
             if let Some(update) = host_theme_update(&event) {
                 push_host_theme_update(&mut outcome.requests, update);
             }
+            if matches!(
+                event,
+                RawInputEvent::Key(_) | RawInputEvent::Text(_) | RawInputEvent::Paste(_)
+            ) {
+                // Typing after a click means it was not a request to open a link.
+                self.plain_link_press = None;
+                self.plain_link_pending = None;
+            }
             match event {
                 RawInputEvent::Key(key) => {
                     let key = self.host_erase_key(key);

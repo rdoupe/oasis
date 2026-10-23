@@ -1271,3 +1271,208 @@ fn context_menu_keyboard_and_outside_click_are_client_owned() {
     assert!(outside.repaint);
     assert!(state.overlay.is_none());
 }
+
+fn plain_click_state() -> (ClientShellState, MouseEvent) {
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&Config::default()));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("pane frame");
+    let pane = state.hits.panes[0].clone();
+    let down = MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: pane.inner_rect.x + 2,
+        row: pane.inner_rect.y + 1,
+        modifiers: KeyModifiers::empty(),
+    };
+    (state, down)
+}
+
+fn plain_click(state: &mut ClientShellState, down: MouseEvent) {
+    state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        ..down
+    })]);
+}
+
+fn link_activation_requests(outcome: &ClientShellInput) -> Vec<String> {
+    outcome
+        .actions
+        .iter()
+        .filter_map(|action| match action {
+            ClientShellAction::Endpoint { request, .. }
+                if matches!(
+                    request.method,
+                    crate::api::schema::Method::PaneLinkActivate(_)
+                ) =>
+            {
+                Some(request.id.clone())
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+/// Ticks past the double-click window and returns any link activation requests.
+fn fire_plain_click(state: &mut ClientShellState) -> Vec<String> {
+    let mut outcome = ClientShellInput::default();
+    state.tick_plain_link_click(
+        std::time::Instant::now() + PLAIN_LINK_CLICK_DELAY + std::time::Duration::from_millis(1),
+        &mut outcome,
+    );
+    link_activation_requests(&outcome)
+}
+
+#[test]
+fn plain_click_on_focused_pane_opens_link_after_double_click_window() {
+    let (mut state, down) = plain_click_state();
+    let press = state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    assert!(link_activation_requests(&press).is_empty());
+    let release = state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        ..down
+    })]);
+    assert!(
+        link_activation_requests(&release).is_empty(),
+        "release waits"
+    );
+    let (_, deadline) = state.plain_link_pending.clone().expect("armed click");
+    let now = std::time::Instant::now();
+    assert!(state.timer_delay(now) <= PLAIN_LINK_CLICK_DELAY);
+
+    let mut early = ClientShellInput::default();
+    state.tick_plain_link_click(deadline - std::time::Duration::from_millis(1), &mut early);
+    assert!(link_activation_requests(&early).is_empty());
+    assert!(state.plain_link_pending.is_some());
+
+    let mut fired = ClientShellInput::default();
+    state.tick_plain_link_click(deadline, &mut fired);
+    let [request_id] = &link_activation_requests(&fired)[..] else {
+        panic!("expected one link activation");
+    };
+    assert!(state.plain_link_pending.is_none(), "one-shot");
+    let (_, actions) = state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+            url: Some("https://example.test".to_owned()),
+            handled: false,
+        }),
+    );
+    assert!(matches!(
+        &actions[..],
+        [ClientShellAction::OpenSafeWebUrl(url)] if url == "https://example.test"
+    ));
+
+    // Let the double-click window pass before clicking again.
+    state.last_pane_click = None;
+    plain_click(&mut state, down);
+    let [request_id] = &fire_plain_click(&mut state)[..] else {
+        panic!("expected one link activation");
+    };
+    let (repaint, actions) = state.handle_endpoint_result(
+        "boot-1",
+        request_id,
+        Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+            url: None,
+            handled: false,
+        }),
+    );
+    assert!(
+        !repaint && actions.is_empty(),
+        "a plain-click miss is silent"
+    );
+    assert!(!state.url_click_consumes_until_up);
+    assert!(state.endpoint_error.is_none());
+}
+
+#[test]
+fn focusing_click_does_not_open_a_link() {
+    let (mut state, down) = plain_click_state();
+    let mut unfocused = snapshot();
+    unfocused.focused_pane_id = Some("pane_other".into());
+    state.set_snapshot(Box::new(unfocused));
+    plain_click(&mut state, down);
+    assert!(state.plain_link_pending.is_none());
+    assert!(fire_plain_click(&mut state).is_empty());
+}
+
+#[test]
+fn dragging_a_selection_does_not_open_a_link() {
+    let (mut state, down) = plain_click_state();
+    state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    let drag = MouseEvent {
+        kind: MouseEventKind::Drag(MouseButton::Left),
+        column: down.column + 3,
+        ..down
+    };
+    state.handle_raw_events(vec![RawInputEvent::Mouse(drag)]);
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        ..drag
+    })]);
+    assert!(state.plain_link_pending.is_none());
+    assert!(fire_plain_click(&mut state).is_empty());
+}
+
+#[test]
+fn double_click_selects_a_word_instead_of_opening_a_link() {
+    let (mut state, down) = plain_click_state();
+    plain_click(&mut state, down);
+    assert!(state.plain_link_pending.is_some());
+    let second = state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    assert!(state.plain_link_pending.is_none(), "second press cancels");
+    assert!(link_activation_requests(&second).is_empty());
+    assert!(
+        second.actions.iter().any(|action| matches!(
+            action,
+            ClientShellAction::Endpoint { request, .. }
+                if !matches!(request.method, crate::api::schema::Method::PaneFocus(_))
+        )),
+        "second press starts word selection"
+    );
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        ..down
+    })]);
+    assert!(fire_plain_click(&mut state).is_empty());
+}
+
+#[test]
+fn typing_cancels_a_pending_plain_click() {
+    let (mut state, down) = plain_click_state();
+    plain_click(&mut state, down);
+    assert!(state.plain_link_pending.is_some());
+    state.handle_raw_events(vec![RawInputEvent::Text(crate::input::TextCommit::new(
+        "a".to_owned(),
+    ))]);
+    assert!(state.plain_link_pending.is_none());
+}
+
+#[test]
+fn plain_click_opening_can_be_turned_off() {
+    let (mut state, down) = plain_click_state();
+    state.config.click_opens_links = false;
+    plain_click(&mut state, down);
+    assert!(state.plain_link_pending.is_none());
+    assert!(fire_plain_click(&mut state).is_empty());
+}
+
+#[test]
+fn mouse_reporting_pane_gets_plain_clicks_instead_of_link_opening() {
+    let (mut state, down) = plain_click_state();
+    let mut pane_surface = surface();
+    pane_surface.panes[0].mouse_reporting = true;
+    state.set_pane_surface(pane_surface);
+    state.compose(106, 20).expect("mouse-reporting frame");
+    let press = state.handle_raw_events(vec![RawInputEvent::Mouse(down)]);
+    assert!(matches!(&press.requests[..],
+        [ClientMessage::ClientShellPaneInput { events, .. }]
+            if matches!(&events[..], [ClientPaneInputEvent::Mouse { .. }])));
+    state.handle_raw_events(vec![RawInputEvent::Mouse(MouseEvent {
+        kind: MouseEventKind::Up(MouseButton::Left),
+        ..down
+    })]);
+    assert!(state.plain_link_pending.is_none());
+    assert!(fire_plain_click(&mut state).is_empty());
+}
