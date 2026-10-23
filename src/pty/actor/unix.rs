@@ -12,10 +12,11 @@ use tracing::{debug, warn};
 
 use crate::pty::fd;
 
-// Actor handle methods must call wake_actor() after queuing work. The idle
-// timeout is only a fallback for missed wakes; PTY and wake readiness drive
-// normal responsiveness.
-const ACTOR_IDLE_POLL_MS: i32 = 1000;
+// Actor handle methods must call wake_actor() after queuing work. An idle actor
+// blocks until PTY or wake readiness: dropping the last handle closes the wake
+// pipe's write end, which reports POLLHUP and lets the actor observe the closed
+// command channels. A timed fallback would wake every idle pane once a second.
+const ACTOR_IDLE_POLL_MS: i32 = -1;
 const ACTOR_COMMAND_BUFFER: usize = 1024;
 const HANDOFF_DRAIN_TIMEOUT: Duration = Duration::from_secs(2);
 
@@ -916,7 +917,7 @@ impl PtyIoActorRunner {
             .saturating_duration_since(Instant::now())
             .as_millis()
             .max(1)
-            .min(ACTOR_IDLE_POLL_MS as u128) as i32
+            .min(i32::MAX as u128) as i32
     }
 
     fn fail_active_submission(&mut self, err: std::io::Error) {

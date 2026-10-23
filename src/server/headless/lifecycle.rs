@@ -259,6 +259,9 @@ impl HeadlessServer {
         listener.set_nonblocking(ListenerNonblockingMode::Accept)?;
 
         self.api_server = Some(api_server);
+        // Deregister while the old descriptor is still open; the new listener
+        // registers on the next loop iteration.
+        self.client_accept.reset();
         self.client_listener = listener;
         self.client_socket_path = client_path;
         self.client_socket_identity = client_socket_identity;

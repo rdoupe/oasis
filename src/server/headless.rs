@@ -48,7 +48,7 @@ use crate::protocol::{
 };
 #[cfg(unix)]
 use crate::server::client_accept::{
-    accept_pending_client_connections, reject_pending_client_connections,
+    accept_pending_client_connections, reject_pending_client_connections, ClientAcceptReadiness,
 };
 use crate::server::client_shell::{
     render_pane_surface as render_client_shell_pane_surface,
@@ -157,13 +157,10 @@ enum RenderImpact {
 #[allow(dead_code)]
 const SHUTDOWN_API_TIMEOUT: Duration = Duration::from_secs(5);
 
-/// How often the idle headless loop wakes to poll the local listener for new
-/// client connections.
-///
-/// The listener is non-blocking and not integrated into `tokio::select!`, so
-/// a low-frequency wake is required to notice new thin-client attaches while
-/// otherwise idle. Keep this much slower than the old resize-poll cadence to
-/// avoid reintroducing the idle CPU spin.
+/// How often the idle headless loop wakes when it cannot wait on listener
+/// readiness: on Windows, whose host-shutdown probe is polled, and on Unix if
+/// registering the listener with the reactor failed. Unix otherwise sleeps
+/// until a client connects or another event arrives.
 const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 // Split shell redraws need several early updates; sustained output still coalesces.
@@ -198,6 +195,8 @@ pub struct HeadlessServer {
     api_server: Option<api::ServerHandle>,
     #[cfg(unix)]
     client_listener: LocalListener,
+    #[cfg(unix)]
+    client_accept: ClientAcceptReadiness,
     client_socket_path: PathBuf,
     client_socket_identity: SocketFileIdentity,
     clients: HashMap<u64, ClientConnection>,
@@ -355,6 +354,8 @@ impl HeadlessServer {
             api_server,
             #[cfg(unix)]
             client_listener: listener,
+            #[cfg(unix)]
+            client_accept: ClientAcceptReadiness::default(),
             client_socket_path: client_path,
             client_socket_identity,
             clients: HashMap::new(),
@@ -606,16 +607,23 @@ impl HeadlessServer {
                 continue;
             }
 
-            // 8. Wait for next event.
-            let next_deadline = self
-                .app
-                .next_headless_loop_deadline_with_git_refresh(
-                    now,
-                    needs_render,
-                    self.git_refresh_scheduled(),
-                )
-                .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
-                .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL));
+            // 8. Wait for next event. A quit requested by work handled in this
+            // iteration is acted on at the loop top; nothing would wake it later.
+            if self.app.state.should_quit {
+                continue;
+            }
+            let next_deadline = self.app.next_headless_loop_deadline_with_git_refresh(
+                now,
+                needs_render,
+                self.git_refresh_scheduled(),
+            );
+            let next_deadline = if self.wait_for_client_accept_readiness() {
+                next_deadline
+            } else {
+                next_deadline
+                    .map(|deadline| deadline.min(now + CLIENT_ACCEPT_POLL_INTERVAL))
+                    .or(Some(now + CLIENT_ACCEPT_POLL_INTERVAL))
+            };
             let next_deadline = self
                 .pending_alt_screen_reads
                 .iter()
@@ -623,6 +631,10 @@ impl HeadlessServer {
                 .fold(next_deadline, |deadline, pending| {
                     Some(deadline.map_or(pending, |current| current.min(pending)))
                 });
+            #[cfg(unix)]
+            let client_accept_ready = self.client_accept.wait();
+            #[cfg(not(unix))]
+            let client_accept_ready = std::future::pending::<()>();
             let event = {
                 tokio::select! {
                     maybe_api = self.app.api_rx.recv() => match maybe_api {
@@ -638,6 +650,8 @@ impl HeadlessServer {
                         None => LoopEvent::Timer,
                     },
                     _ = sleep_until_or_pending(next_deadline) => LoopEvent::Timer,
+                    _ = client_accept_ready => LoopEvent::Timer,
+                    _ = self.server_stop.wait_requested() => LoopEvent::Timer,
                     _ = self.app.render_notify.notified() => LoopEvent::RenderRequested,
                 }
             };
@@ -1038,6 +1052,18 @@ impl HeadlessServer {
         } else {
             self.resize_tabs_for_only_shell_client(true);
         }
+    }
+
+    /// Whether the loop can sleep until a client connects instead of polling.
+    #[cfg(unix)]
+    fn wait_for_client_accept_readiness(&mut self) -> bool {
+        self.client_accept.register(&self.client_listener);
+        self.client_accept.is_registered()
+    }
+
+    #[cfg(windows)]
+    fn wait_for_client_accept_readiness(&mut self) -> bool {
+        false
     }
 
     /// Accepts pending client connections from the non-blocking listener.

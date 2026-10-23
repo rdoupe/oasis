@@ -1,11 +1,11 @@
-use std::time::Instant;
-
-#[cfg(test)]
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use super::{
     background_update_check_enabled, App, AUTO_UPDATE_CHECK_INTERVAL, MIN_RENDER_INTERVAL,
 };
+
+const DETACHED_PROCESS_REAP_INTERVAL: Duration = Duration::from_secs(1);
+
 fn retain_detached_process_after_wait(
     pid: u32,
     result: std::io::Result<Option<std::process::ExitStatus>>,
@@ -170,6 +170,10 @@ impl App {
             self.session_save_deadline,
             self.next_tab_bar_status_deadline(),
             render_deadline,
+            // Detached children are polled with try_wait, so keep a slow reap
+            // deadline only while some are still running.
+            (!self.detached_process_children.is_empty())
+                .then(|| now + DETACHED_PROCESS_REAP_INTERVAL),
         ]
         .into_iter()
         .flatten()

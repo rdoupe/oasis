@@ -36,10 +36,11 @@ mod xtgettcap;
 
 use self::agent_detection::{
     codex_prompt_ready, decide_detection_screen_read, decide_screen_detection_publish,
-    detection_update_for_publish_with_osc, mark_detection_content_changed,
-    observe_detection_content_change, DetectionPublishDecision, DetectionScreenReadDecision,
-    DetectionScreenReadInput, DetectionTextCache, PendingIdleConfirmation,
+    detection_update_for_publish_with_osc, may_park_detection, DetectionContent,
+    DetectionParkInput, DetectionPublishDecision, DetectionScreenReadDecision,
+    DetectionScreenReadInput, DetectionTextCache, PendingIdleConfirmation, QuietDetection,
     ScreenDetectionPublishInput, AGENT_PENDING_IDLE_RECHECK, AGENT_STARTUP_GRACE_WINDOW,
+    QUIET_DETECTION_PARK,
 };
 use self::background_agent::{AgentJobStatus, AgentJobTracker};
 #[cfg(test)]
@@ -931,7 +932,7 @@ fn spawn_basic_detection_task(
     child_pid: Arc<AtomicU32>,
     terminal: Arc<PaneTerminal>,
     content_seq: Arc<AtomicU64>,
-    detection_content_seq: Arc<AtomicU64>,
+    detection_content: Arc<DetectionContent>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     self_reported_agent_active: Arc<AtomicBool>,
     state_events: mpsc::Sender<AppEvent>,
@@ -967,16 +968,31 @@ fn spawn_basic_detection_task(
         let mut last_codex_prompt_ready = false;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
+        let mut quiet_detection = QuietDetection::default();
 
         loop {
-            let sleep_duration = if pending_idle.active() {
+            let park = may_park_detection(DetectionParkInput {
+                input_unchanged: quiet_detection
+                    .unchanged_since_last_tick(detection_content.revision()),
+                fast_tick_requested: pending_idle.active(),
+                acquiring_process: acquisition_started_at.is_some(),
+                startup_grace_active: agent_startup_grace_until
+                    .is_some_and(|until| std::time::Instant::now() < until),
+                process_probe_pending: pending_foreground_shell_clear,
+                visible_blocker: last_visible_blocker,
+            });
+            let sleep_duration = if park {
+                QUIET_DETECTION_PARK
+            } else if pending_idle.active() {
                 AGENT_PENDING_IDLE_RECHECK
             } else {
                 std::time::Duration::from_millis(300)
             };
             tokio::select! {
                 _ = tokio::time::sleep(sleep_duration) => {}
+                _ = detection_content.changed(), if park => {}
                 _ = detect_reset.notified() => {
+                    quiet_detection.clear();
                     publish_codex_prompt_observation(
                         &state_events, pane_id, Some(Agent::Codex), "", None, false,
                         &mut last_codex_prompt_ready,
@@ -1155,7 +1171,7 @@ fn spawn_basic_detection_task(
             }
 
             let current_detection_content_seq = if agent.is_some() {
-                Some(detection_content_seq.load(Ordering::Relaxed))
+                Some(detection_content.revision())
             } else {
                 None
             };
@@ -1510,7 +1526,7 @@ pub struct PaneRuntime {
     kitty_keyboard_flags: Arc<AtomicU16>,
     content_seq: Arc<AtomicU64>,
     content_write_lock: Arc<Mutex<()>>,
-    detection_content_seq: Arc<AtomicU64>,
+    detection_content: Arc<DetectionContent>,
     full_lifecycle_authority_active: Arc<AtomicBool>,
     self_reported_agent_active: Arc<AtomicBool>,
     detect_reset_notify: Arc<Notify>,
@@ -2562,7 +2578,7 @@ impl PaneRuntime {
         let kitty_keyboard_flags = Arc::new(AtomicU16::new(keyboard_protocol_flags));
         let content_seq = Arc::new(AtomicU64::new(0));
         let content_write_lock = Arc::new(Mutex::new(()));
-        let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let detection_content = Arc::new(DetectionContent::default());
 
         let io = {
             let terminal = terminal.clone();
@@ -2571,7 +2587,7 @@ impl PaneRuntime {
             let render_dirty = render_dirty.clone();
             let content_seq = content_seq.clone();
             let content_write_lock = content_write_lock.clone();
-            let detection_content_seq = detection_content_seq.clone();
+            let detection_content = detection_content.clone();
             let child_pid = child_pid.clone();
             let read_events = events.clone();
             let reported_cwd = reported_cwd.clone();
@@ -2591,7 +2607,7 @@ impl PaneRuntime {
                 drop(_content_write_guard);
                 compression_wake.wake();
                 publish_terminal_bells(pane_id, result.terminal_bells, &read_events);
-                observe_detection_content_change(bytes, &detection_content_seq);
+                detection_content.observe_output(bytes);
                 let title_requested =
                     result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
                 let render_requested = result.request_render && render_dirty.request_pty(pane_id);
@@ -2652,7 +2668,7 @@ impl PaneRuntime {
             child_pid.clone(),
             terminal.clone(),
             content_seq.clone(),
-            detection_content_seq.clone(),
+            detection_content.clone(),
             full_lifecycle_authority_active.clone(),
             self_reported_agent_active.clone(),
             events,
@@ -2671,7 +2687,7 @@ impl PaneRuntime {
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
-            detection_content_seq,
+            detection_content,
             full_lifecycle_authority_active,
             self_reported_agent_active,
             detect_reset_notify,
@@ -2731,7 +2747,7 @@ impl PaneRuntime {
         let reported_cwd = Arc::new(Mutex::new(None));
         let child_wait_completed = Arc::new(AtomicBool::new(false));
         let content_seq = Arc::new(AtomicU64::new(0));
-        let detection_content_seq = Arc::new(AtomicU64::new(0));
+        let detection_content = Arc::new(DetectionContent::default());
         let full_lifecycle_authority_active = Arc::new(AtomicBool::new(false));
         let self_reported_agent_active = Arc::new(AtomicBool::new(false));
         {
@@ -2775,7 +2791,7 @@ impl PaneRuntime {
             let render_dirty = render_dirty.clone();
             let content_seq = content_seq.clone();
             let content_write_lock = content_write_lock.clone();
-            let detection_content_seq = detection_content_seq.clone();
+            let detection_content = detection_content.clone();
             let child_pid = child_pid.clone();
             let events = events.clone();
             let reported_cwd = reported_cwd.clone();
@@ -2795,7 +2811,7 @@ impl PaneRuntime {
                 compression_wake.wake();
                 publish_terminal_bells(pane_id, result.terminal_bells, &events);
                 if agent_detection == AgentDetection::Enabled {
-                    observe_detection_content_change(bytes, &detection_content_seq);
+                    detection_content.observe_output(bytes);
                 }
                 let title_requested =
                     result.terminal_title_changed && render_dirty.request_terminal_title(pane_id);
@@ -2856,7 +2872,7 @@ impl PaneRuntime {
             let terminal = terminal.clone();
             let state_events = events.clone();
             let text_content_seq = content_seq.clone();
-            let detection_content_seq = detection_content_seq.clone();
+            let detection_content = detection_content.clone();
             let full_lifecycle_authority_active_for_task = full_lifecycle_authority_active.clone();
             let self_reported_agent_active_for_task = self_reported_agent_active.clone();
             let render_notify = render_notify.clone();
@@ -2892,6 +2908,7 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
+                let mut quiet_detection = QuietDetection::default();
 
                 tokio::time::sleep(Duration::from_millis(50)).await;
 
@@ -2909,9 +2926,23 @@ impl PaneRuntime {
                     } else {
                         TICK_IDENTIFIED
                     };
+                    let park = may_park_detection(DetectionParkInput {
+                        input_unchanged: quiet_detection
+                            .unchanged_since_last_tick(detection_content.revision()),
+                        fast_tick_requested: tick < TICK_IDENTIFIED,
+                        acquiring_process: acquisition_started_at.is_some(),
+                        startup_grace_active: agent_startup_grace_until
+                            .is_some_and(|until| now_for_tick < until),
+                        process_probe_pending: pending_restore_probe
+                            || pending_foreground_shell_clear,
+                        visible_blocker: last_visible_blocker,
+                    });
+                    let tick = if park { QUIET_DETECTION_PARK } else { tick };
                     tokio::select! {
                         _ = tokio::time::sleep(tick) => {}
+                        _ = detection_content.changed(), if park => {}
                         _ = detect_reset.notified() => {
+                            quiet_detection.clear();
                             publish_codex_prompt_observation(
                                 &state_events, pane_id, Some(Agent::Codex), "", None, false,
                                 &mut last_codex_prompt_ready,
@@ -2972,7 +3003,7 @@ impl PaneRuntime {
                         elapsed_since_process_check: now.duration_since(last_process_check),
                     };
                     #[cfg(windows)]
-                    let content_seq = detection_content_seq.load(Ordering::Relaxed);
+                    let content_seq = detection_content.revision();
                     #[cfg(windows)]
                     let last_content_seq = last_observation.1;
                     #[cfg(windows)]
@@ -3161,7 +3192,7 @@ impl PaneRuntime {
                     }
 
                     let current_detection_content_seq = if agent.is_some() {
-                        Some(detection_content_seq.load(Ordering::Relaxed))
+                        Some(detection_content.revision())
                     } else {
                         None
                     };
@@ -3284,7 +3315,7 @@ impl PaneRuntime {
             kitty_keyboard_flags,
             content_seq,
             content_write_lock,
-            detection_content_seq,
+            detection_content,
             full_lifecycle_authority_active,
             self_reported_agent_active,
             detect_reset_notify,
@@ -3357,7 +3388,7 @@ impl PaneRuntime {
         self.content_seq.fetch_add(1, Ordering::Release);
         drop(_content_write_guard);
         self.compression.wake();
-        mark_detection_content_changed(&self.detection_content_seq);
+        self.detection_content.mark_changed();
         self.io.resize(
             rows,
             cols,
@@ -3396,7 +3427,7 @@ impl PaneRuntime {
         self.content_seq.fetch_add(1, Ordering::Release);
         drop(guard);
         self.compression.wake();
-        mark_detection_content_changed(&self.detection_content_seq);
+        self.detection_content.mark_changed();
         result
     }
 
@@ -3930,7 +3961,7 @@ impl PaneRuntime {
             self.child_pid.clone(),
             self.terminal.clone(),
             self.content_seq.clone(),
-            self.detection_content_seq.clone(),
+            self.detection_content.clone(),
             self.full_lifecycle_authority_active.clone(),
             self.self_reported_agent_active.clone(),
             events,
@@ -4077,7 +4108,7 @@ impl PaneRuntime {
                 kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
                 content_seq: Arc::new(AtomicU64::new(0)),
                 content_write_lock: Arc::new(Mutex::new(())),
-                detection_content_seq: Arc::new(AtomicU64::new(0)),
+                detection_content: Arc::new(DetectionContent::default()),
                 full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
                 self_reported_agent_active: Arc::new(AtomicBool::new(false)),
                 detect_reset_notify: Arc::new(Notify::new()),
@@ -5430,7 +5461,7 @@ mod tests {
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
+            detection_content: Arc::new(DetectionContent::default()),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),
@@ -5470,7 +5501,7 @@ mod tests {
             kitty_keyboard_flags: Arc::new(AtomicU16::new(0)),
             content_seq: Arc::new(AtomicU64::new(0)),
             content_write_lock: Arc::new(Mutex::new(())),
-            detection_content_seq: Arc::new(AtomicU64::new(0)),
+            detection_content: Arc::new(DetectionContent::default()),
             full_lifecycle_authority_active: Arc::new(AtomicBool::new(false)),
             detect_reset_notify: Arc::new(Notify::new()),
             pending_release: Arc::new(Mutex::new(None)),

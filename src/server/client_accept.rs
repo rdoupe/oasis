@@ -8,6 +8,63 @@ use tracing::{debug, error, warn};
 use crate::ipc::LocalListener;
 use crate::server::client_transport::{self, ServerEvent};
 
+/// Accept readiness of the non-blocking client listener, so an idle server loop
+/// sleeps until a client connects instead of polling the listener.
+#[cfg(unix)]
+#[derive(Default)]
+pub(crate) struct ClientAcceptReadiness {
+    registered: Option<tokio::io::unix::AsyncFd<std::os::fd::RawFd>>,
+    registration_failed: bool,
+}
+
+#[cfg(unix)]
+impl ClientAcceptReadiness {
+    /// Registers the listener with the runtime's reactor. Must run inside the
+    /// runtime; a failure leaves the caller on its polling fallback.
+    pub(crate) fn register(&mut self, listener: &LocalListener) {
+        if self.registered.is_some() || self.registration_failed {
+            return;
+        }
+        match tokio::io::unix::AsyncFd::with_interest(
+            crate::platform::local_listener_raw_fd(listener),
+            tokio::io::Interest::READABLE,
+        ) {
+            Ok(fd) => self.registered = Some(fd),
+            Err(err) => {
+                warn!(err = %err, "client listener readiness unavailable; polling for clients");
+                self.registration_failed = true;
+            }
+        }
+    }
+
+    /// Drops the registration. Call before the listener is replaced, while the
+    /// old descriptor is still open.
+    pub(crate) fn reset(&mut self) {
+        self.registered = None;
+        self.registration_failed = false;
+    }
+
+    pub(crate) fn is_registered(&self) -> bool {
+        self.registered.is_some()
+    }
+
+    /// Resolves once a connection is pending. Readiness is cleared before
+    /// returning, so the accept loop must drain the listener until `WouldBlock`.
+    pub(crate) async fn wait(&mut self) {
+        let Some(fd) = self.registered.as_ref() else {
+            return std::future::pending().await;
+        };
+        match fd.readable().await {
+            Ok(mut guard) => guard.clear_ready(),
+            Err(err) => {
+                warn!(err = %err, "client listener readiness failed; polling for clients");
+                self.registered = None;
+                self.registration_failed = true;
+            }
+        }
+    }
+}
+
 /// Accepts pending thin-client connections and starts their handshake readers.
 pub(crate) fn accept_pending_client_connections(
     listener: &LocalListener,

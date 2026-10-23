@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU64, Ordering};
 
+use tokio::sync::Notify;
+
 use crate::detect::{Agent, AgentDetection, AgentState};
 
 pub(super) const AGENT_PENDING_IDLE_RECHECK: std::time::Duration =
@@ -377,14 +379,81 @@ pub(super) fn codex_prompt_ready(content: &str) -> bool {
         && !recent.contains("Resumingsession")
 }
 
-pub(super) fn observe_detection_content_change(bytes: &[u8], detection_content_seq: &AtomicU64) {
-    if !bytes.is_empty() {
-        detection_content_seq.fetch_add(1, Ordering::Relaxed);
+/// Revision of a pane's detection input, bumped by PTY reads and local screen
+/// mutations, with the wake a quiet pane's detection task parks on.
+#[derive(Default)]
+pub(super) struct DetectionContent {
+    revision: AtomicU64,
+    changed: Notify,
+}
+
+impl DetectionContent {
+    pub(super) fn revision(&self) -> u64 {
+        self.revision.load(Ordering::Relaxed)
+    }
+
+    pub(super) fn observe_output(&self, bytes: &[u8]) {
+        if !bytes.is_empty() {
+            self.mark_changed();
+        }
+    }
+
+    pub(super) fn mark_changed(&self) {
+        self.revision.fetch_add(1, Ordering::Relaxed);
+        // Without a parked waiter this only stores a permit, so busy panes pay
+        // no extra wakeup per read.
+        self.changed.notify_one();
+    }
+
+    pub(super) async fn changed(&self) {
+        self.changed.notified().await;
     }
 }
 
-pub(super) fn mark_detection_content_changed(detection_content_seq: &AtomicU64) {
-    detection_content_seq.fetch_add(1, Ordering::Relaxed);
+/// How long a quiet pane's detection task parks before rechecking without new
+/// input. Matches the identified-process recheck interval, so a quiet pane
+/// still notices a silent foreground change within one recheck.
+pub(super) const QUIET_DETECTION_PARK: std::time::Duration = super::PROCESS_RECHECK_IDENTIFIED;
+
+/// Tracks whether detection input stayed unchanged across a full tick.
+#[derive(Debug, Default)]
+pub(super) struct QuietDetection {
+    last_revision: Option<u64>,
+}
+
+impl QuietDetection {
+    /// Records this tick's revision and reports whether it matches the last one.
+    pub(super) fn unchanged_since_last_tick(&mut self, revision: u64) -> bool {
+        let unchanged = self.last_revision == Some(revision);
+        self.last_revision = Some(revision);
+        unchanged
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.last_revision = None;
+    }
+}
+
+/// Detection states whose timers or confirmations need the fast tick. Anything
+/// else with unchanged input has nothing to decide until output arrives.
+#[derive(Debug, Clone, Copy)]
+pub(super) struct DetectionParkInput {
+    pub(super) input_unchanged: bool,
+    pub(super) fast_tick_requested: bool,
+    pub(super) acquiring_process: bool,
+    pub(super) startup_grace_active: bool,
+    pub(super) process_probe_pending: bool,
+    pub(super) visible_blocker: bool,
+}
+
+pub(super) fn may_park_detection(input: DetectionParkInput) -> bool {
+    input.input_unchanged
+        && !input.fast_tick_requested
+        && !input.acquiring_process
+        && !input.startup_grace_active
+        && !input.process_probe_pending
+        // Blocked panes republish their stable blocker on a short interval.
+        && !input.visible_blocker
 }
 
 #[cfg(test)]
@@ -684,24 +753,93 @@ mod tests {
 
     #[test]
     fn detection_content_change_tracks_raw_nonempty_reads_for_scan_scheduling() {
-        let seq = AtomicU64::new(0);
+        let content = DetectionContent::default();
 
-        observe_detection_content_change(b"", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 0);
+        content.observe_output(b"");
+        assert_eq!(content.revision(), 0);
 
-        observe_detection_content_change(b"\x1b[?2026h", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 1);
+        content.observe_output(b"\x1b[?2026h");
+        assert_eq!(content.revision(), 1);
 
-        observe_detection_content_change(b"body bytes", &seq);
-        assert_eq!(seq.load(Ordering::Relaxed), 2);
+        content.observe_output(b"body bytes");
+        assert_eq!(content.revision(), 2);
     }
 
     #[test]
     fn local_terminal_mutations_can_invalidate_idle_scan_skip() {
-        let seq = AtomicU64::new(0);
+        let content = DetectionContent::default();
 
-        mark_detection_content_changed(&seq);
+        content.mark_changed();
 
-        assert_eq!(seq.load(Ordering::Relaxed), 1);
+        assert_eq!(content.revision(), 1);
+    }
+
+    #[tokio::test]
+    async fn parked_detection_wakes_on_output_and_keeps_a_permit_while_busy() {
+        let content = DetectionContent::default();
+
+        content.observe_output(b"output while the task was not parked");
+        tokio::time::timeout(std::time::Duration::from_secs(1), content.changed())
+            .await
+            .expect("stored permit wakes the next park");
+
+        content.observe_output(b"");
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(20), content.changed())
+                .await
+                .is_err(),
+            "empty reads must not wake a parked task"
+        );
+    }
+
+    #[test]
+    fn quiet_detection_needs_one_unchanged_tick() {
+        let mut quiet = QuietDetection::default();
+        assert!(!quiet.unchanged_since_last_tick(4));
+        assert!(quiet.unchanged_since_last_tick(4));
+        assert!(!quiet.unchanged_since_last_tick(5));
+        quiet.clear();
+        assert!(!quiet.unchanged_since_last_tick(5));
+    }
+
+    #[test]
+    fn detection_parks_only_without_pending_timed_work() {
+        let idle = DetectionParkInput {
+            input_unchanged: true,
+            fast_tick_requested: false,
+            acquiring_process: false,
+            startup_grace_active: false,
+            process_probe_pending: false,
+            visible_blocker: false,
+        };
+        assert!(may_park_detection(idle));
+        for blocked in [
+            DetectionParkInput {
+                input_unchanged: false,
+                ..idle
+            },
+            DetectionParkInput {
+                fast_tick_requested: true,
+                ..idle
+            },
+            DetectionParkInput {
+                acquiring_process: true,
+                ..idle
+            },
+            DetectionParkInput {
+                startup_grace_active: true,
+                ..idle
+            },
+            DetectionParkInput {
+                process_probe_pending: true,
+                ..idle
+            },
+            DetectionParkInput {
+                visible_blocker: true,
+                ..idle
+            },
+        ] {
+            assert!(!may_park_detection(blocked), "{blocked:?}");
+        }
     }
 }

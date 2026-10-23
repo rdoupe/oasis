@@ -93,6 +93,13 @@ pub(crate) fn poll_fd_readable(fd: std::os::fd::RawFd, timeout_ms: i32) -> std::
     }
 }
 
+/// Raw descriptor of the client listener, for registering its accept readiness.
+pub(crate) fn local_listener_raw_fd(listener: &crate::ipc::LocalListener) -> std::os::fd::RawFd {
+    use std::os::fd::{AsFd as _, AsRawFd as _};
+    let crate::ipc::LocalListener::UdSocket(listener) = listener;
+    listener.as_fd().as_raw_fd()
+}
+
 pub(crate) fn shutdown_client_stream(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
     let crate::ipc::LocalStream::UdSocket(stream) = stream;
     stream.inner().shutdown(std::net::Shutdown::Both)
