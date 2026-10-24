@@ -217,7 +217,11 @@ fn loop_part(tokens: &std::collections::HashMap<String, String>) -> Option<Activ
         kind: ActivityKind::Loop,
         count: 1,
         label: (!label.is_empty()).then(|| label.clone()),
-        text: format!("↻{label}"),
+        text: if label.is_empty() {
+            "↻".to_owned()
+        } else {
+            format!("↻ {label}")
+        },
         color: LOOP_COLOR,
     })
 }
@@ -806,12 +810,12 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         assert_eq!(timed.kind, ActivityKind::Loop);
         assert_eq!(
             (timed.text.as_str(), timed.label.as_deref()),
-            ("↻22:42", Some("22:42"))
+            ("↻ 22:42", Some("22:42"))
         );
         let running = part("oasis:loop", "");
         assert_eq!((running.text.as_str(), running.label), ("↻", None));
         // Older servers only send the next wakeup.
-        assert_eq!(part("oasis:loop_next", "19:10").text, "↻19:10");
+        assert_eq!(part("oasis:loop_next", "19:10").text, "↻ 19:10");
     }
 
     #[test]
@@ -822,7 +826,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ("oasis:agents".to_owned(), "2".to_owned()),
             ("oasis:loop".to_owned(), "22:42".to_owned()),
         ]);
-        assert_eq!(activity_texts(&background_parts(&tokens)), ["↻22:42", "◯◯"]);
+        assert_eq!(
+            activity_texts(&background_parts(&tokens)),
+            ["↻ 22:42", "◯◯"]
+        );
         tokens.insert("oasis:goal".to_owned(), "1".to_owned());
         tokens.remove("oasis:loop");
         let parts = background_parts(&tokens);
