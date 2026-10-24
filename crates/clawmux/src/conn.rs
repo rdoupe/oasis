@@ -6,6 +6,7 @@ use std::cell::RefCell;
 use std::io;
 use std::os::fd::RawFd;
 
+use oasis_core::embed::sidebar::SidebarPrefs;
 use oasis_core::embed::wire::{ClientShellSnapshot, Method};
 use oasis_core::embed::{ClientCore, CoreOptions, Drained, EndpointId, MachineSource, PaneInput};
 
@@ -22,7 +23,7 @@ pub struct Conn {
 }
 
 impl Conn {
-    pub fn start(geometry: &Geometry) -> io::Result<Self> {
+    pub fn start(geometry: &Geometry, sidebar: SidebarPrefs) -> io::Result<Self> {
         let core = ClientCore::start(CoreOptions {
             surface_size: (geometry.cols, geometry.rows),
             cell_px: (geometry.cell_width_px, geometry.cell_height_px),
@@ -31,6 +32,7 @@ impl Conn {
             machines: MachineSource::SavedCatalog,
             local: true,
             server_exe: server_exe(),
+            sidebar: Some(sidebar),
         })?;
         Ok(Self {
             core,
@@ -57,6 +59,15 @@ impl Conn {
 
     pub fn retry(&self, endpoint: &EndpointId) {
         self.core.retry(endpoint);
+    }
+
+    /// Sends a typed request, as the key engine produces, to the active machine.
+    pub fn request_method(&self, method: Method) {
+        self.core.request(&self.active(), method);
+    }
+
+    pub fn set_sidebar_prefs(&self, prefs: SidebarPrefs) {
+        self.core.set_sidebar_prefs(prefs);
     }
 
     /// Sends one API operation to the active machine, e.g. `("tab.create", {"focus": true})`.

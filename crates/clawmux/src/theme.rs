@@ -198,6 +198,12 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-tabs button:hover {{ background: alpha({raised}, 0.7); color: {fg}; }}
 .clawmux-tabs button.focused {{ background: {raised}; color: {fg}; box-shadow: inset 0 -2px 0 {accent}; }}
 .clawmux-banner {{ background: {raised}; color: {fg}; padding: 6px 12px; }}
+.clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
+.clawmux-sidebar row.heading-row:hover {{ background: transparent; }}
+.clawmux-sidebar row.stale {{ opacity: 0.55; }}
+.clawmux-sidebar row.active-machine .machine {{ color: {accent}; font-weight: 700; }}
+.clawmux-sidebar .machine {{ color: {dim}; font-weight: 600; }}
+.clawmux-sidebar button.group-toggle {{ min-height: 0; min-width: 0; padding: 0 4px; color: {dim}; background: transparent; box-shadow: none; }}
 .dot {{ min-width: 8px; min-height: 8px; border-radius: 4px; background: {muted}; }}
 .dot.working {{ background: {yellow}; }}
 .dot.blocked {{ background: {red}; }}

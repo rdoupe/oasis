@@ -7,8 +7,9 @@ use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use gtk::prelude::*;
-use gtk::{gdk, gio, glib, pango};
-use oasis_core::embed::keys::{ActionKeybinds, IndexedKeybind, LiveKeybindConfig};
+use gtk::{gdk, gio, glib};
+use oasis_core::embed::keys::{ActionContext, KeyEngine, KeyMode, KeyOutcome, KeybindAction};
+use oasis_core::embed::sidebar::{SidebarModel, SidebarPrefs};
 use oasis_core::embed::wire::{
     AgentStatus, ClientMouseButton, ClientMouseKind, ClientMousePosition, ClientPaneInputEvent,
     ClientShellSnapshot, PaneSurfacePane,
@@ -18,42 +19,10 @@ use serde_json::json;
 use crate::conn::{Conn, Geometry, Machine};
 use crate::grid::Grid;
 use crate::keys::{self, Key};
+use crate::sidebar::{dot, SidebarView, Target};
 use crate::termview::{Selection, TermView};
 use crate::theme::Theme;
 use oasis_core::embed::{CoreEvent, EndpointId, EndpointStatus, SurfaceUpdate};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
-    NewWorkspace,
-    CloseWorkspace,
-    RenameWorkspace,
-    PreviousWorkspace,
-    NextWorkspace,
-    SwitchWorkspace(usize),
-    NewTab,
-    CloseTab,
-    RenameTab,
-    PreviousTab,
-    NextTab,
-    MoveTab(bool),
-    SwitchTab(usize),
-    FocusPane(&'static str),
-    SwapPane(&'static str),
-    ResizePane(&'static str),
-    CyclePane(bool),
-    SplitRight,
-    SplitDown,
-    ClosePane,
-    Zoom,
-    ClearPane,
-    EditScrollback,
-    ToggleSidebar,
-    PreviousAgent,
-    NextAgent,
-    FocusAgent(usize),
-    Detach,
-    ReloadConfig,
-}
 
 pub struct App {
     application: gtk::Application,
@@ -62,25 +31,19 @@ pub struct App {
     grid: Rc<RefCell<Grid>>,
     conn: RefCell<Option<Rc<Conn>>>,
     machines: RefCell<Vec<Machine>>,
-    machine_ids: RefCell<Vec<EndpointId>>,
-    machines_list: gtk::ListBox,
-    machines_heading: gtk::Label,
     snapshot: RefCell<Option<Box<ClientShellSnapshot>>>,
-    keybinds: RefCell<LiveKeybindConfig>,
-    prefix: Cell<bool>,
-    sidebar: gtk::Box,
-    spaces: gtk::ListBox,
-    agents: gtk::ListBox,
-    agents_heading: gtk::Label,
+    keys: RefCell<KeyEngine>,
+    sidebar: Rc<SidebarView>,
+    model: RefCell<Option<SidebarModel>>,
+    prefs: RefCell<SidebarPrefs>,
+    previous_pane: RefCell<Option<String>>,
+    notification_pane: RefCell<Option<String>>,
     tabs: gtk::Box,
-    status: gtk::Label,
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     banner_timer: RefCell<Option<glib::SourceId>>,
     theme: RefCell<Theme>,
     css: gtk::CssProvider,
-    space_ids: RefCell<Vec<String>>,
-    agent_ids: RefCell<Vec<String>>,
     pointer: Cell<(f64, f64)>,
     drag: Cell<Option<DragState>>,
     scroll_accum: Cell<f64>,
@@ -122,43 +85,7 @@ impl App {
         let grid = Rc::new(RefCell::new(Grid::new()));
         let view = TermView::new(grid.clone(), theme.clone());
 
-        let spaces = gtk::ListBox::new();
-        spaces.set_selection_mode(gtk::SelectionMode::None);
-        let agents = gtk::ListBox::new();
-        agents.set_selection_mode(gtk::SelectionMode::None);
-        let heading = |text: &str| {
-            let label = gtk::Label::new(Some(text));
-            label.set_xalign(0.0);
-            label.add_css_class("heading");
-            label
-        };
-        let agents_heading = heading("AGENTS");
-        let machines_heading = heading("MACHINES");
-        let machines_list = gtk::ListBox::new();
-        machines_list.set_selection_mode(gtk::SelectionMode::None);
-        machines_heading.set_visible(false);
-        machines_list.set_visible(false);
-        let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        lists.append(&machines_heading);
-        lists.append(&machines_list);
-        lists.append(&heading("SPACES"));
-        lists.append(&spaces);
-        lists.append(&agents_heading);
-        lists.append(&agents);
-        let scroller = gtk::ScrolledWindow::builder()
-            .hscrollbar_policy(gtk::PolicyType::Never)
-            .vexpand(true)
-            .child(&lists)
-            .build();
-        let status = gtk::Label::new(None);
-        status.set_xalign(0.0);
-        status.set_use_markup(true);
-        status.add_css_class("clawmux-status");
-        let sidebar = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        sidebar.add_css_class("clawmux-sidebar");
-        sidebar.set_size_request(250, -1);
-        sidebar.append(&scroller);
-        sidebar.append(&status);
+        let sidebar = SidebarView::new();
 
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 2);
         tabs.add_css_class("clawmux-tabs");
@@ -176,7 +103,7 @@ impl App {
         main.append(&banner);
         main.append(&view);
         let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        root.append(&sidebar);
+        root.append(&sidebar.root);
         root.append(&main);
         window.set_child(Some(&root));
 
@@ -187,25 +114,19 @@ impl App {
             grid,
             conn: RefCell::new(None),
             machines: RefCell::new(Vec::new()),
-            machine_ids: RefCell::new(Vec::new()),
-            machines_list,
-            machines_heading,
             snapshot: RefCell::new(None),
-            keybinds: RefCell::new(oasis_core::embed::keys::load()),
-            prefix: Cell::new(false),
+            keys: RefCell::new(KeyEngine::new(oasis_core::embed::keys::load())),
             sidebar,
-            spaces,
-            agents,
-            agents_heading,
+            model: RefCell::new(None),
+            prefs: RefCell::new(SidebarPrefs::load()),
+            previous_pane: RefCell::new(None),
+            notification_pane: RefCell::new(None),
             tabs,
-            status,
             banner,
             banner_label,
             banner_timer: RefCell::new(None),
             theme: RefCell::new(theme),
             css,
-            space_ids: RefCell::new(Vec::new()),
-            agent_ids: RefCell::new(Vec::new()),
             pointer: Cell::new((0.0, 0.0)),
             drag: Cell::new(None),
             scroll_accum: Cell::new(0.0),
@@ -265,28 +186,8 @@ impl App {
         self.window.add_controller(keys);
 
         let app = self.clone();
-        self.spaces.connect_row_activated(move |_, row| {
-            if let Some(id) = app.space_ids.borrow().get(row.index() as usize) {
-                app.request("workspace.focus", json!({ "workspace_id": id }));
-            }
-            app.view.grab_focus();
-        });
-        let app = self.clone();
-        self.machines_list.connect_row_activated(move |_, row| {
-            let id = app.machine_ids.borrow().get(row.index() as usize).cloned();
-            if let Some(id) = id {
-                app.switch_machine(&id);
-            }
-            app.view.grab_focus();
-        });
-        let app = self.clone();
-        self.agents.connect_row_activated(move |_, row| {
-            if let Some(id) = app.agent_ids.borrow().get(row.index() as usize) {
-                app.request("pane.focus", json!({ "pane_id": id }));
-            }
-            app.view.grab_focus();
-        });
-        self.wire_space_menu();
+        self.sidebar
+            .connect(move |target, row, button| app.on_sidebar(target, row, button));
         self.wire_mouse();
         self.wire_theme_monitor();
 
@@ -299,22 +200,6 @@ impl App {
             app.show();
         });
         self.application.add_action(&show_pane);
-    }
-
-    fn wire_space_menu(self: &Rc<Self>) {
-        let click = gtk::GestureClick::new();
-        click.set_button(gdk::BUTTON_SECONDARY);
-        let app = self.clone();
-        click.connect_pressed(move |_, _, x, y| {
-            let Some(row) = app.spaces.row_at_y(y as i32) else {
-                return;
-            };
-            let Some(id) = app.space_ids.borrow().get(row.index() as usize).cloned() else {
-                return;
-            };
-            app.space_menu(&row, &id, x, y);
-        });
-        self.spaces.add_controller(click);
     }
 
     fn space_menu(self: &Rc<Self>, row: &gtk::ListBoxRow, workspace_id: &str, _x: f64, _y: f64) {
@@ -445,7 +330,7 @@ impl App {
 
     /// Starts oasis's client core; from here the GTK loop wakes only on its wake fd.
     fn connect(self: &Rc<Self>) {
-        let conn = match Conn::start(&self.geometry()) {
+        let conn = match Conn::start(&self.geometry(), self.prefs.borrow().clone()) {
             Ok(conn) => Rc::new(conn),
             Err(error) => {
                 self.show_banner(
@@ -496,6 +381,7 @@ impl App {
                 }
                 if let Some(snapshot) = update.snapshot {
                     if is_active {
+                        self.track_previous_pane(&snapshot);
                         self.snapshot.replace(Some(snapshot.clone()));
                     }
                     machine.snapshot = Some(snapshot);
@@ -524,6 +410,10 @@ impl App {
                     None => {}
                 }
             }
+        }
+        if let Some(model) = drained.sidebar {
+            self.model.replace(Some(model));
+            chrome_changed = true;
         }
         if chrome_changed {
             self.rebuild_chrome();
@@ -568,6 +458,7 @@ impl App {
                 if let Some(body) = notification.body.as_deref() {
                     n.set_body(Some(body));
                 }
+                self.notification_pane.replace(notification.pane_id.clone());
                 if let Some(pane_id) = notification.pane_id.as_deref() {
                     n.set_default_action_and_target_value(
                         "app.show-pane",
@@ -631,114 +522,23 @@ impl App {
     // ----- chrome -----
 
     fn rebuild_chrome(self: &Rc<Self>) {
-        self.rebuild_machines();
+        let active = self
+            .conn
+            .borrow()
+            .as_ref()
+            .map(|conn| conn.active().as_str().to_owned())
+            .unwrap_or_default();
+        if let Some(model) = self.model.borrow().as_ref() {
+            self.sidebar.render(model, &active);
+        }
+        self.update_status();
         let snapshot = self.snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
-            // A machine without a snapshot yet shows empty chrome, not the last machine's.
-            self.spaces.remove_all();
-            self.agents.remove_all();
             while let Some(child) = self.tabs.first_child() {
                 self.tabs.remove(&child);
             }
             return;
         };
-
-        self.spaces.remove_all();
-        let mut space_ids = Vec::new();
-        let mut workspaces: Vec<_> = snapshot.workspaces.iter().collect();
-        workspaces.sort_by_key(|w| w.number);
-        for workspace in workspaces {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.append(&dot(workspace.agent_status));
-            let number = gtk::Label::new(Some(&workspace.number.to_string()));
-            number.add_css_class("number");
-            row.append(&number);
-            let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let label = ellipsized(&workspace.label);
-            text.append(&label);
-            let mut meta = workspace.branch.clone().unwrap_or_default();
-            if let Some((ahead, behind)) = workspace.git_ahead_behind {
-                if ahead > 0 {
-                    meta.push_str(&format!(" ↑{ahead}"));
-                }
-                if behind > 0 {
-                    meta.push_str(&format!(" ↓{behind}"));
-                }
-            }
-            for (_, value) in &workspace.tokens {
-                if !value.is_empty() {
-                    meta.push_str("  ");
-                    meta.push_str(value);
-                }
-            }
-            if !meta.trim().is_empty() {
-                let meta = ellipsized(meta.trim());
-                meta.add_css_class("meta");
-                text.append(&meta);
-            }
-            text.set_hexpand(true);
-            row.append(&text);
-            let list_row = gtk::ListBoxRow::new();
-            list_row.set_child(Some(&row));
-            if workspace.focused {
-                list_row.add_css_class("focused");
-            }
-            self.spaces.append(&list_row);
-            space_ids.push(workspace.workspace_id.clone());
-        }
-        self.space_ids.replace(space_ids);
-
-        self.agents.remove_all();
-        let mut agent_ids = Vec::new();
-        let ordered = ordered_agents(snapshot);
-        for agent in &ordered {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            row.append(&dot(agent.agent_status));
-            let text = gtk::Box::new(gtk::Orientation::Vertical, 0);
-            let name = agent
-                .name
-                .clone()
-                .or_else(|| agent.display_agent.clone())
-                .or_else(|| agent.agent.clone())
-                .unwrap_or_else(|| "agent".into());
-            text.append(&ellipsized(&name));
-            let workspace = snapshot
-                .workspaces
-                .iter()
-                .find(|w| w.workspace_id == agent.workspace_id)
-                .map(|w| w.label.clone())
-                .unwrap_or_default();
-            let mut meta = status_text(agent.agent_status).to_owned();
-            for (_, value) in &agent.state_labels {
-                if !value.is_empty() {
-                    meta = value.clone();
-                }
-            }
-            let detail = agent
-                .title
-                .clone()
-                .or_else(|| agent.terminal_title_stripped.clone())
-                .unwrap_or(workspace);
-            if !detail.is_empty() {
-                meta.push_str(" · ");
-                meta.push_str(&detail);
-            }
-            let meta = ellipsized(&meta);
-            meta.add_css_class("meta");
-            text.append(&meta);
-            text.set_hexpand(true);
-            row.append(&text);
-            let list_row = gtk::ListBoxRow::new();
-            list_row.set_child(Some(&row));
-            if agent.focused {
-                list_row.add_css_class("focused");
-            }
-            self.agents.append(&list_row);
-            agent_ids.push(agent.pane_id.clone());
-        }
-        self.agents_heading.set_visible(!agent_ids.is_empty());
-        self.agent_ids.replace(agent_ids);
-
         while let Some(child) = self.tabs.first_child() {
             self.tabs.remove(&child);
         }
@@ -806,61 +606,36 @@ impl App {
         self.window.set_title(Some(&title));
     }
 
-    fn rebuild_machines(&self) {
-        self.machines_list.remove_all();
-        let active = self.conn.borrow().as_ref().map(|conn| conn.active());
-        let machines = self.machines.borrow();
-        let mut ids = Vec::new();
-        for machine in machines.iter() {
-            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-            let status = match &machine.status {
-                EndpointStatus::Online => AgentStatus::Done,
-                EndpointStatus::Connecting | EndpointStatus::Reconnecting(_) => {
-                    AgentStatus::Working
-                }
-                EndpointStatus::Attention(_) => AgentStatus::Blocked,
-            };
-            row.append(&dot(status));
-            let label = if machine.id.is_local() {
-                "this machine".to_owned()
-            } else {
-                machine.label.clone()
-            };
-            let label = ellipsized(&label);
-            label.set_hexpand(true);
-            row.append(&label);
-            let list_row = gtk::ListBoxRow::new();
-            list_row.set_child(Some(&row));
-            if active.as_ref() == Some(&machine.id) {
-                list_row.add_css_class("focused");
-            }
-            self.machines_list.append(&list_row);
-            ids.push(machine.id.clone());
-        }
-        let several = ids.len() > 1;
-        self.machines_heading.set_visible(several);
-        self.machines_list.set_visible(several);
-        self.machine_ids.replace(ids);
-    }
-
     fn update_status(&self) {
-        let prefix = self
-            .keybinds
-            .borrow()
-            .primary_prefix_label()
-            .replace('&', "&amp;")
-            .replace('<', "&lt;");
-        let markup = if self.prefix.get() {
-            let theme = self.theme.borrow();
-            format!(
-                "oasis  <span background=\"{}\" foreground=\"{}\" weight=\"bold\"> PREFIX </span>  {prefix}",
+        let (leader, update) = match self.model.borrow().as_ref() {
+            Some(model) => (model.footer.leader.clone(), model.footer.update_attention),
+            None => (self.keys.borrow().config().primary_prefix_label(), false),
+        };
+        let leader = glib::markup_escape_text(&leader);
+        let theme = self.theme.borrow();
+        let mode = match self.keys.borrow().mode() {
+            KeyMode::Terminal => None,
+            KeyMode::Prefix => Some("PREFIX"),
+            KeyMode::Resize => Some("RESIZE"),
+            KeyMode::Navigate => Some("NAVIGATE"),
+            KeyMode::Copy => Some("COPY"),
+        };
+        let mut markup = String::from("🌴 oasis");
+        match mode {
+            Some(mode) => markup.push_str(&format!(
+                "  <span background=\"{}\" foreground=\"{}\" weight=\"bold\"> {mode} </span>  {leader}",
                 theme.accent.css(),
                 theme.sidebar.css()
-            )
-        } else {
-            format!("oasis · prefix {prefix}")
-        };
-        self.status.set_markup(&markup);
+            )),
+            None => markup.push_str(&format!(" · leader: {leader}")),
+        }
+        if update {
+            markup.push_str(&format!(
+                "  <span foreground=\"{}\">● update ready</span>",
+                theme.yellow.css()
+            ));
+        }
+        self.sidebar.status.set_markup(&markup);
     }
 
     fn show_banner(self: &Rc<Self>, message: &str, seconds: Option<u64>) {
@@ -889,7 +664,12 @@ impl App {
     // ----- keys -----
 
     fn on_key(self: &Rc<Self>, keyval: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
-        debug(|| format!("key {keyval:?} {state:?} prefix={}", self.prefix.get()));
+        debug(|| {
+            format!(
+                "key {keyval:?} {state:?} mode={:?}",
+                self.keys.borrow().mode()
+            )
+        });
         if keys::is_modifier(keyval) {
             return glib::Propagation::Proceed;
         }
@@ -912,28 +692,242 @@ impl App {
             return glib::Propagation::Stop;
         }
         let terminal_key = key.terminal_key();
-        let config = self.keybinds.borrow().clone();
-        if self.prefix.replace(false) {
-            self.update_status();
-            if config.matches_prefix(&terminal_key) {
-                // Prefix twice sends the prefix key itself through, as in tmux.
+        let outcomes = {
+            let snapshot = self.snapshot.borrow();
+            let Some(snapshot) = snapshot.as_deref() else {
                 self.send_key_to_pane(&key);
-            } else if let Some(action) = match_action(&config, &terminal_key, true) {
-                self.run(action);
+                return glib::Propagation::Stop;
+            };
+            let (agent_order, workspace_order) = self.navigation_orders(snapshot);
+            let previous = self.previous_pane.borrow().clone();
+            let ctx = ActionContext {
+                snapshot,
+                agent_order: &agent_order,
+                workspace_order: &workspace_order,
+                previous_pane_id: previous.as_deref(),
+                prompt_new_tab_name: false,
+            };
+            self.keys.borrow_mut().key(terminal_key, &ctx)
+        };
+        for outcome in outcomes {
+            match outcome {
+                KeyOutcome::ToPane(_) => self.send_key_to_pane(&key),
+                KeyOutcome::Request(request) => {
+                    if let Some(conn) = self.conn.borrow().as_ref() {
+                        conn.request_method(request.method);
+                    }
+                }
+                KeyOutcome::Action(action) => self.client_action(action),
+                KeyOutcome::Command(command) => self.show_banner(
+                    &format!("custom command \"{}\" isn't in clawmux yet", command.label),
+                    Some(4),
+                ),
+                KeyOutcome::ModeChanged(mode) => {
+                    if matches!(mode, KeyMode::Navigate | KeyMode::Copy) {
+                        // Not drawn yet: leave the mode rather than trap the keyboard.
+                        self.keys.borrow_mut().set_mode(KeyMode::Terminal);
+                        self.show_banner(&format!("{mode:?} mode isn't in clawmux yet"), Some(4));
+                    }
+                    self.update_status();
+                }
+                KeyOutcome::ModeKey(..) => {}
             }
-            return glib::Propagation::Stop;
         }
-        if config.matches_prefix(&terminal_key) {
-            self.prefix.set(true);
-            self.update_status();
-            return glib::Propagation::Stop;
-        }
-        if let Some(action) = match_action(&config, &terminal_key, false) {
-            self.run(action);
-            return glib::Propagation::Stop;
-        }
-        self.send_key_to_pane(&key);
         glib::Propagation::Stop
+    }
+
+    /// Agent pane ids and workspace indexes in sidebar order on the active machine,
+    /// as the key engine's index and next/previous actions count them.
+    fn navigation_orders(&self, snapshot: &ClientShellSnapshot) -> (Vec<String>, Vec<usize>) {
+        let active = self
+            .conn
+            .borrow()
+            .as_ref()
+            .map(|conn| conn.active().as_str().to_owned())
+            .unwrap_or_default();
+        let model = self.model.borrow();
+        let Some(model) = model.as_ref() else {
+            return (
+                snapshot.agent_order.clone(),
+                (0..snapshot.workspaces.len()).collect(),
+            );
+        };
+        let agents = model
+            .agents
+            .iter()
+            .filter(|agent| agent.endpoint == active)
+            .map(|agent| agent.pane_id.clone())
+            .collect();
+        let workspaces = model
+            .machines
+            .iter()
+            .find(|machine| machine.id == active)
+            .map(|machine| {
+                machine
+                    .spaces
+                    .iter()
+                    .filter_map(|space| {
+                        snapshot
+                            .workspaces
+                            .iter()
+                            .position(|w| w.workspace_id == space.workspace_id)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        (agents, workspaces)
+    }
+
+    fn track_previous_pane(&self, next: &ClientShellSnapshot) {
+        let current = self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.focused_pane_id.clone());
+        if current.is_some() && current != next.focused_pane_id {
+            self.previous_pane.replace(current);
+        }
+    }
+
+    /// Actions the key engine leaves to the front end: dialogs, the sidebar, put away.
+    fn client_action(self: &Rc<Self>, action: KeybindAction) {
+        let workspace = self.focused_workspace_id();
+        let tab = self.focused_tab_id();
+        let pane = self.focused_pane_id();
+        match action {
+            KeybindAction::NewWorkspace => self.request(
+                "workspace.create",
+                json!({ "source_workspace_id": workspace, "focus": true }),
+            ),
+            KeybindAction::RenameWorkspace => {
+                if let Some(id) = workspace {
+                    self.rename_workspace(&id);
+                }
+            }
+            KeybindAction::CloseWorkspace => {
+                if let Some(id) = workspace {
+                    self.confirm_close_workspace(&id);
+                }
+            }
+            KeybindAction::NewTab => self.request(
+                "tab.create",
+                json!({ "workspace_id": workspace, "focus": true }),
+            ),
+            KeybindAction::RenameTab => {
+                if let Some(id) = tab {
+                    self.rename_tab(&id);
+                }
+            }
+            KeybindAction::CloseTab => {
+                if let Some(id) = tab {
+                    self.confirm_close_tab(&id);
+                }
+            }
+            KeybindAction::RenamePane => {
+                if let Some(id) = pane {
+                    let app = self.clone();
+                    self.prompt("Rename pane", "", move |label| {
+                        app.request("pane.rename", json!({ "pane_id": id, "label": label }));
+                    });
+                }
+            }
+            KeybindAction::ClosePane => {
+                if let Some(id) = pane {
+                    let app = self.clone();
+                    self.confirm("Close this pane?", move || {
+                        app.request("pane.close", json!({ "pane_id": id }));
+                    });
+                }
+            }
+            KeybindAction::ToggleSidebar => self
+                .sidebar
+                .root
+                .set_visible(!self.sidebar.root.is_visible()),
+            KeybindAction::Detach => self.put_away(),
+            KeybindAction::EnterResizeMode => {
+                self.keys.borrow_mut().set_mode(KeyMode::Resize);
+                self.update_status();
+            }
+            KeybindAction::OpenNotificationTarget => {
+                if let Some(id) = self.notification_pane.borrow().clone() {
+                    self.request("pane.focus", json!({ "pane_id": id }));
+                }
+            }
+            KeybindAction::ReloadConfig => {
+                self.keys
+                    .borrow_mut()
+                    .set_config(oasis_core::embed::keys::load());
+                let prefs = SidebarPrefs::load();
+                if let Some(conn) = self.conn.borrow().as_ref() {
+                    conn.set_sidebar_prefs(prefs.clone());
+                }
+                self.prefs.replace(prefs);
+                self.reload_theme();
+                self.update_status();
+                self.request("server.reload_config", json!({}));
+            }
+            other => self.show_banner(&format!("{other:?} isn't in clawmux yet"), Some(4)),
+        }
+    }
+
+    // ----- sidebar -----
+
+    fn on_sidebar(self: &Rc<Self>, target: &Target, row: Option<&gtk::ListBoxRow>, button: u32) {
+        match target {
+            Target::Machine { endpoint } => self.switch_machine_str(endpoint),
+            Target::Space {
+                endpoint,
+                workspace_id,
+            } => {
+                self.switch_machine_str(endpoint);
+                if button == gdk::BUTTON_SECONDARY {
+                    if let Some(row) = row {
+                        self.space_menu(row, workspace_id, 0.0, 0.0);
+                    }
+                    return;
+                }
+                self.request("workspace.focus", json!({ "workspace_id": workspace_id }));
+            }
+            Target::Agent { endpoint, pane_id } => {
+                self.switch_machine_str(endpoint);
+                self.request("pane.focus", json!({ "pane_id": pane_id }));
+            }
+            Target::GroupToggle {
+                endpoint,
+                key,
+                collapsed,
+            } => {
+                let prefs = {
+                    let mut prefs = self.prefs.borrow_mut();
+                    let groups = prefs.collapsed_groups.entry(endpoint.clone()).or_default();
+                    if *collapsed {
+                        groups.remove(key);
+                    } else {
+                        groups.insert(key.clone());
+                    }
+                    prefs.clone()
+                };
+                if let Some(conn) = self.conn.borrow().as_ref() {
+                    conn.set_sidebar_prefs(prefs);
+                }
+            }
+        }
+        self.view.grab_focus();
+    }
+
+    fn switch_machine_str(self: &Rc<Self>, endpoint: &str) {
+        let id = self
+            .machines
+            .borrow()
+            .iter()
+            .find(|machine| machine.id.as_str() == endpoint)
+            .map(|machine| machine.id.clone());
+        let active = self.conn.borrow().as_ref().map(|conn| conn.active());
+        if let Some(id) = id {
+            if Some(&id) != active.as_ref() {
+                self.switch_machine(&id);
+            }
+        }
     }
 
     fn send_key_to_pane(&self, key: &Key) {
@@ -971,181 +965,6 @@ impl App {
             .borrow()
             .as_ref()
             .and_then(|s| s.focused_tab_id.clone())
-    }
-
-    fn run(self: &Rc<Self>, action: Action) {
-        let workspace = self.focused_workspace_id();
-        let tab = self.focused_tab_id();
-        let pane = self.focused_pane_id();
-        match action {
-            Action::NewWorkspace => self.request(
-                "workspace.create",
-                json!({ "source_workspace_id": workspace, "focus": true }),
-            ),
-            Action::CloseWorkspace => {
-                if let Some(id) = workspace {
-                    self.confirm_close_workspace(&id);
-                }
-            }
-            Action::RenameWorkspace => {
-                if let Some(id) = workspace {
-                    self.rename_workspace(&id);
-                }
-            }
-            Action::PreviousWorkspace | Action::NextWorkspace => {
-                let ids = self.space_ids.borrow().clone();
-                if let Some(next) =
-                    step(&ids, workspace.as_deref(), action == Action::NextWorkspace)
-                {
-                    self.request("workspace.focus", json!({ "workspace_id": next }));
-                }
-            }
-            Action::SwitchWorkspace(index) => {
-                if let Some(id) = self.space_ids.borrow().get(index) {
-                    self.request("workspace.focus", json!({ "workspace_id": id }));
-                }
-            }
-            Action::NewTab => self.request(
-                "tab.create",
-                json!({ "workspace_id": workspace, "focus": true }),
-            ),
-            Action::CloseTab => {
-                if let Some(id) = tab {
-                    self.confirm_close_tab(&id);
-                }
-            }
-            Action::RenameTab => {
-                if let Some(id) = tab {
-                    self.rename_tab(&id);
-                }
-            }
-            Action::PreviousTab | Action::NextTab => {
-                let ids = self.tab_ids();
-                if let Some(next) = step(&ids, tab.as_deref(), action == Action::NextTab) {
-                    self.request("tab.focus", json!({ "tab_id": next }));
-                }
-            }
-            Action::MoveTab(next) => {
-                let ids = self.tab_ids();
-                let Some(tab) = tab else { return };
-                let Some(source) = ids.iter().position(|id| *id == tab) else {
-                    return;
-                };
-                if ids.len() <= 1 {
-                    return;
-                }
-                let insert_index = if next {
-                    if source + 1 >= ids.len() {
-                        0
-                    } else {
-                        source + 2
-                    }
-                } else if source == 0 {
-                    ids.len()
-                } else {
-                    source - 1
-                };
-                self.request(
-                    "tab.move",
-                    json!({ "tab_id": tab, "insert_index": insert_index }),
-                );
-            }
-            Action::SwitchTab(index) => {
-                if let Some(id) = self.tab_ids().get(index) {
-                    self.request("tab.focus", json!({ "tab_id": id }));
-                }
-            }
-            Action::FocusPane(direction) => self.request(
-                "pane.focus_direction",
-                json!({ "pane_id": pane, "direction": direction }),
-            ),
-            Action::SwapPane(direction) => self.request(
-                "pane.swap",
-                json!({ "pane_id": pane, "direction": direction }),
-            ),
-            Action::ResizePane(direction) => self.request(
-                "pane.resize",
-                json!({ "pane_id": pane, "direction": direction }),
-            ),
-            Action::CyclePane(next) => {
-                let ids: Vec<String> = self
-                    .snapshot
-                    .borrow()
-                    .as_ref()
-                    .map(|s| {
-                        s.panes
-                            .iter()
-                            .filter(|p| Some(&p.tab_id) == tab.as_ref())
-                            .map(|p| p.pane_id.clone())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                if let Some(id) = step(&ids, pane.as_deref(), next) {
-                    self.request("pane.focus", json!({ "pane_id": id }));
-                }
-            }
-            Action::SplitRight | Action::SplitDown => self.request(
-                "pane.split",
-                json!({
-                    "workspace_id": workspace,
-                    "target_pane_id": pane,
-                    "direction": if action == Action::SplitRight { "right" } else { "down" },
-                    "focus": true,
-                }),
-            ),
-            Action::ClosePane => {
-                if let Some(id) = pane {
-                    self.request("pane.close", json!({ "pane_id": id }));
-                }
-            }
-            Action::Zoom => self.request("pane.zoom", json!({ "pane_id": pane, "mode": "toggle" })),
-            Action::ClearPane => {
-                if let Some(id) = pane {
-                    self.request("pane.clear", json!({ "pane_id": id }));
-                }
-            }
-            Action::EditScrollback => {
-                if let Some(id) = pane {
-                    self.request("pane.edit_scrollback", json!({ "pane_id": id }));
-                }
-            }
-            Action::ToggleSidebar => self.sidebar.set_visible(!self.sidebar.is_visible()),
-            Action::PreviousAgent | Action::NextAgent => {
-                let ids = self.agent_ids.borrow().clone();
-                if let Some(next) = step(&ids, pane.as_deref(), action == Action::NextAgent) {
-                    self.request("pane.focus", json!({ "pane_id": next }));
-                }
-            }
-            Action::FocusAgent(index) => {
-                if let Some(id) = self.agent_ids.borrow().get(index) {
-                    self.request("pane.focus", json!({ "pane_id": id }));
-                }
-            }
-            Action::Detach => self.put_away(),
-            Action::ReloadConfig => {
-                self.keybinds.replace(oasis_core::embed::keys::load());
-                self.update_status();
-                self.reload_theme();
-                self.request("server.reload_config", json!({}));
-            }
-        }
-    }
-
-    fn tab_ids(&self) -> Vec<String> {
-        let snapshot = self.snapshot.borrow();
-        let Some(snapshot) = snapshot.as_ref() else {
-            return Vec::new();
-        };
-        let Some(workspace) = snapshot.focused_workspace_id.as_deref() else {
-            return Vec::new();
-        };
-        let mut tabs: Vec<_> = snapshot
-            .tabs
-            .iter()
-            .filter(|t| t.workspace_id == workspace)
-            .collect();
-        tabs.sort_by_key(|t| t.number);
-        tabs.into_iter().map(|t| t.tab_id.clone()).collect()
     }
 
     // ----- dialogs -----
@@ -1501,143 +1320,8 @@ impl App {
     }
 }
 
-fn match_action(
-    config: &LiveKeybindConfig,
-    key: &oasis_core::embed::keys::TerminalKey,
-    prefix: bool,
-) -> Option<Action> {
-    let k = &config.keybinds;
-    let single: [(&ActionKeybinds, Action); 37] = [
-        (&k.new_workspace, Action::NewWorkspace),
-        (&k.close_workspace, Action::CloseWorkspace),
-        (&k.rename_workspace, Action::RenameWorkspace),
-        (&k.previous_workspace, Action::PreviousWorkspace),
-        (&k.next_workspace, Action::NextWorkspace),
-        (&k.new_tab, Action::NewTab),
-        (&k.close_tab, Action::CloseTab),
-        (&k.rename_tab, Action::RenameTab),
-        (&k.previous_tab, Action::PreviousTab),
-        (&k.next_tab, Action::NextTab),
-        (&k.move_tab_previous, Action::MoveTab(false)),
-        (&k.move_tab_next, Action::MoveTab(true)),
-        (&k.focus_pane_left, Action::FocusPane("left")),
-        (&k.focus_pane_down, Action::FocusPane("down")),
-        (&k.focus_pane_up, Action::FocusPane("up")),
-        (&k.focus_pane_right, Action::FocusPane("right")),
-        (&k.swap_pane_left, Action::SwapPane("left")),
-        (&k.swap_pane_down, Action::SwapPane("down")),
-        (&k.swap_pane_up, Action::SwapPane("up")),
-        (&k.swap_pane_right, Action::SwapPane("right")),
-        (&k.resize_pane_left, Action::ResizePane("left")),
-        (&k.resize_pane_down, Action::ResizePane("down")),
-        (&k.resize_pane_up, Action::ResizePane("up")),
-        (&k.resize_pane_right, Action::ResizePane("right")),
-        (&k.cycle_pane_next, Action::CyclePane(true)),
-        (&k.cycle_pane_previous, Action::CyclePane(false)),
-        (&k.split_vertical, Action::SplitRight),
-        (&k.split_horizontal, Action::SplitDown),
-        (&k.close_pane, Action::ClosePane),
-        (&k.zoom, Action::Zoom),
-        (&k.clear_pane, Action::ClearPane),
-        (&k.edit_scrollback, Action::EditScrollback),
-        (&k.toggle_sidebar, Action::ToggleSidebar),
-        (&k.previous_agent, Action::PreviousAgent),
-        (&k.next_agent, Action::NextAgent),
-        (&k.detach, Action::Detach),
-        (&k.reload_config, Action::ReloadConfig),
-    ];
-    for (bindings, action) in single {
-        let hit = if prefix {
-            bindings.matches_prefix_key(key)
-        } else {
-            bindings.matches_direct_key(key)
-        };
-        if hit {
-            return Some(action);
-        }
-    }
-    let indexed: [(&Vec<IndexedKeybind>, fn(usize) -> Action); 3] = [
-        (&k.switch_workspace, Action::SwitchWorkspace),
-        (&k.switch_tab, Action::SwitchTab),
-        (&k.focus_agent, Action::FocusAgent),
-    ];
-    for (bindings, make) in indexed {
-        for binding in bindings {
-            if binding.trigger.is_prefix() != prefix {
-                continue;
-            }
-            if let Some(index) = binding.matched_index(key) {
-                return Some(make(index));
-            }
-        }
-    }
-    None
-}
-
 fn debug(message: impl FnOnce() -> String) {
     if std::env::var_os("CLAWMUX_DEBUG").is_some() {
         eprintln!("clawmux: {}", message());
     }
-}
-
-fn step(ids: &[String], current: Option<&str>, forward: bool) -> Option<String> {
-    if ids.is_empty() {
-        return None;
-    }
-    let index = current
-        .and_then(|current| ids.iter().position(|id| id == current))
-        .unwrap_or(0);
-    let next = if forward {
-        (index + 1) % ids.len()
-    } else {
-        (index + ids.len() - 1) % ids.len()
-    };
-    ids.get(next).cloned()
-}
-
-fn ordered_agents(
-    snapshot: &ClientShellSnapshot,
-) -> Vec<&oasis_core::embed::wire::ClientShellAgent> {
-    let mut agents: Vec<_> = snapshot.agents.iter().collect();
-    if !snapshot.agent_order.is_empty() {
-        agents.sort_by_key(|agent| {
-            snapshot
-                .agent_order
-                .iter()
-                .position(|id| *id == agent.pane_id)
-                .unwrap_or(usize::MAX)
-        });
-    }
-    agents
-}
-
-fn status_text(status: AgentStatus) -> &'static str {
-    match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "needs you",
-        AgentStatus::Done => "done",
-        AgentStatus::Idle => "idle",
-        AgentStatus::Unknown => "—",
-    }
-}
-
-fn dot(status: AgentStatus) -> gtk::Widget {
-    let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    dot.add_css_class("dot");
-    dot.add_css_class(match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
-        _ => "idle",
-    });
-    dot.set_valign(gtk::Align::Center);
-    dot.set_halign(gtk::Align::Center);
-    dot.upcast()
-}
-
-fn ellipsized(text: &str) -> gtk::Label {
-    let label = gtk::Label::new(Some(text));
-    label.set_xalign(0.0);
-    label.set_ellipsize(pango::EllipsizeMode::End);
-    label
 }
