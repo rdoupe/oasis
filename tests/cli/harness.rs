@@ -178,6 +178,7 @@ pub(super) fn spawn_named_server(
     command
         .args(["--session", session, "server"])
         .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", test_state_home(config_home))
         .env("XDG_RUNTIME_DIR", runtime_dir)
         .env_remove("HERDR_SOCKET_PATH")
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
@@ -230,6 +231,7 @@ pub(super) fn run_named_cli_with_env_and_socket_override(
     command
         .args(args)
         .env("XDG_CONFIG_HOME", config_home)
+        .env("XDG_STATE_HOME", test_state_home(config_home))
         .env("XDG_RUNTIME_DIR", runtime_dir)
         .env_remove("HERDR_CLIENT_SOCKET_PATH")
         .env_remove("HERDR_ENV");
@@ -305,6 +307,7 @@ pub(super) fn spawn_herdr_with_config(
     isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
     cmd.env("XDG_CONFIG_HOME", config_home);
+    cmd.env("XDG_STATE_HOME", test_state_home(config_home));
     cmd.env("XDG_RUNTIME_DIR", runtime_dir);
     cmd.env("HERDR_SOCKET_PATH", socket_path);
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
@@ -608,4 +611,10 @@ pub(super) fn accept_fake_cli_operation(listener: &UnixListener) -> (UnixStream,
             CURRENT_PROTOCOL,
         );
     }
+}
+
+/// State folder beside a test's config folder, so plugin registries and
+/// saved state never land in the real user state folder.
+pub(super) fn test_state_home(config_home: &Path) -> PathBuf {
+    config_home.with_file_name("state")
 }
