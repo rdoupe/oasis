@@ -119,7 +119,7 @@ fn herdr_agent_change_requests_one_read_and_its_counts_reach_the_background_toke
     assert!(row.rows.iter().flatten().any(|token| matches!(
         &token.kind,
         crate::ui::ResolvedTokenKind::Activity(parts)
-            if parts.iter().map(|part| part.text.as_str()).collect::<Vec<_>>() == ["1s", "1m"]
+            if parts.iter().map(|part| part.text.as_str()).collect::<Vec<_>>() == ["$1", "∿1"]
     )));
 
     // The next snapshot from the server keeps the counts the client read.

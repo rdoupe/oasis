@@ -239,13 +239,13 @@ fn counted_part(
     tokens: &std::collections::HashMap<String, String>,
     key: &str,
     kind: ActivityKind,
-    suffix: &str,
+    text: impl Fn(u16) -> String,
 ) -> Option<ActivityPart> {
     count(tokens, key).map(|count| ActivityPart {
         kind,
         count,
         label: None,
-        text: format!("{count}{suffix}"),
+        text: text(count),
         color: COUNT_COLOR,
     })
 }
@@ -280,15 +280,22 @@ fn loop_part(tokens: &std::collections::HashMap<String, String>) -> Option<Activ
 }
 
 fn shells_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    counted_part(tokens, "shells", ActivityKind::Shells, "s")
+    // A leading mark, so counts don't read as durations (`5s`, `1m`).
+    counted_part(tokens, "shells", ActivityKind::Shells, |count| {
+        format!("${count}")
+    })
 }
 
 fn monitors_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    counted_part(tokens, "monitors", ActivityKind::Monitors, "m")
+    counted_part(tokens, "monitors", ActivityKind::Monitors, |count| {
+        format!("∿{count}")
+    })
 }
 
 fn mcp_tasks_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    counted_part(tokens, "mcp_tasks", ActivityKind::McpTasks, "mcp")
+    counted_part(tokens, "mcp_tasks", ActivityKind::McpTasks, |count| {
+        format!("{count}mcp")
+    })
 }
 
 /// One `◯` per subagent, as Claude lists a row for each.
@@ -802,7 +809,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ("oasis:agents".to_owned(), "4".to_owned()),
         ]);
         let parts = background_parts(&tokens);
-        assert_eq!(activity_texts(&parts), ["1s", "2m", "◯◯◯◯"]);
+        assert_eq!(activity_texts(&parts), ["$1", "∿2", "◯◯◯◯"]);
         assert_eq!(parts[0].color, COUNT_COLOR);
         assert_eq!(parts[2].color, SUBAGENT_COLOR);
         assert!(background_parts(&std::collections::HashMap::new()).is_empty());
