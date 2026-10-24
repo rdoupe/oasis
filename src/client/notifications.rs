@@ -6,13 +6,15 @@ use crate::protocol::NotifyKind;
 
 use super::shell;
 
-#[cfg(not(windows))]
-use crate::platform::show_desktop_notification as show_untargeted_system_notification;
-
-#[cfg(windows)]
+/// Runs native notification delivery (notify-send, osascript, WinRT) off the
+/// client loop, one at a time so replacements keep their order.
 fn queue_system_notification(
     task: impl FnOnce() -> io::Result<bool> + Send + 'static,
 ) -> io::Result<bool> {
+    if tokio::runtime::Handle::try_current().is_err() {
+        // Outside the client loop there is nothing to keep responsive.
+        return task();
+    }
     type Task = Box<dyn FnOnce() -> io::Result<bool> + Send>;
     static QUEUE: std::sync::OnceLock<tokio::sync::mpsc::UnboundedSender<Task>> =
         std::sync::OnceLock::new();
@@ -40,7 +42,6 @@ fn queue_system_notification(
     Ok(true)
 }
 
-#[cfg(windows)]
 fn show_untargeted_system_notification(title: &str, body: Option<&str>) -> io::Result<bool> {
     let title = title.to_owned();
     let body = body.map(str::to_owned);
@@ -77,7 +78,7 @@ pub(super) fn handle_shell_notification_effects(
                 #[cfg(windows)]
                 let result = show_system_notification(&title, body.as_deref(), target, event_tx);
                 #[cfg(not(windows))]
-                let result = crate::platform::show_desktop_notification(&title, body.as_deref());
+                let result = show_untargeted_system_notification(&title, body.as_deref());
                 if let Err(err) = result {
                     warn!(err = %err, "failed to emit system notification");
                 }
@@ -193,7 +194,7 @@ pub(super) fn sound_from_notify_message(message: &str) -> Option<crate::sound::S
     }
 }
 
-#[cfg(all(test, windows))]
+#[cfg(test)]
 mod tests {
     use super::*;
 
