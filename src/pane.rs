@@ -2285,18 +2285,35 @@ fn publish_reported_cwd(
 }
 
 impl PaneRuntime {
+    /// Closes the pane: stops its I/O at once and ends its process session
+    /// in the background. The HUP/TERM/KILL escalation waits up to 250 ms
+    /// per signal, and closing a tab or pane must not hold the server loop
+    /// (and with it the redraw) for that long. Server exit drops runtimes
+    /// instead, which still waits so no session outlives the server.
     pub fn shutdown(mut self) {
         if let Some(handle) = self.detect_handle.take() {
             handle.abort();
         }
         self.compression.abort();
         self.io.shutdown();
-        shutdown_pane_processes(
-            self.pane_id,
-            self.child_pid.load(Ordering::Acquire),
-            self.child_wait_completed.as_deref(),
-        );
+        let pane_id = self.pane_id;
+        let child_pid = self.child_pid.load(Ordering::Acquire);
+        let child_wait_completed = self.child_wait_completed.clone();
         self.preserve_processes_on_drop = true;
+        if child_pid == 0 {
+            return;
+        }
+        let spawned = std::thread::Builder::new()
+            .name("pane-shutdown".into())
+            .spawn({
+                let child_wait_completed = child_wait_completed.clone();
+                move || {
+                    shutdown_pane_processes(pane_id, child_pid, child_wait_completed.as_deref());
+                }
+            });
+        if spawned.is_err() {
+            shutdown_pane_processes(pane_id, child_pid, child_wait_completed.as_deref());
+        }
     }
 
     #[cfg(unix)]
@@ -6719,6 +6736,66 @@ mod tests {
 
         let expected = std::env::var(FISH_HANDLE_REFLOW_ENV_VAR).unwrap_or_else(|_| "0".into());
         assert_eq!(output, format!("{expected}\n"));
+    }
+
+    /// Closing a pane must not wait for its process session on the caller:
+    /// the HUP/TERM/KILL escalation runs in the background, and still ends a
+    /// session that ignores SIGHUP.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn shutdown_returns_before_a_hangup_ignoring_session_exits() {
+        let dir = std::env::temp_dir().join(format!(
+            "oasis-pane-shutdown-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let (events, _event_rx) = mpsc::channel(8);
+        let runtime = PaneRuntime::spawn_shell_command(
+            PaneId::from_raw(43),
+            24,
+            80,
+            dir.clone(),
+            "trap '' HUP; echo ready > ready.txt; while :; do sleep 1; done",
+            &PaneLaunchEnv::default(),
+            AgentDetection::Disabled,
+            0,
+            crate::terminal_theme::TerminalTheme::default(),
+            None,
+            events,
+            Arc::new(Notify::new()),
+            Arc::new(RenderSignal::new()),
+        )
+        .unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while !dir.join("ready.txt").exists() {
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("pane process should start");
+        let child_pid = runtime.child_pid.load(Ordering::Acquire);
+        assert_ne!(child_pid, 0);
+
+        let started = std::time::Instant::now();
+        runtime.shutdown();
+        // The HUP grace alone is 250 ms; the caller must not sit through it.
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(150),
+            "shutdown blocked for {:?}",
+            started.elapsed()
+        );
+        let gone = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+            while crate::platform::process_exists(child_pid) {
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        })
+        .await;
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(gone.is_ok(), "background shutdown should end the session");
     }
 
     #[cfg(unix)]
