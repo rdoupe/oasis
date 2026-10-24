@@ -208,7 +208,12 @@ pub fn spawn_server_daemon() -> io::Result<u32> {
             format!("failed to determine herdr executable path: {err}"),
         )
     })?;
+    spawn_server_daemon_with(exe)
+}
 
+/// Spawns `exe server` as a detached daemon, like [`spawn_server_daemon`] but
+/// for a caller that is not itself the `oasis` executable.
+pub fn spawn_server_daemon_with(exe: PathBuf) -> io::Result<u32> {
     info!(exe = %exe.display(), "spawning server daemon");
 
     let mut command = build_server_daemon_command(exe);

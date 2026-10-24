@@ -22,6 +22,10 @@ include = [
 
 # Oasis is a fork of Herdr: the package keeps Herdr's name so upstream merges
 # stay clean, and only the command users type is renamed.
+[lib]
+name = "oasis_core"
+path = "src/lib.rs"
+
 [[bin]]
 name = "oasis"
 path = "src/main.rs"

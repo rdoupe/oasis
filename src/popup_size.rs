@@ -4,7 +4,7 @@ use ratatui::layout::Rect;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum PopupSize {
+pub enum PopupSize {
     Cells(u16),
     Percent(u8),
 }

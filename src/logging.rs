@@ -9,6 +9,10 @@ use tracing_subscriber::EnvFilter;
 const DEFAULT_MAX_LOG_BYTES: u64 = 5 * 1024 * 1024;
 const DEFAULT_RETAINED_LOG_FILES: usize = 0;
 
+/// Log targets start with the library crate's name (`oasis_core`), which
+/// differs from both the package and the binary name.
+const DEFAULT_LOG_FILTER: &str = concat!(env!("CARGO_CRATE_NAME"), "=info");
+
 pub(crate) fn init_file_logging(file_name: &str) {
     let Ok(make_writer) = RotatingFileMakeWriter::new(
         crate::session::data_dir(),
@@ -19,9 +23,8 @@ pub(crate) fn init_file_logging(file_name: &str) {
         return;
     };
 
-    // Log targets start with the binary crate's name, which differs from the package name.
-    let filter = EnvFilter::try_from_env("HERDR_LOG")
-        .unwrap_or_else(|_| EnvFilter::new(concat!(env!("CARGO_CRATE_NAME"), "=info")));
+    let filter =
+        EnvFilter::try_from_env("HERDR_LOG").unwrap_or_else(|_| EnvFilter::new(DEFAULT_LOG_FILTER));
 
     let _ = tracing_subscriber::fmt()
         .with_env_filter(filter)
@@ -631,5 +634,42 @@ mod tests {
         assert!(!rotated_log_path(&path, 1).exists());
 
         let _ = fs::remove_dir_all(dir);
+    }
+}
+
+#[cfg(test)]
+mod default_filter_tests {
+    /// Events from library modules must pass the default filter: the filter
+    /// names the crate every module path starts with.
+    #[test]
+    fn default_filter_matches_library_events() {
+        use tracing_subscriber::layer::SubscriberExt as _;
+        assert_eq!(super::DEFAULT_LOG_FILTER, "oasis_core=info");
+        assert!(module_path!().starts_with("oasis_core::"));
+
+        let seen = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = CountEvents(seen.clone());
+        let subscriber = tracing_subscriber::registry()
+            .with(tracing_subscriber::EnvFilter::new(
+                super::DEFAULT_LOG_FILTER,
+            ))
+            .with(counter);
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!("client event");
+            tracing::debug!("filtered out");
+        });
+        assert_eq!(seen.load(std::sync::atomic::Ordering::Relaxed), 1);
+    }
+
+    struct CountEvents(std::sync::Arc<std::sync::atomic::AtomicUsize>);
+
+    impl<S: tracing::Subscriber> tracing_subscriber::Layer<S> for CountEvents {
+        fn on_event(
+            &self,
+            _event: &tracing::Event<'_>,
+            _ctx: tracing_subscriber::layer::Context<'_, S>,
+        ) {
+            self.0.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
     }
 }
