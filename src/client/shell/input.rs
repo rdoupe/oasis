@@ -353,6 +353,9 @@ impl ClientShellState {
                 RawInputEvent::Mouse(mouse) => self.handle_mouse(mouse, &mut outcome),
                 RawInputEvent::OuterFocusGained => {
                     self.outer_focused = Some(true);
+                    // Coming back to the window is a good moment to stop waiting out
+                    // a reconnect backoff: the network may have returned meanwhile.
+                    self.queue_reconnect_retries();
                     outcome.query_host_appearance = true;
                     outcome.repaint |= self.config.redraw_on_focus_gained;
                     if let Some(surface) = self.pane_surface.clone() {

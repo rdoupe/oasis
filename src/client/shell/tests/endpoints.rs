@@ -3052,3 +3052,17 @@ fn expanded_sidebar_footer_shows_the_leader_key_and_collapse_toggle() {
         assert!(footer.contains("leader: ctrl+b"), "{footer:?}");
     }
 }
+
+/// Coming back to the window retries machines still waiting out a reconnect
+/// backoff, and leaves online ones alone.
+#[test]
+fn focusing_the_window_retries_reconnecting_machines() {
+    let (mut state, id) = state_with_remote();
+    state.set_endpoint_status(&id, ClientEndpointStatus::Online);
+    state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
+    assert!(!state.take_machine_retries().contains(&id));
+
+    state.mark_endpoint_disconnected(&id);
+    state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
+    assert!(state.take_machine_retries().contains(&id));
+}

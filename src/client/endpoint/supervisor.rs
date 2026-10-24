@@ -17,6 +17,9 @@ const MAX_LOCAL_RETRY_DELAY: Duration = Duration::from_secs(30);
 const STABLE_CONNECTION_PERIOD: Duration = Duration::from_secs(60);
 // Allow Wi-Fi to return without restarting the historical failure ladder.
 const WAKE_RECOVERY_PERIOD: Duration = Duration::from_secs(30);
+// Right after launch the network may still be coming up (boot, resume, VPN),
+// so retries stay quick instead of backing off toward minutes.
+const LAUNCH_RECOVERY_PERIOD: Duration = Duration::from_secs(60);
 const WAKE_RETRY_DELAY: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Copy)]
@@ -103,6 +106,7 @@ pub(crate) struct EndpointSupervisors {
     shutdown: Arc<AtomicBool>,
     power_state: Option<crate::platform::HostPowerEvent>,
     wake_recovery_until: Option<Instant>,
+    launch_recovery_until: Instant,
 }
 
 impl EndpointSupervisors {
@@ -124,6 +128,7 @@ impl EndpointSupervisors {
             shutdown: Arc::new(AtomicBool::new(false)),
             power_state: None,
             wake_recovery_until: None,
+            launch_recovery_until: now + LAUNCH_RECOVERY_PERIOD,
         }
     }
 
@@ -322,7 +327,9 @@ impl EndpointSupervisors {
                 let delay = retry_delay(state.attempts);
                 let delay = if retry_after_resume {
                     Duration::ZERO
-                } else if self.wake_recovery_until.is_some_and(|until| now < until) {
+                } else if self.wake_recovery_until.is_some_and(|until| now < until)
+                    || now < self.launch_recovery_until
+                {
                     delay.min(WAKE_RETRY_DELAY)
                 } else {
                     delay
@@ -986,11 +993,41 @@ mod tests {
     }
 
     #[test]
+    fn failures_right_after_launch_retry_quickly_then_back_off() {
+        let now = Instant::now();
+        let profile = profile();
+        let id = ClientEndpointId::Ssh(profile.id.clone());
+        let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        let state = supervisors.endpoints.get_mut(&id).unwrap();
+        state.generation = Some(2);
+        state.attempts = 9;
+        state.in_flight = true;
+        supervisors.record_status(&id, 2, ClientEndpointStatus::Reconnecting, now);
+        let due = supervisors.endpoints[&id].next_attempt.unwrap();
+        assert!(
+            due <= now + WAKE_RETRY_DELAY,
+            "launch window keeps retries quick"
+        );
+
+        let later = now + LAUNCH_RECOVERY_PERIOD + Duration::from_secs(1);
+        let state = supervisors.endpoints.get_mut(&id).unwrap();
+        state.in_flight = true;
+        supervisors.record_status(&id, 2, ClientEndpointStatus::Reconnecting, later);
+        let due = supervisors.endpoints[&id].next_attempt.unwrap();
+        assert!(
+            due > later + WAKE_RETRY_DELAY,
+            "after the window the backoff resumes"
+        );
+    }
+
+    #[test]
     fn requested_retry_skips_backoff_without_duplicating_attempts() {
         let now = Instant::now();
         let profile = profile();
         let id = ClientEndpointId::Ssh(profile.id.clone());
         let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        // Long after launch: the normal backoff applies.
+        supervisors.launch_recovery_until = now;
         let state = supervisors.endpoints.get_mut(&id).unwrap();
         state.generation = Some(2);
         state.attempts = 9;
@@ -1024,6 +1061,8 @@ mod tests {
         let profile = profile();
         let id = ClientEndpointId::Ssh(profile.id.clone());
         let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        // Long after launch: the normal backoff applies.
+        supervisors.launch_recovery_until = now;
         let state = supervisors.endpoints.get_mut(&id).unwrap();
         state.generation = Some(2);
         state.attempts = 9;
@@ -1074,6 +1113,8 @@ mod tests {
         let profile = profile();
         let id = ClientEndpointId::Ssh(profile.id.clone());
         let mut supervisors = EndpointSupervisors::new(&[profile], now);
+        // Long after launch: the normal backoff applies.
+        supervisors.launch_recovery_until = now;
         let state = supervisors.endpoints.get_mut(&id).unwrap();
         state.generation = Some(2);
         state.attempts = 9;
@@ -1105,6 +1146,8 @@ mod tests {
             let profile = profile();
             let id = ClientEndpointId::Ssh(profile.id.clone());
             let mut supervisors = EndpointSupervisors::new(&[profile], now);
+            // Long after launch: the normal backoff applies.
+            supervisors.launch_recovery_until = now;
             let state = supervisors.endpoints.get_mut(&id).unwrap();
             state.generation = Some(2);
             state.attempts = 9;

@@ -111,6 +111,23 @@ impl ClientShellState {
         true
     }
 
+    /// Queues an immediate retry for every machine that is not online. The
+    /// supervisor only acts on ones waiting out a backoff.
+    pub(crate) fn queue_reconnect_retries(&mut self) {
+        for endpoint in &self.endpoints {
+            if endpoint.status != ClientEndpointStatus::Online
+                && !self
+                    .machine_diagnostics
+                    .retry_requests
+                    .contains(&endpoint.endpoint_id)
+            {
+                self.machine_diagnostics
+                    .retry_requests
+                    .push(endpoint.endpoint_id.clone());
+            }
+        }
+    }
+
     pub(crate) fn take_machine_retries(&mut self) -> Vec<ClientEndpointId> {
         std::mem::take(&mut self.machine_diagnostics.retry_requests)
     }
