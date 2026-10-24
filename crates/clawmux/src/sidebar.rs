@@ -220,7 +220,27 @@ impl SidebarView {
                 logo.set_tooltip_text(kind.map(String::as_str));
                 row.append(&logo);
             }
-            row.append(&token_rows(&agent.rows));
+            // The logo names the tool, so the title line keeps only the space name.
+            let rows: Vec<TokenRow> = agent
+                .rows
+                .iter()
+                .enumerate()
+                .map(|(index, row)| {
+                    if index > 0 {
+                        return row.clone();
+                    }
+                    row.iter()
+                        .filter(|token| {
+                            !matches!(
+                                token.kind,
+                                ResolvedTokenKind::Agent(_) | ResolvedTokenKind::Tab(_)
+                            )
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .collect();
+            row.append(&token_rows(&rows));
             let list_row = self.push(
                 row.upcast_ref(),
                 &mut targets,

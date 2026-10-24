@@ -693,9 +693,9 @@ impl App {
     }
 
     fn update_status(&self) {
-        let (leader, update) = match self.model.borrow().as_ref() {
-            Some(model) => (model.footer.leader.clone(), model.footer.update_attention),
-            None => (self.keys.borrow().config().primary_prefix_label(), false),
+        let leader = match self.model.borrow().as_ref() {
+            Some(model) => model.footer.leader.clone(),
+            None => self.keys.borrow().config().primary_prefix_label(),
         };
         let leader = glib::markup_escape_text(&leader);
         let theme = self.theme.borrow();
@@ -714,12 +714,6 @@ impl App {
                 theme.sidebar.css()
             )),
             None => markup.push_str(&format!(" · leader: {leader}")),
-        }
-        if update {
-            markup.push_str(&format!(
-                "  <span foreground=\"{}\">● update ready</span>",
-                theme.yellow.css()
-            ));
         }
         self.sidebar.status.set_markup(&markup);
     }
@@ -750,12 +744,6 @@ impl App {
     // ----- keys -----
 
     fn on_key(self: &Rc<Self>, keyval: gdk::Key, state: gdk::ModifierType) -> glib::Propagation {
-        debug(|| {
-            format!(
-                "key {keyval:?} {state:?} mode={:?}",
-                self.keys.borrow().mode()
-            )
-        });
         if keys::is_modifier(keyval) {
             return glib::Propagation::Proceed;
         }
@@ -804,7 +792,7 @@ impl App {
             };
             self.keys.borrow_mut().key(terminal_key, &ctx)
         };
-        debug(|| format!("key {:?} {:?} -> {outcomes:?}", key.code, key.modifiers));
+        debug(|| self.describe_key(&key, &outcomes));
         for outcome in outcomes {
             match outcome {
                 KeyOutcome::ToPane(_) => self.send_key_to_pane(&key),
@@ -830,6 +818,35 @@ impl App {
             }
         }
         glib::Propagation::Stop
+    }
+
+    /// A key for the debug log. Plain typed characters are never logged, only chords and
+    /// special keys, with the state the key engine saw.
+    fn describe_key(&self, key: &Key, outcomes: &[KeyOutcome]) -> String {
+        let chord = key
+            .modifiers
+            .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT | KeyModifiers::SUPER);
+        if !chord && matches!(key.code, KeyCode::Char(_)) {
+            return "typed key (not logged)".into();
+        }
+        let active = self
+            .conn
+            .borrow()
+            .as_ref()
+            .map(|conn| conn.active().as_str().to_owned());
+        let machines: Vec<String> = self
+            .model
+            .borrow()
+            .as_ref()
+            .map(|model| model.machines.iter().map(|m| m.id.clone()).collect())
+            .unwrap_or_default();
+        let focus = gtk::prelude::GtkWindowExt::focus(&self.window).map(|w| w.type_().name());
+        format!(
+            "key {:?} {:?} active={active:?} model_machines={machines:?} snapshot={} focus={focus:?} -> {outcomes:?}",
+            key.code,
+            key.modifiers,
+            self.snapshot.borrow().is_some(),
+        )
     }
 
     /// Agent pane ids and workspace indexes in sidebar order on the active machine,
