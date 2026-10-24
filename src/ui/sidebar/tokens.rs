@@ -107,21 +107,21 @@ pub(crate) fn agent_rows(
                             background_summary(context.tokens).map(ResolvedTokenKind::Custom)
                         }
                         AgentSidebarToken::Shells => {
-                            counted_activity(context.tokens, "shells", "shell")
+                            counted_activity(context.tokens, "shells", SHELL_ICON)
                                 .map(ResolvedTokenKind::Custom)
                         }
                         AgentSidebarToken::Monitors => {
-                            counted_activity(context.tokens, "monitors", "monitor")
+                            counted_activity(context.tokens, "monitors", MONITOR_ICON)
                                 .map(ResolvedTokenKind::Custom)
                         }
                         AgentSidebarToken::Subagents => {
-                            counted_activity(context.tokens, "agents", "agent")
+                            counted_activity(context.tokens, "agents", SUBAGENT_ICON)
                                 .map(ResolvedTokenKind::Custom)
                         }
                         AgentSidebarToken::Wakeup => context
                             .tokens
                             .get("oasis:loop_next")
-                            .map(|next| ResolvedTokenKind::Custom(format!("next {next}"))),
+                            .map(|next| ResolvedTokenKind::Custom(format!("{WAKEUP_ICON}{next}"))),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -140,31 +140,38 @@ pub(crate) fn agent_rows(
         .collect()
 }
 
-/// `"2 shells"` from the reserved `oasis:<key>` count the server attaches.
+// Emoji with default emoji presentation, so every terminal draws them two
+// cells wide. 🖥 would need a variation selector, so the screen is 📺.
+const SHELL_ICON: &str = "🐚";
+const MONITOR_ICON: &str = "📺";
+const SUBAGENT_ICON: &str = "🤖";
+const MCP_TASK_ICON: &str = "🔌";
+const WAKEUP_ICON: &str = "⏰";
+
+/// `"🐚2"` from the reserved `oasis:<key>` count the server attaches.
 fn counted_activity(
     tokens: &std::collections::HashMap<String, String>,
     key: &str,
-    noun: &str,
+    icon: &str,
 ) -> Option<String> {
     let count = tokens.get(&format!("oasis:{key}"))?;
-    let plural = if count == "1" { "" } else { "s" };
-    Some(format!("{count} {noun}{plural}"))
+    Some(format!("{icon}{count}"))
 }
 
 fn background_summary(tokens: &std::collections::HashMap<String, String>) -> Option<String> {
     let parts = [
-        counted_activity(tokens, "shells", "shell"),
-        counted_activity(tokens, "monitors", "monitor"),
-        counted_activity(tokens, "agents", "agent"),
-        counted_activity(tokens, "mcp_tasks", "MCP task"),
+        counted_activity(tokens, "shells", SHELL_ICON),
+        counted_activity(tokens, "monitors", MONITOR_ICON),
+        counted_activity(tokens, "agents", SUBAGENT_ICON),
+        counted_activity(tokens, "mcp_tasks", MCP_TASK_ICON),
         tokens
             .get("oasis:loop_next")
-            .map(|next| format!("next {next}")),
+            .map(|next| format!("{WAKEUP_ICON}{next}")),
     ]
     .into_iter()
     .flatten()
     .collect::<Vec<_>>();
-    (!parts.is_empty()).then(|| parts.join(" · "))
+    (!parts.is_empty()).then(|| parts.join(" "))
 }
 
 pub(crate) struct SpaceTokenContext<'a> {
@@ -640,13 +647,13 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         ]);
         assert_eq!(
             background_summary(&tokens).as_deref(),
-            Some("1 shell · 3 agents · next 19:10")
+            Some("🐚1 🤖3 ⏰19:10")
         );
         assert_eq!(
-            counted_activity(&tokens, "agents", "agent").as_deref(),
-            Some("3 agents")
+            counted_activity(&tokens, "agents", SUBAGENT_ICON).as_deref(),
+            Some("🤖3")
         );
-        assert_eq!(counted_activity(&tokens, "monitors", "monitor"), None);
+        assert_eq!(counted_activity(&tokens, "monitors", MONITOR_ICON), None);
         assert_eq!(background_summary(&std::collections::HashMap::new()), None);
     }
 }
