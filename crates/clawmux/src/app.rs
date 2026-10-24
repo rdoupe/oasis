@@ -15,11 +15,12 @@ use oasis_core::embed::wire::{
 };
 use serde_json::json;
 
-use crate::conn::{Conn, Geometry, Inbound};
-use crate::grid::{Grid, PatchOutcome};
+use crate::conn::{Conn, Geometry, Machine};
+use crate::grid::Grid;
 use crate::keys::{self, Key};
 use crate::termview::{Selection, TermView};
 use crate::theme::Theme;
+use oasis_core::embed::{CoreEvent, EndpointId, EndpointStatus, SurfaceUpdate};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Action {
@@ -59,8 +60,11 @@ pub struct App {
     window: gtk::ApplicationWindow,
     view: TermView,
     grid: Rc<RefCell<Grid>>,
-    conn: RefCell<Option<Conn>>,
-    connecting: Cell<bool>,
+    conn: RefCell<Option<Rc<Conn>>>,
+    machines: RefCell<Vec<Machine>>,
+    machine_ids: RefCell<Vec<EndpointId>>,
+    machines_list: gtk::ListBox,
+    machines_heading: gtk::Label,
     snapshot: RefCell<Option<Box<ClientShellSnapshot>>>,
     keybinds: RefCell<LiveKeybindConfig>,
     prefix: Cell<bool>,
@@ -129,7 +133,14 @@ impl App {
             label
         };
         let agents_heading = heading("AGENTS");
+        let machines_heading = heading("MACHINES");
+        let machines_list = gtk::ListBox::new();
+        machines_list.set_selection_mode(gtk::SelectionMode::None);
+        machines_heading.set_visible(false);
+        machines_list.set_visible(false);
         let lists = gtk::Box::new(gtk::Orientation::Vertical, 0);
+        lists.append(&machines_heading);
+        lists.append(&machines_list);
         lists.append(&heading("SPACES"));
         lists.append(&spaces);
         lists.append(&agents_heading);
@@ -175,7 +186,10 @@ impl App {
             view,
             grid,
             conn: RefCell::new(None),
-            connecting: Cell::new(false),
+            machines: RefCell::new(Vec::new()),
+            machine_ids: RefCell::new(Vec::new()),
+            machines_list,
+            machines_heading,
             snapshot: RefCell::new(None),
             keybinds: RefCell::new(oasis_core::embed::keys::load()),
             prefix: Cell::new(false),
@@ -254,6 +268,14 @@ impl App {
         self.spaces.connect_row_activated(move |_, row| {
             if let Some(id) = app.space_ids.borrow().get(row.index() as usize) {
                 app.request("workspace.focus", json!({ "workspace_id": id }));
+            }
+            app.view.grab_focus();
+        });
+        let app = self.clone();
+        self.machines_list.connect_row_activated(move |_, row| {
+            let id = app.machine_ids.borrow().get(row.index() as usize).cloned();
+            if let Some(id) = id {
+                app.switch_machine(&id);
             }
             app.view.grab_focus();
         });
@@ -421,71 +443,124 @@ impl App {
         self.connect();
     }
 
+    /// Starts oasis's client core; from here the GTK loop wakes only on its wake fd.
     fn connect(self: &Rc<Self>) {
-        if self.connecting.replace(true) {
+        let conn = match Conn::start(&self.geometry()) {
+            Ok(conn) => Rc::new(conn),
+            Err(error) => {
+                self.show_banner(
+                    &format!("could not start the oasis client core: {error}"),
+                    None,
+                );
+                return;
+            }
+        };
+        conn.focus(self.window.is_active());
+        let fd = conn.wake_fd();
+        self.conn.replace(Some(conn));
+        let app = self.clone();
+        glib_unix::unix_fd_add_local(fd, glib::IOCondition::IN, move |_, _| {
+            app.on_wake();
+            glib::ControlFlow::Continue
+        });
+    }
+
+    fn on_wake(self: &Rc<Self>) {
+        let Some(conn) = self.conn.borrow().clone() else {
             return;
+        };
+        let drained = conn.drain();
+        let active = conn.active();
+        let mut chrome_changed = false;
+        for update in drained.endpoints {
+            let is_active = update.id == active;
+            {
+                let mut machines = self.machines.borrow_mut();
+                let index = match machines.iter().position(|m| m.id == update.id) {
+                    Some(index) => index,
+                    None => {
+                        machines.push(Machine {
+                            id: update.id.clone(),
+                            label: update.label.clone(),
+                            status: EndpointStatus::Connecting,
+                            snapshot: None,
+                        });
+                        chrome_changed = true;
+                        machines.len() - 1
+                    }
+                };
+                let machine = &mut machines[index];
+                if let Some(status) = update.status {
+                    chrome_changed |= machine.status != status;
+                    machine.status = status;
+                }
+                if let Some(snapshot) = update.snapshot {
+                    if is_active {
+                        self.snapshot.replace(Some(snapshot.clone()));
+                    }
+                    machine.snapshot = Some(snapshot);
+                    chrome_changed = true;
+                }
+            }
+            if is_active {
+                self.show_endpoint_status();
+                match update.surface {
+                    Some(SurfaceUpdate::Full(surface)) => {
+                        self.grid.borrow_mut().set_full(*surface);
+                        self.view.set_selection(None);
+                        self.view.queue_draw();
+                    }
+                    Some(SurfaceUpdate::Patch {
+                        surface_revision,
+                        rows,
+                        panes,
+                        cursor,
+                    }) => {
+                        self.grid
+                            .borrow_mut()
+                            .apply_rows(surface_revision, rows, panes, cursor);
+                        self.view.queue_draw();
+                    }
+                    None => {}
+                }
+            }
         }
-        let geometry = self.geometry();
-        let (done_tx, done_rx) = async_channel::bounded(1);
-        std::thread::spawn(move || {
-            let _ = done_tx.send_blocking(Conn::connect(&geometry));
-        });
-        let app = self.clone();
-        glib::spawn_future_local(async move {
-            let result = done_rx.recv().await;
-            app.connecting.set(false);
-            match result {
-                Ok(Ok((conn, inbound))) => {
-                    // The window may have resized while connecting.
-                    conn.resize(&app.geometry());
-                    conn.focus(app.window.is_active());
-                    app.conn.replace(Some(conn));
-                    app.hide_banner();
-                    while let Ok(message) = inbound.recv().await {
-                        app.on_message(message);
-                    }
-                }
-                Ok(Err(error)) => app.disconnected(&error.to_string()),
-                Err(_) => app.disconnected("connection thread ended"),
-            }
-        });
+        if chrome_changed {
+            self.rebuild_chrome();
+        }
+        for event in drained.events {
+            self.on_event(event);
+        }
     }
 
-    fn disconnected(self: &Rc<Self>, reason: &str) {
-        self.conn.replace(None);
-        self.show_banner(&format!("{reason} — reconnecting…"), None);
-        let app = self.clone();
-        glib::timeout_add_local_once(Duration::from_secs(2), move || {
-            if app.conn.borrow().is_none() {
-                app.connect();
+    fn show_endpoint_status(self: &Rc<Self>) {
+        let Some(conn) = self.conn.borrow().clone() else {
+            return;
+        };
+        let active = conn.active();
+        let machines = self.machines.borrow();
+        let Some(machine) = machines.iter().find(|m| m.id == active) else {
+            return;
+        };
+        match &machine.status {
+            EndpointStatus::Online => self.hide_banner(),
+            EndpointStatus::Connecting => {
+                self.show_banner(&format!("connecting to {}…", machine.label), None)
             }
-        });
+            EndpointStatus::Reconnecting(reason) => self.show_banner(
+                &format!("{} — {reason} — reconnecting…", machine.label),
+                None,
+            ),
+            EndpointStatus::Attention(reason) => self.show_banner(
+                &format!("{} needs attention: {reason}", machine.label),
+                None,
+            ),
+        }
     }
 
-    fn on_message(self: &Rc<Self>, message: Inbound) {
-        match message {
-            Inbound::Snapshot(snapshot) => {
-                self.snapshot.replace(Some(snapshot));
-                self.rebuild_chrome();
-            }
-            Inbound::Surface(surface) => {
-                self.grid.borrow_mut().set_full(*surface);
-                self.view.set_selection(None);
-                self.view.queue_draw();
-            }
-            Inbound::Patch(patch) => {
-                let outcome = self.grid.borrow_mut().apply_patch(*patch);
-                match outcome {
-                    PatchOutcome::Applied => self.view.queue_draw(),
-                    // Ask for a fresh full surface by restating our size.
-                    PatchOutcome::Rejected => {
-                        if let Some(conn) = self.conn.borrow().as_ref() {
-                            conn.resize(&self.geometry());
-                        }
-                    }
-                }
-            }
-            Inbound::Notification(notification) => {
+    fn on_event(self: &Rc<Self>, event: CoreEvent) {
+        match event {
+            CoreEvent::Notification { notification, .. } => {
                 if self.window.is_active() {
                     return;
                 }
@@ -501,46 +576,70 @@ impl App {
                 }
                 self.application.send_notification(None, &n);
             }
-            Inbound::Error(message) => self.show_banner(&message, Some(6)),
-            Inbound::Response { data, .. } => {
-                if let Ok(value) = serde_json::from_slice::<serde_json::Value>(&data) {
-                    if let Some(error) = value.get("error") {
-                        let message = error
-                            .get("message")
-                            .and_then(|m| m.as_str())
-                            .map(str::to_owned)
-                            .unwrap_or_else(|| error.to_string());
-                        self.show_banner(&message, Some(5));
-                    }
-                }
-            }
-            Inbound::Title(title) => {
+            CoreEvent::Error { message, .. } => self.show_banner(&message, Some(6)),
+            CoreEvent::Response {
+                result: Err(error), ..
+            } => self.show_banner(&error.message, Some(5)),
+            CoreEvent::Title { title, .. } => {
                 self.window
                     .set_title(Some(title.as_deref().unwrap_or("clawmux")));
             }
-            Inbound::Clipboard(data) => {
-                use base64::Engine as _;
-                if let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(data) {
-                    if let Ok(text) = String::from_utf8(bytes) {
-                        self.view.clipboard().set_text(&text);
-                    }
+            CoreEvent::Clipboard { data, .. } => {
+                if let Ok(text) = String::from_utf8(data) {
+                    self.view.clipboard().set_text(&text);
                 }
             }
-            Inbound::Closed(reason) => self.disconnected(&reason),
+            _ => {}
         }
     }
 
-    fn request(&self, method: &str, params: serde_json::Value) {
-        if let Some(conn) = self.conn.borrow().as_ref() {
-            conn.request(method, params);
+    fn switch_machine(self: &Rc<Self>, id: &EndpointId) {
+        let Some(conn) = self.conn.borrow().clone() else {
+            return;
+        };
+        let (online, snapshot) = {
+            let machines = self.machines.borrow();
+            let Some(machine) = machines.iter().find(|m| &m.id == id) else {
+                return;
+            };
+            (
+                machine.status == EndpointStatus::Online,
+                machine.snapshot.clone(),
+            )
+        };
+        if !online {
+            conn.retry(id);
+        }
+        conn.set_active(id);
+        self.snapshot.replace(snapshot);
+        self.grid.borrow_mut().clear();
+        self.view.queue_draw();
+        self.rebuild_chrome();
+        self.show_endpoint_status();
+    }
+
+    fn request(self: &Rc<Self>, method: &str, params: serde_json::Value) {
+        let result = match self.conn.borrow().as_ref() {
+            Some(conn) => conn.request(method, params),
+            None => return,
+        };
+        if let Err(error) = result {
+            self.show_banner(&error, Some(5));
         }
     }
 
     // ----- chrome -----
 
     fn rebuild_chrome(self: &Rc<Self>) {
+        self.rebuild_machines();
         let snapshot = self.snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
+            // A machine without a snapshot yet shows empty chrome, not the last machine's.
+            self.spaces.remove_all();
+            self.agents.remove_all();
+            while let Some(child) = self.tabs.first_child() {
+                self.tabs.remove(&child);
+            }
             return;
         };
 
@@ -707,6 +806,43 @@ impl App {
         self.window.set_title(Some(&title));
     }
 
+    fn rebuild_machines(&self) {
+        self.machines_list.remove_all();
+        let active = self.conn.borrow().as_ref().map(|conn| conn.active());
+        let machines = self.machines.borrow();
+        let mut ids = Vec::new();
+        for machine in machines.iter() {
+            let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+            let status = match &machine.status {
+                EndpointStatus::Online => AgentStatus::Done,
+                EndpointStatus::Connecting | EndpointStatus::Reconnecting(_) => {
+                    AgentStatus::Working
+                }
+                EndpointStatus::Attention(_) => AgentStatus::Blocked,
+            };
+            row.append(&dot(status));
+            let label = if machine.id.is_local() {
+                "this machine".to_owned()
+            } else {
+                machine.label.clone()
+            };
+            let label = ellipsized(&label);
+            label.set_hexpand(true);
+            row.append(&label);
+            let list_row = gtk::ListBoxRow::new();
+            list_row.set_child(Some(&row));
+            if active.as_ref() == Some(&machine.id) {
+                list_row.add_css_class("focused");
+            }
+            self.machines_list.append(&list_row);
+            ids.push(machine.id.clone());
+        }
+        let several = ids.len() > 1;
+        self.machines_heading.set_visible(several);
+        self.machines_list.set_visible(several);
+        self.machine_ids.replace(ids);
+    }
+
     fn update_status(&self) {
         let prefix = self
             .keybinds
@@ -715,7 +851,12 @@ impl App {
             .replace('&', "&amp;")
             .replace('<', "&lt;");
         let markup = if self.prefix.get() {
-            format!("<span>oasis</span>  <span class=\"mode\"> PREFIX </span>  {prefix}")
+            let theme = self.theme.borrow();
+            format!(
+                "oasis  <span background=\"{}\" foreground=\"{}\" weight=\"bold\"> PREFIX </span>  {prefix}",
+                theme.accent.css(),
+                theme.sidebar.css()
+            )
         } else {
             format!("oasis · prefix {prefix}")
         };
@@ -1174,7 +1315,7 @@ impl App {
         true
     }
 
-    fn mouse_down(&self, button: u32, x: f64, y: f64, state: gdk::ModifierType) {
+    fn mouse_down(self: &Rc<Self>, button: u32, x: f64, y: f64, state: gdk::ModifierType) {
         debug(|| {
             format!(
                 "mouse down {button} at {x:.0},{y:.0} cell {:?}",

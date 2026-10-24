@@ -1,7 +1,8 @@
 //! The pane-area cell grid the server renders, kept in sync from full surfaces and patches.
 
 use oasis_core::embed::wire::{
-    CellData, CursorState, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatch, PaneSurfaceSplit,
+    CellData, CursorState, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatch,
+    PaneSurfacePatchRow, PaneSurfaceSplit,
 };
 
 pub struct Grid {
@@ -86,6 +87,40 @@ impl Grid {
         self.cursor = patch.cursor;
         self.surface_revision = patch.surface_revision;
         PatchOutcome::Applied
+    }
+
+    /// Applies the client core's coalesced patch: full-width rows already merged in order.
+    pub fn apply_rows(
+        &mut self,
+        surface_revision: u64,
+        rows: Vec<PaneSurfacePatchRow>,
+        panes: Vec<PaneSurfacePane>,
+        cursor: Option<CursorState>,
+    ) {
+        let width = usize::from(self.width);
+        for row in rows {
+            let start = usize::from(row.y) * width + usize::from(row.x);
+            let end = start + row.cells.len();
+            if row.y >= self.height || end > self.cells.len() {
+                // Out of shape for this grid; the core follows with a full surface.
+                continue;
+            }
+            self.cells[start..end].clone_from_slice(&row.cells);
+            self.dirty[usize::from(row.y)] = true;
+        }
+        for updated in panes {
+            if let Some(existing) = self.panes.iter_mut().find(|p| p.pane_id == updated.pane_id) {
+                *existing = updated;
+            }
+        }
+        self.mark_cursor_rows(&cursor);
+        self.cursor = cursor;
+        self.surface_revision = surface_revision;
+    }
+
+    /// Forgets the surface, e.g. when switching machines, until the next full one arrives.
+    pub fn clear(&mut self) {
+        *self = Self::new();
     }
 
     fn mark_cursor_rows(&mut self, next: &Option<CursorState>) {
@@ -218,21 +253,40 @@ pub mod style {
 mod tests {
     use super::*;
 
-    use oasis_core::embed::wire::{FrameData, PaneSurfaceFrame, PaneSurfacePatch, PaneSurfacePatchRow};
+    use oasis_core::embed::wire::{
+        FrameData, PaneSurfaceFrame, PaneSurfacePatch, PaneSurfacePatchRow,
+    };
 
     fn cell(symbol: &str) -> CellData {
-        CellData { symbol: symbol.into(), fg: 0, bg: 0, modifier: 0, skip: false, hyperlink: None }
+        CellData {
+            symbol: symbol.into(),
+            fg: 0,
+            bg: 0,
+            modifier: 0,
+            skip: false,
+            hyperlink: None,
+        }
     }
 
     fn grid_with(rows: &[&str]) -> Grid {
         let width = rows[0].chars().count() as u16;
-        let cells = rows.iter().flat_map(|r| r.chars().map(|c| cell(&c.to_string()))).collect();
+        let cells = rows
+            .iter()
+            .flat_map(|r| r.chars().map(|c| cell(&c.to_string())))
+            .collect();
         let mut grid = Grid::new();
         grid.set_full(PaneSurfaceFrame {
             boot_id: "b".into(),
             projection_revision: 1,
             surface_revision: 1,
-            frame: FrameData { cells, width, height: rows.len() as u16, cursor: None, hyperlinks: vec![], graphics: vec![] },
+            frame: FrameData {
+                cells,
+                width,
+                height: rows.len() as u16,
+                cursor: None,
+                hyperlinks: vec![],
+                graphics: vec![],
+            },
             panes: vec![],
             splits: vec![],
             popup: None,
@@ -256,14 +310,24 @@ mod tests {
             projection_revision: 1,
             base_surface_revision: base,
             surface_revision: next,
-            rows: vec![PaneSurfacePatchRow { x: 1, y: 1, cells: vec![cell("Z")] }],
+            rows: vec![PaneSurfacePatchRow {
+                x: 1,
+                y: 1,
+                cells: vec![cell("Z")],
+            }],
             panes: vec![],
             cursor: None,
         };
-        assert!(matches!(grid.apply_patch(patch(1, 2)), PatchOutcome::Applied));
+        assert!(matches!(
+            grid.apply_patch(patch(1, 2)),
+            PatchOutcome::Applied
+        ));
         assert_eq!(grid.cell(1, 1).unwrap().symbol, "Z");
         assert!(matches!(grid.take_damage(), Damage::Rows(rows) if rows == vec![1]));
-        assert!(matches!(grid.apply_patch(patch(1, 2)), PatchOutcome::Rejected));
+        assert!(matches!(
+            grid.apply_patch(patch(1, 2)),
+            PatchOutcome::Rejected
+        ));
     }
 
     #[test]

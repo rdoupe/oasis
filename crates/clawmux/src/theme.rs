@@ -193,7 +193,6 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-sidebar .meta {{ color: {dim}; font-size: 0.86em; }}
 .clawmux-sidebar .number {{ color: {dim}; font-feature-settings: "tnum"; min-width: 1.2em; }}
 .clawmux-status {{ color: {dim}; font-size: 0.82em; padding: 8px 14px; border-top: 1px solid {raised}; }}
-.clawmux-status .mode {{ color: {sidebar}; background: {accent}; border-radius: 4px; padding: 0 6px; font-weight: 700; }}
 .clawmux-tabs {{ background: {sidebar}; padding: 4px 6px; border-bottom: 1px solid {raised}; }}
 .clawmux-tabs button {{ background: transparent; color: {dim}; border: none; box-shadow: none; border-radius: 6px; padding: 2px 12px; min-height: 0; }}
 .clawmux-tabs button:hover {{ background: alpha({raised}, 0.7); color: {fg}; }}
