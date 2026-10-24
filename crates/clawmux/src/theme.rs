@@ -188,7 +188,7 @@ impl Theme {
             r#"
 window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-sidebar {{ background: {sidebar}; border-right: 1px solid {raised}; }}
-.clawmux-sidebar .heading {{ color: {dim}; font-size: 0.78em; font-weight: 700; letter-spacing: 0.08em; margin: 12px 14px 4px; }}
+.clawmux-sidebar .heading {{ color: {accent}; font-size: 0.74em; font-weight: 800; letter-spacing: 0.12em; margin: 12px 14px 4px; }}
 .clawmux-sidebar list {{ background: transparent; }}
 .clawmux-sidebar row {{ border-radius: 8px; margin: 1px 8px; padding: 5px 8px; color: {fg}; background: transparent; }}
 .clawmux-sidebar row:hover {{ background: alpha({raised}, 0.7); }}
@@ -209,6 +209,7 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-tabs button.tab-add:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
 .clawmux-banner {{ background: {raised}; color: {fg}; padding: 6px 12px; }}
 .clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
+.clawmux-sidebar separator.section-divider {{ background: {raised}; min-height: 1px; margin: 10px 12px 2px; }}
 .clawmux-sidebar row.heading-row:hover {{ background: transparent; }}
 .clawmux-sidebar row.stale {{ opacity: 0.55; }}
 .clawmux-sidebar row.active-machine .machine {{ color: {accent}; font-weight: 700; }}

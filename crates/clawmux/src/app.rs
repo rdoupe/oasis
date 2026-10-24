@@ -176,6 +176,10 @@ impl App {
             let active = window.is_active();
             debug(|| format!("window active={active}"));
             app.view.set_window_focused(active);
+            if active {
+                // Keys always go to the terminal, whatever was clicked last.
+                app.view.grab_focus();
+            }
             if let Some(conn) = app.conn.borrow().as_ref() {
                 conn.focus(active);
             }
@@ -592,6 +596,7 @@ impl App {
             }
             let add = gtk::Button::with_label("+");
             add.add_css_class("tab-add");
+            add.set_focusable(false);
             add.set_tooltip_text(Some("New tab"));
             let (app, ws) = (self.clone(), focused_workspace.to_owned());
             add.connect_clicked(move |_| {
@@ -634,6 +639,7 @@ impl App {
         }
         slot.add_named(&status, Some("status"));
         let close = gtk::Button::with_label("×");
+        close.set_focusable(false);
         close.add_css_class("tab-action");
         close.set_tooltip_text(Some("Close tab"));
         let (app, id) = (self.clone(), tab.tab_id.clone());
@@ -1449,9 +1455,43 @@ fn toast_delivery_from(text: &str) -> ToastDelivery {
     }
 }
 
+/// Debug logging: `CLAWMUX_DEBUG=1` prints to stderr; creating
+/// ~/.local/state/clawmux/debug turns on a log at ~/.local/state/clawmux/debug.log,
+/// so it can be enabled for an app started from a launcher.
 fn debug(message: impl FnOnce() -> String) {
-    if std::env::var_os("CLAWMUX_DEBUG").is_some() {
-        eprintln!("clawmux: {}", message());
+    use std::io::Write as _;
+    use std::sync::OnceLock;
+    static LOG: OnceLock<Option<std::sync::Mutex<std::fs::File>>> = OnceLock::new();
+    let log = LOG.get_or_init(|| {
+        let dir = std::env::var_os("XDG_STATE_HOME")
+            .map(std::path::PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME")
+                    .map(|home| std::path::Path::new(&home).join(".local/state"))
+            })?
+            .join("clawmux");
+        if !dir.join("debug").exists() {
+            return None;
+        }
+        std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(dir.join("debug.log"))
+            .ok()
+            .map(std::sync::Mutex::new)
+    });
+    let to_stderr = std::env::var_os("CLAWMUX_DEBUG").is_some();
+    if !to_stderr && log.is_none() {
+        return;
+    }
+    let line = message();
+    if to_stderr {
+        eprintln!("clawmux: {line}");
+    }
+    if let Some(file) = log {
+        if let Ok(mut file) = file.lock() {
+            let _ = writeln!(file, "{line}");
+        }
     }
 }
 

@@ -45,6 +45,9 @@ impl SidebarView {
     pub fn new() -> Rc<Self> {
         let list = gtk::ListBox::new();
         list.set_selection_mode(gtk::SelectionMode::None);
+        // Clicking rows must not move keyboard focus off the terminal.
+        list.set_focusable(false);
+        list.set_can_focus(false);
         let scroller = gtk::ScrolledWindow::builder()
             .hscrollbar_policy(gtk::PolicyType::Never)
             .vexpand(true)
@@ -117,6 +120,9 @@ impl SidebarView {
         }
         for machine in &model.machines {
             if several {
+                if machine.id != model.machines[0].id {
+                    self.divider(&mut targets);
+                }
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                 row.append(&dot(if machine.online {
                     AgentStatus::Done
@@ -192,6 +198,7 @@ impl SidebarView {
             }
         }
         if !model.agents.is_empty() {
+            self.divider(&mut targets);
             self.heading("AGENTS", &mut targets);
         }
         for agent in &model.agents {
@@ -216,6 +223,14 @@ impl SidebarView {
         self.targets.replace(targets);
     }
 
+    fn divider(&self, targets: &mut Vec<Option<Target>>) {
+        let line = gtk::Separator::new(gtk::Orientation::Horizontal);
+        line.add_css_class("section-divider");
+        let row = self.push(line.upcast_ref(), targets, None);
+        row.set_activatable(false);
+        row.add_css_class("heading-row");
+    }
+
     fn heading(&self, text: &str, targets: &mut Vec<Option<Target>>) {
         let label = gtk::Label::new(Some(text));
         label.set_xalign(0.0);
@@ -232,6 +247,7 @@ impl SidebarView {
         target: Option<Target>,
     ) -> gtk::ListBoxRow {
         let row = gtk::ListBoxRow::new();
+        row.set_focusable(false);
         row.set_child(Some(child));
         self.list.append(&row);
         targets.push(target);
