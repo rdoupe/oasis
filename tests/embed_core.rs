@@ -59,6 +59,7 @@ fn start_server() -> Server {
     .unwrap();
 
     // nextest runs each test in its own process, so this environment is the test's own.
+    isolate_home(&base);
     std::env::set_var("XDG_CONFIG_HOME", &config_home);
     std::env::set_var("XDG_RUNTIME_DIR", &runtime_dir);
     std::env::set_var("XDG_STATE_HOME", base.join("state"));
@@ -77,9 +78,12 @@ fn start_server() -> Server {
     let mut cmd = CommandBuilder::new(env!("CARGO_BIN_EXE_oasis"));
     support::isolate_herdr_test_process(&mut cmd);
     cmd.arg("server");
+    cmd.env("HOME", base.join("home"));
     cmd.env("XDG_CONFIG_HOME", &config_home);
     cmd.env("XDG_RUNTIME_DIR", &runtime_dir);
     cmd.env("XDG_STATE_HOME", base.join("state"));
+    cmd.env("XDG_DATA_HOME", base.join("data"));
+    cmd.env("XDG_CACHE_HOME", base.join("cache"));
     cmd.env("HERDR_SOCKET_PATH", &api_socket);
     cmd.env_remove("HERDR_CLIENT_SOCKET_PATH");
     cmd.env("SHELL", "/bin/sh");
@@ -161,6 +165,16 @@ fn context_switches(status: &Path) -> u64 {
         .sum()
 }
 
+/// Points HOME and every XDG base directory at the test's own folder, so no
+/// server, client or plugin path can reach the real home. nextest runs each
+/// test in its own process, so this environment is the test's own.
+fn isolate_home(base: &std::path::Path) {
+    fs::create_dir_all(base.join("home")).unwrap();
+    std::env::set_var("HOME", base.join("home"));
+    std::env::set_var("XDG_DATA_HOME", base.join("data"));
+    std::env::set_var("XDG_CACHE_HOME", base.join("cache"));
+}
+
 #[test]
 fn core_streams_snapshot_and_surface_answers_requests_and_idles() {
     let _server = start_server();
@@ -229,7 +243,9 @@ fn a_core_started_without_a_server_reports_it() {
         std::process::id()
     ));
     fs::create_dir_all(base.join("runtime")).unwrap();
+    isolate_home(&base);
     std::env::set_var("XDG_CONFIG_HOME", base.join("config"));
+    std::env::set_var("XDG_STATE_HOME", base.join("state"));
     std::env::set_var("XDG_RUNTIME_DIR", base.join("runtime"));
     std::env::set_var("HERDR_SOCKET_PATH", base.join("runtime").join("herdr.sock"));
     std::env::remove_var("HERDR_CLIENT_SOCKET_PATH");
