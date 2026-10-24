@@ -153,19 +153,20 @@ pub mod key {
 /// The frozen generation-1 client-shell protocol, for front ends that speak
 /// it directly. Everything here is part of the stable endpoint contract.
 pub mod wire {
-    pub use crate::api::schema::{Method, Request};
+    pub use crate::api::schema::{AgentStatus, Method, Request};
     pub use crate::protocol::endpoint::{
         EndpointClientHello, EndpointServerWelcome, BLOB_CODEC_V1, ENDPOINT_HELLO_KIND,
-        ENDPOINT_SNAPSHOT_KIND, ENDPOINT_WELCOME_KIND, HEALTH_PING_KIND, INPUT_CODEC_V1,
-        PRESENTATION_EFFECTS_READY_KIND, PRESENTATION_EFFECTS_SYNC_KIND, SNAPSHOT_CODEC_V1,
-        SURFACE_CODEC_V1,
+        ENDPOINT_PROTOCOL_GENERATION, ENDPOINT_SNAPSHOT_KIND, ENDPOINT_WELCOME_KIND,
+        HEALTH_PING_KIND, HEALTH_PONG_KIND, INPUT_CODEC_V1, PRESENTATION_EFFECTS_READY_KIND,
+        PRESENTATION_EFFECTS_SYNC_KIND, SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
     };
     pub use crate::protocol::{
         read_message, write_message, CellData, ClientKeyCode, ClientKeyKind, ClientMessage,
         ClientMouseButton, ClientMouseGeometry, ClientMouseKind, ClientMousePosition,
-        ClientPaneInputEvent, ClientShellSnapshot, ClientSurfaceSize, CursorState, FrameData,
-        FramingError, PaneSurfaceFrame, PaneSurfacePatch, PaneSurfacePatchRow, ServerMessage,
-        MAX_FRAME_SIZE,
+        ClientPaneInputEvent, ClientShellAgent, ClientShellPane, ClientShellSnapshot,
+        ClientShellTab, ClientShellWorkspace, ClientSurfaceSize, CursorState, FrameData,
+        FramingError, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatch, PaneSurfacePatchRow,
+        PaneSurfaceSplit, SemanticNotification, ServerMessage, SurfaceRect, MAX_FRAME_SIZE,
     };
 
     /// A connected local stream (a Unix socket, or a named pipe on Windows).
@@ -188,6 +189,27 @@ pub mod wire {
     ) -> std::io::Result<()> {
         crate::server::autodetect::spawn_server_daemon_with(exe)?;
         crate::server::autodetect::wait_for_server_socket(&client_socket_path(), timeout)
+    }
+}
+
+/// Interim access to the TUI's keybinding engine, until the shared key
+/// engine (`KeyEngine`) replaces it. Matching works on [`TerminalKey`], which a
+/// front end builds from a crossterm `KeyEvent` with `TerminalKey::from`.
+pub mod keys {
+    pub use crate::config::{ActionKeybinds, IndexedKeybind, Keybinds, LiveKeybindConfig};
+    pub use crate::input::TerminalKey;
+
+    /// The live keybindings from the oasis config, as the TUI loads them:
+    /// invalid bindings fall back to the configured prefix and defaults.
+    pub fn load() -> LiveKeybindConfig {
+        let config = crate::config::Config::load().config;
+        config
+            .live_keybinds_with_diagnostics()
+            .map(|(keybinds, _diagnostics)| keybinds)
+            .unwrap_or_else(|_diagnostics| LiveKeybindConfig {
+                prefix: config.prefix_keys(),
+                keybinds: config.keybinds(),
+            })
     }
 }
 
@@ -250,5 +272,32 @@ mod tests {
         assert!(style.has(Style::UNDERLINED));
         assert_eq!(style.0 & 0xF000, 0, "the shape bits are not style bits");
         assert_eq!(underline, Some(UnderlineStyle::Curly));
+    }
+
+    #[test]
+    fn keys_load_reads_the_isolated_oasis_config() {
+        // nextest runs each test in its own process, so setting the variable is isolated.
+        let dir = std::env::temp_dir().join(format!("oasis-embed-keys-{}", std::process::id()));
+        let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("XDG_CONFIG_HOME", &dir);
+        let config_dir = crate::config::config_dir();
+        std::fs::create_dir_all(&config_dir).unwrap();
+        std::fs::write(
+            config_dir.join("config.toml"),
+            "[keys]\nprefix = \"ctrl+space\"\n",
+        )
+        .unwrap();
+        let keys = super::keys::load();
+        match previous {
+            Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+            None => std::env::remove_var("XDG_CONFIG_HOME"),
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(keys.primary_prefix_label(), "ctrl+space");
+        let prefix = super::keys::TerminalKey::from(crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char(' '),
+            crossterm::event::KeyModifiers::CONTROL,
+        ));
+        assert!(keys.matches_prefix(&prefix));
     }
 }
