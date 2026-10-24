@@ -29,6 +29,9 @@ pub(crate) struct HandoffRuntimeState {
     pub initial_history_ansi: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_state: Option<crate::terminal::state::HandoffAgentState>,
+    /// A Claude pane's transcript watch, so a live loop survives the handoff.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claude_transcript: Option<crate::detect::claude_loop::ClaudeTranscriptWatch>,
 }
 
 #[cfg(unix)]

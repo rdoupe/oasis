@@ -47,6 +47,10 @@ pub struct SidebarTokenColor {
 }
 
 impl SidebarTokenColor {
+    pub const fn from_rgb(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
     /// The color as red, green and blue.
     pub fn rgb(self) -> (u8, u8, u8) {
         (self.r, self.g, self.b)

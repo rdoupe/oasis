@@ -4,6 +4,7 @@
 //! against known agent output patterns to determine state.
 
 pub mod activity;
+pub mod claude_loop;
 pub mod manifest;
 pub mod manifest_update;
 

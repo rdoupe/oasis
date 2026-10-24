@@ -156,6 +156,16 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::ClaudeTranscriptScanned {
+            pane_id,
+            path,
+            tracker,
+        } = ev
+        {
+            self.handle_claude_transcript_scanned(pane_id, path, tracker);
+            return Vec::new();
+        }
+
         if let AppEvent::RestoredWorktreeSpaceChecked {
             workspace_id,
             expected,
@@ -750,6 +760,10 @@ impl App {
             .and_then(|ws| ws.pane_state(update.pane_id))
             .map(|pane| pane_agent_status(update.state, pane.seen))
             .unwrap_or_else(|| pane_agent_status(update.state, update.seen));
+
+        if previous_agent_status != agent_status || update.agent_released {
+            self.claude_agent_status_changed(update.pane_id, update.agent_released);
+        }
 
         if previous_agent_status != agent_status
             || update.previous_presentation != update.presentation

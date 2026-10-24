@@ -92,10 +92,15 @@
               "type": "boolean"
             },
             "loop_next": {
+              "description": "The loop's next wakeup (`22:42`) or interval (`2m`), when known.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "looping": {
+              "description": "A loop is active: a `/loop` or a chain of scheduled wakeups.",
+              "type": "boolean"
             },
             "mcp_tasks": {
               "format": "uint16",
@@ -6848,10 +6853,15 @@
               "type": "boolean"
             },
             "loop_next": {
+              "description": "The loop's next wakeup (`22:42`) or interval (`2m`), when known.",
               "type": [
                 "string",
                 "null"
               ]
+            },
+            "looping": {
+              "description": "A loop is active: a `/loop` or a chain of scheduled wakeups.",
+              "type": "boolean"
             },
             "mcp_tasks": {
               "format": "uint16",

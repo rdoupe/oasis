@@ -1613,12 +1613,19 @@ impl App {
         let report_is_newer = self
             .pane_terminal(ws_idx, pane_id)
             .is_some_and(|terminal| terminal.hook_report_is_newer(&params.source, params.seq));
+        let claude_transcript = (agent_label == "claude"
+            && crate::agent_resume::is_official_agent_source(&params.source, &agent_label))
+        .then(|| params.agent_session_path.clone())
+        .flatten();
         let session_ref = crate::agent_resume::session_ref_from_report(
             &params.source,
             &agent_label,
             params.agent_session_id,
             params.agent_session_path,
         );
+        if let Some(path) = claude_transcript {
+            self.watch_claude_transcript(pane_id, path);
+        }
         self.handle_internal_event(crate::events::AppEvent::AgentSessionReported {
             pane_id,
             session_ref: session_ref.clone(),
@@ -4427,7 +4434,7 @@ mod tests {
             vec![
                 ("oasis:shells".to_owned(), "2".to_owned()),
                 ("oasis:monitors".to_owned(), "1".to_owned()),
-                ("oasis:loop_next".to_owned(), "19:10".to_owned()),
+                ("oasis:loop".to_owned(), "19:10".to_owned()),
             ]
         );
         assert!(pane.tokens.is_empty(), "user tokens stay separate");

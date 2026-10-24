@@ -548,6 +548,10 @@ pub struct BackgroundActivityInfo {
     pub agents: u16,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub mcp_tasks: u16,
+    /// A loop is active: a `/loop` or a chain of scheduled wakeups.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub looping: bool,
+    /// The loop's next wakeup (`22:42`) or interval (`2m`), when known.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_next: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
@@ -559,17 +563,26 @@ fn is_zero(value: &u16) -> bool {
 }
 
 impl BackgroundActivityInfo {
+    /// The screen's activity, with a loop read from the transcript
+    /// (`transcript_loop`: the loop label, empty when unknown) taking over the
+    /// one a custom statusline shows.
     pub(crate) fn from_activity(
         activity: &crate::detect::activity::BackgroundActivity,
+        transcript_loop: Option<&str>,
     ) -> Option<Self> {
-        (!activity.is_empty()).then(|| Self {
+        let info = Self {
             shells: activity.shells,
             monitors: activity.monitors,
             agents: activity.agents,
             mcp_tasks: activity.mcp_tasks,
-            loop_next: activity.loop_next.clone(),
+            looping: transcript_loop.is_some() || activity.loop_next.is_some(),
+            loop_next: transcript_loop
+                .filter(|label| !label.is_empty())
+                .map(str::to_owned)
+                .or_else(|| activity.loop_next.clone()),
             goal: activity.goal,
-        })
+        };
+        (info != Self::default()).then_some(info)
     }
 
     /// Reserved sidebar token pairs for the TUI wire. User token keys are
@@ -584,11 +597,12 @@ impl BackgroundActivityInfo {
         .into_iter()
         .filter(|(_, count)| *count > 0)
         .map(|(key, count)| (key.to_owned(), count.to_string()))
-        .chain(
-            self.loop_next
-                .clone()
-                .map(|next| ("oasis:loop_next".to_owned(), next)),
-        )
+        .chain((self.looping || self.loop_next.is_some()).then(|| {
+            (
+                "oasis:loop".to_owned(),
+                self.loop_next.clone().unwrap_or_default(),
+            )
+        }))
         .chain(self.goal.then(|| ("oasis:goal".to_owned(), "1".to_owned())))
         .collect()
     }

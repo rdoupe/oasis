@@ -96,6 +96,12 @@ pub enum AppEvent {
         pane_id: PaneId,
         activity: crate::detect::activity::BackgroundActivity,
     },
+    /// A read of a pane's Claude transcript finished.
+    ClaudeTranscriptScanned {
+        pane_id: PaneId,
+        path: std::path::PathBuf,
+        tracker: crate::detect::claude_loop::ClaudeLoopTracker,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,

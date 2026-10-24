@@ -10,7 +10,7 @@ pub(crate) use self::tokens::{
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
     SpaceTokenContext,
 };
-pub use self::tokens::{ActivityPart, ResolvedToken, ResolvedTokenKind};
+pub use self::tokens::{ActivityKind, ActivityPart, ResolvedToken, ResolvedTokenKind};
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
 use crate::app::AppState;
@@ -285,7 +285,7 @@ pub(crate) fn resolved_token_spans(
                     budget = budget.saturating_sub(display_width(&text));
                     spans.push(Span::styled(
                         text,
-                        apply_token_style(Style::default().fg(part.color), token.style),
+                        apply_token_style(Style::default().fg(part.color.ratatui()), token.style),
                     ));
                 }
             }

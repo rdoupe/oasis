@@ -362,6 +362,10 @@ impl App {
             agent_session: terminal_agent_session_info(terminal),
             background_activity: crate::api::schema::BackgroundActivityInfo::from_activity(
                 &terminal.background_activity,
+                terminal
+                    .claude_transcript
+                    .as_ref()
+                    .and_then(|watch| watch.loop_label.as_deref()),
             ),
             scroll: None,
             revision: terminal.revision,

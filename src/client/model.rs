@@ -574,6 +574,10 @@ pub struct AgentEntry {
     pub pane_id: String,
     pub workspace_id: String,
     pub status: AgentStatus,
+    /// Which tool runs in the pane, from the snapshot's canonical `agent`
+    /// label (not the presentation-only `display_agent`). `None` when the
+    /// label names no agent Oasis knows.
+    pub agent: Option<crate::detect::Agent>,
     pub focused: bool,
     /// The endpoint is offline; its rows are the last ones seen.
     pub stale: bool,
@@ -635,6 +639,10 @@ impl SidebarModel {
                                 pane_id: row.pane_id,
                                 workspace_id: agent.workspace_id.clone(),
                                 status: row.status,
+                                agent: agent
+                                    .agent
+                                    .as_deref()
+                                    .and_then(crate::detect::parse_agent_label),
                                 focused: row.focused,
                                 stale: !endpoint.online,
                                 rows: row.rows,

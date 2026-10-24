@@ -401,9 +401,9 @@ Agent rows accept these built-in tokens:
 - `agent` — detected or reported agent display name.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
-- `background` — background work the agent still has running, in Claude Code's own glyphs and colors, for example `2s 1m ◯◯◯` (2 shells, 1 monitor, one `◯` per subagent). An active goal (`◎`) or loop (`↻19:10`, the next wakeup) comes first and hides the shell, monitor and MCP task counts, which are the plumbing it runs on. Read from Claude Code's footer below its prompt box; empty when nothing is running or for other agents. For panes on a saved machine running Herdr, which does not send these counts, Oasis reads the pane through the machine's API when the agent changes, at most every 3 seconds per pane.
+- `background` — background work the agent still has running, for example `2s 1m ◯◯◯` (2 shells, 1 monitor, one `◯` per subagent), in the colors Claude Code draws them. An active goal (`◎`) or loop comes first and hides the shell, monitor and MCP task counts, which are the plumbing it runs on. A loop shows its next wakeup (`↻19:10`) or its interval (`↻2m`). Counts and the goal come from what Claude Code draws below and above its prompt box; loops, which stock Claude Code does not draw, come from the session transcript that Oasis's Claude integration reports, so they need `oasis integration install claude`. Empty when nothing is running or for other agents. For panes on a saved machine running Herdr, which does not send these counts, Oasis reads the pane through the machine's API when the agent changes, at most every 3 seconds per pane.
 - `shells`, `monitors`, `subagents` — one part each, for example `2s`, `1m` or `◯◯`.
-- `wakeup` — the next scheduled wakeup of a Claude Code loop, for example `↻19:10`.
+- `wakeup` — a Claude Code loop's next wakeup or interval, for example `↻19:10` or `↻2m`.
 - `goal` — `◎` while a Claude Code `/goal` is active.
 - `$name` — custom pane metadata named `name`.
 

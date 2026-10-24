@@ -1,8 +1,6 @@
-use ratatui::style::Color;
-
 use crate::config::{
-    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
-    SpacesSidebarConfig,
+    AgentSidebarToken, AgentsSidebarConfig, SidebarTokenColor, SidebarTokenStyle,
+    SpaceSidebarToken, SpacesSidebarConfig,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -31,10 +29,29 @@ pub enum ResolvedTokenKind {
     Activity(Vec<ActivityPart>),
 }
 
+/// One piece of an agent's background work. `kind`, `count` and `label` are
+/// the data a front end draws its own icon from; `text` and `color` are how
+/// the TUI draws it, in Claude Code's glyphs and colors.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ActivityPart {
+    pub kind: ActivityKind,
+    /// How many: shells, monitors, subagents or MCP tasks; 1 for a goal or loop.
+    pub count: u16,
+    /// A loop's next wakeup (`22:42`) or interval (`2m`), when known.
+    pub label: Option<String>,
     pub text: String,
-    pub color: Color,
+    pub color: SidebarTokenColor,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum ActivityKind {
+    Goal,
+    Loop,
+    Shells,
+    Monitors,
+    Subagents,
+    McpTasks,
 }
 
 impl ResolvedTokenKind {
@@ -140,18 +157,16 @@ pub(crate) fn agent_rows(
         .collect()
 }
 
-// Claude Code's own footer glyphs and colors, read from a live pane: `◎ goal:`
-// in 256-color 213, `↻ loop:` in 114, the `1 shell, 1 monitor` counts in cyan
-// and a grey `◯` row per subagent. Claude draws no glyph for shells, monitors
-// or MCP tasks, so those are short counts in its cyan.
-const GOAL_COLOR: Color = Color::Indexed(213);
-const LOOP_COLOR: Color = Color::Indexed(114);
-const COUNT_COLOR: Color = Color::Rgb(0, 204, 204);
-const SUBAGENT_COLOR: Color = Color::Rgb(153, 153, 153);
-
-fn part(text: String, color: Color) -> ActivityPart {
-    ActivityPart { text, color }
-}
+// Claude Code's colors, read from live panes: its mode line draws the
+// `1 shell, 1 monitor` counts in cyan and a grey `◯` row per subagent, and its
+// goal notice is `◎`. Goal pink (256-color 213) and loop green (114) follow the
+// statusline these were first read from, as stock Claude draws no loop at all.
+// Claude has no glyph for shells, monitors or MCP tasks, so those are short
+// counts in its cyan.
+const GOAL_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x87, 0xff);
+const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x87, 0xd7, 0x87);
+const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
+const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
 
 fn activity(parts: impl IntoIterator<Item = ActivityPart>) -> Option<ResolvedTokenKind> {
     let parts = parts.into_iter().collect::<Vec<_>>();
@@ -167,33 +182,67 @@ fn count(tokens: &std::collections::HashMap<String, String>, key: &str) -> Optio
         .filter(|count| *count > 0)
 }
 
-fn goal_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    tokens
-        .contains_key("oasis:goal")
-        .then(|| part("◎".to_owned(), GOAL_COLOR))
+fn counted_part(
+    tokens: &std::collections::HashMap<String, String>,
+    key: &str,
+    kind: ActivityKind,
+    suffix: &str,
+) -> Option<ActivityPart> {
+    count(tokens, key).map(|count| ActivityPart {
+        kind,
+        count,
+        label: None,
+        text: format!("{count}{suffix}"),
+        color: COUNT_COLOR,
+    })
 }
 
+fn goal_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    tokens.contains_key("oasis:goal").then(|| ActivityPart {
+        kind: ActivityKind::Goal,
+        count: 1,
+        label: None,
+        text: "◎".to_owned(),
+        color: GOAL_COLOR,
+    })
+}
+
+/// `oasis:loop` holds the next wakeup or interval, empty when unknown;
+/// servers before it only sent `oasis:loop_next`.
 fn loop_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    tokens
-        .get("oasis:loop_next")
-        .map(|next| part(format!("↻{next}"), LOOP_COLOR))
+    let label = tokens
+        .get("oasis:loop")
+        .or_else(|| tokens.get("oasis:loop_next"))?;
+    Some(ActivityPart {
+        kind: ActivityKind::Loop,
+        count: 1,
+        label: (!label.is_empty()).then(|| label.clone()),
+        text: format!("↻{label}"),
+        color: LOOP_COLOR,
+    })
 }
 
 fn shells_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    count(tokens, "shells").map(|count| part(format!("{count}s"), COUNT_COLOR))
+    counted_part(tokens, "shells", ActivityKind::Shells, "s")
 }
 
 fn monitors_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    count(tokens, "monitors").map(|count| part(format!("{count}m"), COUNT_COLOR))
+    counted_part(tokens, "monitors", ActivityKind::Monitors, "m")
 }
 
 fn mcp_tasks_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    count(tokens, "mcp_tasks").map(|count| part(format!("{count}mcp"), COUNT_COLOR))
+    counted_part(tokens, "mcp_tasks", ActivityKind::McpTasks, "mcp")
 }
 
 /// One `◯` per subagent, as Claude lists a row for each.
 fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
-    count(tokens, "agents").map(|count| part("◯".repeat(usize::from(count)), SUBAGENT_COLOR))
+    count(tokens, "agents").map(|count| ActivityPart {
+        kind: ActivityKind::Subagents,
+        count,
+        label: None,
+        text: "◯".repeat(usize::from(count)),
+        color: SUBAGENT_COLOR,
+    })
 }
 
 /// A goal or loop leads. While either drives the pane, its shells, monitors
@@ -731,7 +780,10 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             .collect::<Vec<_>>();
         assert_eq!(
             drawn,
-            [("◎", Some(GOAL_COLOR)), (" ◯◯", Some(SUBAGENT_COLOR))]
+            [
+                ("◎", Some(GOAL_COLOR.ratatui())),
+                (" ◯◯", Some(SUBAGENT_COLOR.ratatui()))
+            ]
         );
         let narrow = draw(2);
         let width = narrow
@@ -742,16 +794,37 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
+    fn loop_part_carries_kind_and_label_for_front_ends() {
+        let part = |key: &str, value: &str| {
+            loop_part(&std::collections::HashMap::from([(
+                key.to_owned(),
+                value.to_owned(),
+            )]))
+            .unwrap()
+        };
+        let timed = part("oasis:loop", "22:42");
+        assert_eq!(timed.kind, ActivityKind::Loop);
+        assert_eq!(
+            (timed.text.as_str(), timed.label.as_deref()),
+            ("↻22:42", Some("22:42"))
+        );
+        let running = part("oasis:loop", "");
+        assert_eq!((running.text.as_str(), running.label), ("↻", None));
+        // Older servers only send the next wakeup.
+        assert_eq!(part("oasis:loop_next", "19:10").text, "↻19:10");
+    }
+
+    #[test]
     fn goal_and_loop_lead_and_hide_shells_and_monitors() {
         let mut tokens = std::collections::HashMap::from([
             ("oasis:shells".to_owned(), "3".to_owned()),
             ("oasis:monitors".to_owned(), "1".to_owned()),
             ("oasis:agents".to_owned(), "2".to_owned()),
-            ("oasis:loop_next".to_owned(), "22:42".to_owned()),
+            ("oasis:loop".to_owned(), "22:42".to_owned()),
         ]);
         assert_eq!(activity_texts(&background_parts(&tokens)), ["↻22:42", "◯◯"]);
         tokens.insert("oasis:goal".to_owned(), "1".to_owned());
-        tokens.remove("oasis:loop_next");
+        tokens.remove("oasis:loop");
         let parts = background_parts(&tokens);
         assert_eq!(activity_texts(&parts), ["◎", "◯◯"]);
         assert_eq!(parts[0].color, GOAL_COLOR);

@@ -4,7 +4,12 @@
 //! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor · ← 3 agents`), shows a
 //! row per running subagent (`◯ general-purpose  Writing tests  2m 3s`), and a
 //! `↻ loop: … · next 19:10` line while a scheduled wakeup is armed, and a
-//! `◎ goal: …` line while a `/goal` is active. Only text
+//! `◎ goal: …` line while a `/goal` is active (those two come from a custom
+//! statusline; stock Claude Code draws neither). Stock Claude marks an active
+//! goal with `◎ /goal active (5m)` on the notice row right above the prompt
+//! box, which is read too. Stock loops show nothing on screen and are read
+//! from the transcript instead (see `claude_loop`). Apart from that notice
+//! row, only text
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
 
@@ -26,6 +31,7 @@ pub struct BackgroundActivity {
 }
 
 impl BackgroundActivity {
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
@@ -50,7 +56,16 @@ fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
         + lines[prompt + 1..]
             .iter()
             .position(|line| is_border(line))?;
-    let mut activity = BackgroundActivity::default();
+    // The notice row sits right above the prompt box's top border.
+    let goal_notice = lines[..prompt]
+        .iter()
+        .rposition(|line| is_border(line))
+        .and_then(|top| top.checked_sub(1))
+        .is_some_and(|notice| lines[notice].trim_start().starts_with("◎ /goal active"));
+    let mut activity = BackgroundActivity {
+        goal: goal_notice,
+        ..BackgroundActivity::default()
+    };
     let mut agent_rows = 0u16;
     for line in lines[border + 1..].iter().take(FOOTER_LINES) {
         let trimmed = line.trim();
@@ -188,6 +203,37 @@ mod tests {
         let activity = background_activity(Some(Agent::Claude), &content).unwrap();
         assert!(activity.goal);
         assert_eq!(activity.agents, 1);
+    }
+
+    #[test]
+    fn reads_stock_claude_goal_notice() {
+        // Captured from a stock Claude Code 2.1.309 pane with no statusline.
+        let content = [
+            "✻ Puzzling… (20s · ↓ 584 tokens)",
+            "                                ◎ /goal active (19s) · Update available! Run: mise upgrade claude",
+            "──────────────────────────────────────────",
+            "❯ ",
+            "──────────────────────────────────────────",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle) · esc to interrupt",
+        ]
+        .join("\n");
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.goal);
+    }
+
+    #[test]
+    fn goal_notice_must_be_the_row_above_the_prompt_box() {
+        let content = [
+            "◎ /goal active (19s)",
+            "⏺ Done.",
+            "──────────────────────────────────────────",
+            "❯ ",
+            "──────────────────────────────────────────",
+            "  ⏵⏵ bypass permissions on",
+        ]
+        .join("\n");
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(!activity.goal);
     }
 
     #[test]

@@ -172,7 +172,7 @@ impl EndpointRemoteActivity {
         else {
             return false;
         };
-        let tokens = crate::api::schema::BackgroundActivityInfo::from_activity(&activity)
+        let tokens = crate::api::schema::BackgroundActivityInfo::from_activity(&activity, None)
             .map(|info| info.sidebar_tokens())
             .unwrap_or_default();
         if pane.tokens == tokens {
