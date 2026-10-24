@@ -37,7 +37,7 @@ pub(crate) use self::sidebar::{
     sidebar_section_divider_rect, sidebar_space_rows, AgentPanelEntry, AgentTokenContext,
     SpaceTokenContext,
 };
-pub use self::sidebar::{ActivityKind, ActivityPart, ResolvedToken, ResolvedTokenKind};
+pub use self::sidebar::{ActivityKind, ActivityPart, AgentMode, ResolvedToken, ResolvedTokenKind};
 use self::status::copy_feedback_rect;
 pub(crate) use self::status::{render_config_diagnostic_buffer, render_copy_feedback_buffer};
 pub(crate) use self::tab_surface::{

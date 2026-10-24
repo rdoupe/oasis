@@ -255,3 +255,22 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
     assert_eq!(state.remote_activity_due(later), None);
     assert!(endpoint_agent_tokens(&state, &endpoint_id, "pane_1").is_empty());
 }
+
+/// A goal or loop pane's state icon takes the mode's color, and the mode's
+/// glyph while working; needing you stays red, and plain panes are unchanged.
+#[test]
+fn goal_and_loop_panes_draw_their_state_icon_in_the_mode_color() {
+    use crate::config::StatusIndicatorStyle::Symbols;
+    use crate::ui::AgentMode::{Goal, Loop};
+    let palette = Palette::catppuccin();
+    let icon = |status, mode| agent_status_icon(status, mode, Symbols, &palette);
+    let (goal, wakeup) = (Goal.color().ratatui(), Loop.color().ratatui());
+    assert_eq!(icon(AgentStatus::Working, Some(Loop)), ("↻", wakeup));
+    assert_eq!(icon(AgentStatus::Idle, Some(Loop)), ("○", wakeup));
+    assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("✓", wakeup));
+    assert_eq!(icon(AgentStatus::Working, Some(Goal)), ("◎", goal));
+    assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("○", goal));
+    assert_eq!(icon(AgentStatus::Blocked, Some(Goal)), ("×", palette.red));
+    assert_eq!(icon(AgentStatus::Working, None), ("◐", palette.yellow));
+    assert_eq!(icon(AgentStatus::Idle, None), ("○", palette.green));
+}

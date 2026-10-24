@@ -10,7 +10,7 @@ pub(crate) use self::tokens::{
     agent_rows as sidebar_agent_rows, space_rows as sidebar_space_rows, AgentTokenContext,
     SpaceTokenContext,
 };
-pub use self::tokens::{ActivityKind, ActivityPart, ResolvedToken, ResolvedTokenKind};
+pub use self::tokens::{ActivityKind, ActivityPart, AgentMode, ResolvedToken, ResolvedTokenKind};
 use super::text::{display_width, truncate_end};
 use crate::app::state::Palette;
 use crate::app::AppState;

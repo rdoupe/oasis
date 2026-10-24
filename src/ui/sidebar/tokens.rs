@@ -57,6 +57,42 @@ pub enum ActivityKind {
     Agent,
 }
 
+/// What keeps an agent going between turns. The state icon of a pane with
+/// one takes the mode's color, and the mode's own glyph while it works.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[non_exhaustive]
+pub enum AgentMode {
+    Goal,
+    Loop,
+}
+
+impl AgentMode {
+    /// A goal leads when a pane runs both.
+    pub(crate) fn from_tokens(tokens: &std::collections::HashMap<String, String>) -> Option<Self> {
+        if tokens.contains_key("oasis:goal") {
+            Some(Self::Goal)
+        } else if tokens.contains_key("oasis:loop") || tokens.contains_key("oasis:loop_next") {
+            Some(Self::Loop)
+        } else {
+            None
+        }
+    }
+
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Goal => "◎",
+            Self::Loop => "↻",
+        }
+    }
+
+    pub fn color(self) -> SidebarTokenColor {
+        match self {
+            Self::Goal => GOAL_COLOR,
+            Self::Loop => LOOP_COLOR,
+        }
+    }
+}
+
 impl ResolvedTokenKind {
     fn text_value(&self) -> Option<&str> {
         match self {
@@ -166,12 +202,13 @@ pub(crate) fn agent_rows(
 
 // Claude Code's colors, read from live panes: its mode line draws the
 // `1 shell, 1 monitor` counts in cyan and a grey `◯` row per subagent, and its
-// goal notice is `◎`. Goal pink (256-color 213) and loop green (114) follow the
-// statusline these were first read from, as stock Claude draws no loop at all.
+// goal notice is `◎`. Goal pink (256-color 213) follows the statusline these
+// were first read from; stock Claude draws no loop at all, so loops get a
+// violet (141) that no agent state uses.
 // Claude has no glyph for shells, monitors or MCP tasks, so those are short
 // counts in its cyan.
 const GOAL_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x87, 0xff);
-const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x87, 0xd7, 0x87);
+const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xaf, 0x87, 0xff);
 const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
 const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
 
@@ -255,7 +292,7 @@ fn goal_part(tokens: &std::collections::HashMap<String, String>) -> Option<Activ
         kind: ActivityKind::Goal,
         count: 1,
         label: None,
-        text: "◎".to_owned(),
+        text: AgentMode::Goal.glyph().to_owned(),
         color: GOAL_COLOR,
     })
 }
@@ -309,12 +346,18 @@ fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<
     })
 }
 
-/// A goal or loop leads. While either drives the pane, its shells, monitors
-/// and MCP tasks are the plumbing it runs on and stay hidden; subagents stay.
+/// The goal or loop itself shows in the state icon, so only a loop's next
+/// wakeup leads here. While either drives the pane, its shells, monitors and
+/// MCP tasks are the plumbing it runs on and stay hidden; subagents stay.
 fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<ActivityPart> {
-    let goal = goal_part(tokens);
-    let wakeup = loop_part(tokens);
-    let driven = goal.is_some() || wakeup.is_some();
+    let driven = AgentMode::from_tokens(tokens).is_some();
+    let wakeup = loop_part(tokens).and_then(|part| {
+        let label = part.label.clone()?;
+        Some(ActivityPart {
+            text: label,
+            ..part
+        })
+    });
     let plumbing = (!driven)
         .then(|| {
             [
@@ -325,7 +368,7 @@ fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<A
         })
         .into_iter()
         .flatten();
-    [goal, wakeup]
+    [wakeup]
         .into_iter()
         .chain(plumbing)
         .chain([subagents_part(tokens)])
@@ -821,7 +864,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         let config: AgentsSidebarConfig = toml::from_str(r#"rows = [["background"]]"#).unwrap();
         let mut entry = entry();
         entry.tokens = std::collections::HashMap::from([
-            ("oasis:goal".to_owned(), "1".to_owned()),
+            ("oasis:loop".to_owned(), "22:42".to_owned()),
             ("oasis:agents".to_owned(), "2".to_owned()),
         ]);
         let rows = agent_rows(&config, context(&entry), "working");
@@ -845,7 +888,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         assert_eq!(
             drawn,
             [
-                ("◎", Some(GOAL_COLOR.ratatui())),
+                ("22:42", Some(LOOP_COLOR.ratatui())),
                 (" ◯◯", Some(SUBAGENT_COLOR.ratatui()))
             ]
         );
@@ -879,22 +922,25 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
-    fn goal_and_loop_lead_and_hide_shells_and_monitors() {
+    fn goal_and_loop_hide_shells_and_monitors_and_leave_their_mark_to_the_state_icon() {
         let mut tokens = std::collections::HashMap::from([
             ("oasis:shells".to_owned(), "3".to_owned()),
             ("oasis:monitors".to_owned(), "1".to_owned()),
             ("oasis:agents".to_owned(), "2".to_owned()),
             ("oasis:loop".to_owned(), "22:42".to_owned()),
         ]);
+        assert_eq!(activity_texts(&background_parts(&tokens)), ["22:42", "◯◯"]);
+        assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Loop));
+        tokens.insert("oasis:goal".to_owned(), "1".to_owned());
+        assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Goal));
+        tokens.remove("oasis:loop");
+        assert_eq!(activity_texts(&background_parts(&tokens)), ["◯◯"]);
+        tokens.remove("oasis:goal");
+        assert_eq!(AgentMode::from_tokens(&tokens), None);
         assert_eq!(
             activity_texts(&background_parts(&tokens)),
-            ["↻ 22:42", "◯◯"]
+            ["$3", "∿1", "◯◯"]
         );
-        tokens.insert("oasis:goal".to_owned(), "1".to_owned());
-        tokens.remove("oasis:loop");
-        let parts = background_parts(&tokens);
-        assert_eq!(activity_texts(&parts), ["◎", "◯◯"]);
-        assert_eq!(parts[0].color, GOAL_COLOR);
     }
 }
 

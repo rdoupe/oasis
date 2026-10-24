@@ -224,7 +224,7 @@ pub mod sidebar {
         SpacesSidebarConfig, ToastDelivery,
     };
     pub use crate::detect::Agent;
-    pub use crate::ui::{ActivityKind, ActivityPart, ResolvedToken, ResolvedTokenKind};
+    pub use crate::ui::{ActivityKind, ActivityPart, AgentMode, ResolvedToken, ResolvedTokenKind};
 }
 
 pub mod keys {

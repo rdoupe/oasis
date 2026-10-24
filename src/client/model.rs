@@ -276,6 +276,8 @@ pub(crate) fn workspace_rows(
 pub struct AgentRow {
     pub pane_id: String,
     pub status: AgentStatus,
+    /// A goal or loop driving the pane, which colors its state icon.
+    pub mode: Option<crate::ui::AgentMode>,
     pub focused: bool,
     pub rows: Vec<TokenRow>,
 }
@@ -384,6 +386,7 @@ pub(crate) fn agent_row(
     Some(AgentRow {
         pane_id: agent.pane_id.clone(),
         status: agent.agent_status,
+        mode: crate::ui::AgentMode::from_tokens(&tokens),
         focused: agent.focused,
         rows,
     })
@@ -574,6 +577,8 @@ pub struct AgentEntry {
     pub pane_id: String,
     pub workspace_id: String,
     pub status: AgentStatus,
+    /// A goal or loop driving the pane, which colors its state icon.
+    pub mode: Option<crate::ui::AgentMode>,
     /// Which tool runs in the pane, from the snapshot's canonical `agent`
     /// label (not the presentation-only `display_agent`). `None` when the
     /// label names no agent Oasis knows.
@@ -639,6 +644,7 @@ impl SidebarModel {
                                 pane_id: row.pane_id,
                                 workspace_id: agent.workspace_id.clone(),
                                 status: row.status,
+                                mode: row.mode,
                                 agent: agent
                                     .agent
                                     .as_deref()
