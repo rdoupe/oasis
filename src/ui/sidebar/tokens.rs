@@ -32,7 +32,7 @@ pub enum ResolvedTokenKind {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ActivityPart {
+pub struct ActivityPart {
     pub text: String,
     pub color: Color,
 }

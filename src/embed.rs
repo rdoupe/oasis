@@ -222,7 +222,7 @@ pub mod sidebar {
         AgentPanelSortConfig, AgentsSidebarConfig, SidebarTokenColor, SidebarTokenStyle,
         SpacesSidebarConfig, ToastDelivery,
     };
-    pub use crate::ui::{ResolvedToken, ResolvedTokenKind};
+    pub use crate::ui::{ActivityPart, ResolvedToken, ResolvedTokenKind};
 }
 
 pub mod keys {
