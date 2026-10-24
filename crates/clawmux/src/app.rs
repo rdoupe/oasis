@@ -185,6 +185,7 @@ impl App {
             if active {
                 // Keys always go to the terminal, whatever was clicked last.
                 app.view.grab_focus();
+                app.retry_waiting_machines();
             }
             if let Some(conn) = app.conn.borrow().as_ref() {
                 conn.focus(active);
@@ -1097,6 +1098,21 @@ impl App {
             }
         }
         self.view.grab_focus();
+    }
+
+    /// Like the TUI on focus gain: machines still connecting or reconnecting retry now.
+    fn retry_waiting_machines(&self) {
+        let Some(conn) = self.conn.borrow().clone() else {
+            return;
+        };
+        for machine in self.machines.borrow().iter() {
+            if matches!(
+                machine.status,
+                EndpointStatus::Connecting | EndpointStatus::Reconnecting(_)
+            ) {
+                conn.retry(&machine.id);
+            }
+        }
     }
 
     fn switch_machine_str(self: &Rc<Self>, endpoint: &str) {
