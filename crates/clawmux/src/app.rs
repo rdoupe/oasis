@@ -168,9 +168,11 @@ impl App {
             .connect_resize(move |cols, rows| app.on_resize(cols, rows));
 
         let app = self.clone();
+        // Closing the window (super+w, the title bar) quits like any app; the sessions live
+        // on in the oasis server. Detach and relaunching still just hide it.
         self.window.connect_close_request(move |_| {
-            app.put_away();
-            glib::Propagation::Stop
+            app.application.quit();
+            glib::Propagation::Proceed
         });
 
         let app = self.clone();
