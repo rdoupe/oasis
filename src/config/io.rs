@@ -31,6 +31,9 @@ pub fn config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_CONFIG_HOME") {
         return PathBuf::from(dir).join(app_dir_name());
     }
+    #[cfg(test)]
+    return unit_test_dir("config");
+    #[cfg(not(test))]
     platform_config_dir()
 }
 
@@ -38,10 +41,25 @@ pub fn state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("XDG_STATE_HOME") {
         return PathBuf::from(dir).join(app_dir_name());
     }
+    #[cfg(test)]
+    return unit_test_dir("state");
+    #[cfg(not(test))]
     platform_state_dir()
 }
 
+/// Unit tests that don't pick their own XDG folders get a per-process
+/// scratch folder, so they never write into the real user config or state.
+#[cfg(test)]
+fn unit_test_dir(kind: &str) -> PathBuf {
+    std::env::temp_dir()
+        .join(format!("oasis-unit-tests-{}", std::process::id()))
+        .join(kind)
+        .join(app_dir_name())
+}
+
 #[cfg(windows)]
+// Unit tests use unit_test_dir() instead.
+#[cfg_attr(test, allow(dead_code))]
 fn platform_config_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("APPDATA") {
         return PathBuf::from(dir).join(app_dir_name());
@@ -59,6 +77,8 @@ fn platform_config_dir() -> PathBuf {
 }
 
 #[cfg(not(windows))]
+// Unit tests use unit_test_dir() instead.
+#[cfg_attr(test, allow(dead_code))]
 fn platform_config_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(format!(".config/{}", app_dir_name()))
@@ -68,6 +88,8 @@ fn platform_config_dir() -> PathBuf {
 }
 
 #[cfg(windows)]
+// Unit tests use unit_test_dir() instead.
+#[cfg_attr(test, allow(dead_code))]
 fn platform_state_dir() -> PathBuf {
     if let Ok(dir) = std::env::var("LOCALAPPDATA") {
         return PathBuf::from(dir).join(app_dir_name());
@@ -85,6 +107,8 @@ fn platform_state_dir() -> PathBuf {
 }
 
 #[cfg(not(windows))]
+// Unit tests use unit_test_dir() instead.
+#[cfg_attr(test, allow(dead_code))]
 fn platform_state_dir() -> PathBuf {
     if let Ok(home) = std::env::var("HOME") {
         PathBuf::from(home).join(format!(".local/state/{}", app_dir_name()))
