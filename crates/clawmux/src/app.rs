@@ -10,7 +10,7 @@ use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use oasis_core::embed::keys::{ActionContext, KeyEngine, KeyMode, KeyOutcome, KeybindAction};
 use oasis_core::embed::sidebar::{
-    notification_delivery, NotificationToast, SidebarModel, SidebarPrefs, ToastDelivery,
+    notification_delivery, NotificationToast, SidebarModel, SidebarPrefs,
 };
 use oasis_core::embed::wire::{
     AgentStatus, ClientMouseButton, ClientMouseKind, ClientMousePosition, ClientPaneInputEvent,
@@ -479,7 +479,7 @@ impl App {
                 let delivery = notification_delivery(
                     notification.kind,
                     false,
-                    toast_delivery(),
+                    self.prefs.borrow().toast_delivery,
                     target_active,
                     Some(self.window.is_active()),
                 );
@@ -1430,46 +1430,6 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
     }
 }
 
-/// The user's `[ui.toast] delivery` from the oasis config; oasis defaults to off.
-fn toast_delivery() -> ToastDelivery {
-    let dir = std::env::var_os("XDG_CONFIG_HOME")
-        .map(std::path::PathBuf::from)
-        .or_else(|| {
-            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
-        })
-        .unwrap_or_default();
-    let text = std::fs::read_to_string(dir.join("oasis/config.toml")).unwrap_or_default();
-    toast_delivery_from(&text)
-}
-
-fn toast_delivery_from(text: &str) -> ToastDelivery {
-    let Ok(config) = text.parse::<toml::Table>() else {
-        return ToastDelivery::Off;
-    };
-    let toast = config
-        .get("ui")
-        .and_then(|ui| ui.get("toast"))
-        .and_then(|toast| toast.as_table());
-    match toast
-        .and_then(|toast| toast.get("delivery"))
-        .and_then(|delivery| delivery.as_str())
-    {
-        Some("herdr") => ToastDelivery::Herdr,
-        Some("terminal") => ToastDelivery::Terminal,
-        Some("system") => ToastDelivery::System,
-        Some(_) => ToastDelivery::Off,
-        // Older configs only said `enabled = true`, which meant in-app toasts.
-        None if toast
-            .and_then(|toast| toast.get("enabled"))
-            .and_then(|enabled| enabled.as_bool())
-            == Some(true) =>
-        {
-            ToastDelivery::Herdr
-        }
-        None => ToastDelivery::Off,
-    }
-}
-
 /// Debug logging: `CLAWMUX_DEBUG=1` prints to stderr; creating
 /// ~/.local/state/clawmux/debug turns on a log at ~/.local/state/clawmux/debug.log,
 /// so it can be enabled for an app started from a launcher.
@@ -1507,35 +1467,5 @@ fn debug(message: impl FnOnce() -> String) {
         if let Ok(mut file) = file.lock() {
             let _ = writeln!(file, "{line}");
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn toast_delivery_follows_the_oasis_config_and_defaults_to_off() {
-        assert_eq!(toast_delivery_from(""), ToastDelivery::Off);
-        assert_eq!(
-            toast_delivery_from("[keys]\nprefix = \"ctrl+space\"\n"),
-            ToastDelivery::Off
-        );
-        assert_eq!(
-            toast_delivery_from("[ui.toast]\ndelivery = \"system\"\n"),
-            ToastDelivery::System
-        );
-        assert_eq!(
-            toast_delivery_from("[ui.toast]\ndelivery = \"herdr\"\n"),
-            ToastDelivery::Herdr
-        );
-        assert_eq!(
-            toast_delivery_from("[ui.toast]\nenabled = true\n"),
-            ToastDelivery::Herdr
-        );
-        assert_eq!(
-            toast_delivery_from("[ui.toast]\ndelivery = \"off\"\nenabled = true\n"),
-            ToastDelivery::Off
-        );
     }
 }
