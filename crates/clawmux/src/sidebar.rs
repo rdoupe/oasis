@@ -275,6 +275,20 @@ fn token_markup(token: &ResolvedToken) -> Option<String> {
             }
             parts.join(" ")
         }
+        ResolvedTokenKind::Activity(parts) => {
+            let markup: Vec<String> = parts
+                .iter()
+                .filter(|part| !part.text.trim().is_empty())
+                .map(|part| {
+                    let text = glib::markup_escape_text(&part.text);
+                    match activity_color(part.color) {
+                        Some(color) => format!("<span foreground=\"{color}\">{text}</span>"),
+                        None => text.to_string(),
+                    }
+                })
+                .collect();
+            return (!markup.is_empty()).then(|| markup.join(" "));
+        }
         ResolvedTokenKind::StateText(text)
         | ResolvedTokenKind::Machine(text)
         | ResolvedTokenKind::Workspace(text)
@@ -304,6 +318,33 @@ fn token_markup(token: &ResolvedToken) -> Option<String> {
         "<span{attrs}>{}</span>",
         glib::markup_escape_text(&text)
     ))
+}
+
+/// An activity part's color as CSS, with named ANSI colors taken from the Omarchy palette.
+fn activity_color(color: ratatui::style::Color) -> Option<String> {
+    use ratatui::style::Color;
+    let index = match color {
+        Color::Rgb(r, g, b) => return Some(format!("#{r:02x}{g:02x}{b:02x}")),
+        Color::Reset => return None,
+        Color::Black => 0,
+        Color::Red => 1,
+        Color::Green => 2,
+        Color::Yellow => 3,
+        Color::Blue => 4,
+        Color::Magenta => 5,
+        Color::Cyan => 6,
+        Color::Gray => 7,
+        Color::DarkGray => 8,
+        Color::LightRed => 9,
+        Color::LightGreen => 10,
+        Color::LightYellow => 11,
+        Color::LightBlue => 12,
+        Color::LightMagenta => 13,
+        Color::LightCyan => 14,
+        Color::White => 15,
+        Color::Indexed(index) => usize::from(index),
+    };
+    Some(crate::theme::Theme::load().palette[index].css())
 }
 
 pub fn dot(status: AgentStatus) -> gtk::Widget {

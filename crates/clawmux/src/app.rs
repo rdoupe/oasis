@@ -9,7 +9,9 @@ use crossterm::event::{KeyCode, KeyModifiers};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
 use oasis_core::embed::keys::{ActionContext, KeyEngine, KeyMode, KeyOutcome, KeybindAction};
-use oasis_core::embed::sidebar::{SidebarModel, SidebarPrefs};
+use oasis_core::embed::sidebar::{
+    notification_delivery, NotificationToast, SidebarModel, SidebarPrefs, ToastDelivery,
+};
 use oasis_core::embed::wire::{
     AgentStatus, ClientMouseButton, ClientMouseKind, ClientMousePosition, ClientPaneInputEvent,
     ClientShellSnapshot, PaneSurfacePane,
@@ -460,22 +462,48 @@ impl App {
 
     fn on_event(self: &Rc<Self>, event: CoreEvent) {
         match event {
-            CoreEvent::Notification { notification, .. } => {
-                if self.window.is_active() {
-                    return;
-                }
-                let n = gio::Notification::new(&notification.title);
-                if let Some(body) = notification.body.as_deref() {
-                    n.set_body(Some(body));
-                }
+            CoreEvent::Notification {
+                endpoint,
+                notification,
+            } => {
+                let active = self.conn.borrow().as_ref().map(|conn| conn.active());
+                let target_active = active.as_ref() == Some(&endpoint)
+                    && notification.pane_id.is_some()
+                    && notification.pane_id == self.focused_pane_id()
+                    && self.window.is_visible();
+                // The same rules the TUI follows, from the user's [ui.toast] delivery.
+                let delivery = notification_delivery(
+                    notification.kind,
+                    false,
+                    toast_delivery(),
+                    target_active,
+                    Some(self.window.is_active()),
+                );
                 self.notification_pane.replace(notification.pane_id.clone());
-                if let Some(pane_id) = notification.pane_id.as_deref() {
-                    n.set_default_action_and_target_value(
-                        "app.show-pane",
-                        Some(&pane_id.to_variant()),
-                    );
+                match delivery.toast {
+                    NotificationToast::None => {}
+                    NotificationToast::InApp => {
+                        let text = match notification.body.as_deref() {
+                            Some(body) => format!("{} — {body}", notification.title),
+                            None => notification.title.clone(),
+                        };
+                        self.show_banner(&text, Some(5));
+                    }
+                    // A GUI has no outer terminal to notify through; the desktop stands in.
+                    NotificationToast::Terminal | NotificationToast::System => {
+                        let n = gio::Notification::new(&notification.title);
+                        if let Some(body) = notification.body.as_deref() {
+                            n.set_body(Some(body));
+                        }
+                        if let Some(pane_id) = notification.pane_id.as_deref() {
+                            n.set_default_action_and_target_value(
+                                "app.show-pane",
+                                Some(&pane_id.to_variant()),
+                            );
+                        }
+                        self.application.send_notification(None, &n);
+                    }
                 }
-                self.application.send_notification(None, &n);
             }
             CoreEvent::Error { message, .. } => self.show_banner(&message, Some(6)),
             CoreEvent::Response {
@@ -1376,8 +1404,78 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
     }
 }
 
+/// The user's `[ui.toast] delivery` from the oasis config; oasis defaults to off.
+fn toast_delivery() -> ToastDelivery {
+    let dir = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|home| std::path::Path::new(&home).join(".config"))
+        })
+        .unwrap_or_default();
+    let text = std::fs::read_to_string(dir.join("oasis/config.toml")).unwrap_or_default();
+    toast_delivery_from(&text)
+}
+
+fn toast_delivery_from(text: &str) -> ToastDelivery {
+    let Ok(config) = text.parse::<toml::Table>() else {
+        return ToastDelivery::Off;
+    };
+    let toast = config
+        .get("ui")
+        .and_then(|ui| ui.get("toast"))
+        .and_then(|toast| toast.as_table());
+    match toast
+        .and_then(|toast| toast.get("delivery"))
+        .and_then(|delivery| delivery.as_str())
+    {
+        Some("herdr") => ToastDelivery::Herdr,
+        Some("terminal") => ToastDelivery::Terminal,
+        Some("system") => ToastDelivery::System,
+        Some(_) => ToastDelivery::Off,
+        // Older configs only said `enabled = true`, which meant in-app toasts.
+        None if toast
+            .and_then(|toast| toast.get("enabled"))
+            .and_then(|enabled| enabled.as_bool())
+            == Some(true) =>
+        {
+            ToastDelivery::Herdr
+        }
+        None => ToastDelivery::Off,
+    }
+}
+
 fn debug(message: impl FnOnce() -> String) {
     if std::env::var_os("CLAWMUX_DEBUG").is_some() {
         eprintln!("clawmux: {}", message());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn toast_delivery_follows_the_oasis_config_and_defaults_to_off() {
+        assert_eq!(toast_delivery_from(""), ToastDelivery::Off);
+        assert_eq!(
+            toast_delivery_from("[keys]\nprefix = \"ctrl+space\"\n"),
+            ToastDelivery::Off
+        );
+        assert_eq!(
+            toast_delivery_from("[ui.toast]\ndelivery = \"system\"\n"),
+            ToastDelivery::System
+        );
+        assert_eq!(
+            toast_delivery_from("[ui.toast]\ndelivery = \"herdr\"\n"),
+            ToastDelivery::Herdr
+        );
+        assert_eq!(
+            toast_delivery_from("[ui.toast]\nenabled = true\n"),
+            ToastDelivery::Herdr
+        );
+        assert_eq!(
+            toast_delivery_from("[ui.toast]\ndelivery = \"off\"\nenabled = true\n"),
+            ToastDelivery::Off
+        );
     }
 }

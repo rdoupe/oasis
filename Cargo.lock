@@ -289,6 +289,7 @@ dependencies = [
  "glib-unix",
  "gtk4",
  "herdr",
+ "ratatui",
  "serde_json",
  "toml 0.8.23",
  "unicode-width",
