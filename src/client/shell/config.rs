@@ -160,7 +160,16 @@ impl ClientShellConfig {
             preferences: preferences::ClientChromePreferences::default(),
             startup_config_diagnostic: None,
             startup_onboarding: false,
+            startup_herdr_import: None,
         }
+    }
+
+    pub(crate) fn with_startup_herdr_import(
+        mut self,
+        install: Option<crate::herdr_import::HerdrInstall>,
+    ) -> Self {
+        self.startup_herdr_import = install;
+        self
     }
 
     pub(crate) fn with_startup_config_diagnostic(mut self, diagnostic: Option<String>) -> Self {

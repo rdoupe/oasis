@@ -38,6 +38,17 @@ Herdr shows first-run setup when `onboarding` is missing or true. Continuing fro
 onboarding = false
 ```
 
+## Import from Herdr
+
+When a Herdr install sits beside oasis (`~/.config/herdr` and `~/.local/state/herdr`), the first oasis launch offers to bring it over. Nothing is copied until you choose:
+
+- **Settings**: `config.toml`, agent detection overrides and plugins. An existing oasis `config.toml` is kept as `config.toml.before-herdr-import`.
+- **Saved machines**: remote machines and the sidebar layout.
+- **Windows**: Herdr's spaces, tabs and panes, reopened in oasis as new shells in the same folders.
+- **Take over Herdr's server** (off by default): Herdr's running server hands its panes to oasis, so running programs keep going. Herdr's socket paths then lead to the oasis server, so agent hooks in those panes and machines that connect through Herdr's paths reach oasis. It needs Linux or macOS and a running Herdr server that speaks the same protocol; otherwise it is greyed out with the reason. Herdr's server is only stopped by a successful handoff.
+
+Oasis restarts once to load what you imported. The choice is remembered. To see the offer again, run `oasis import-herdr`. To import without the screen, run `oasis import-herdr --apply settings,remotes,windows,server` with the items you want.
+
 ## Reload config
 
 Reload a running server after editing `config.toml`:

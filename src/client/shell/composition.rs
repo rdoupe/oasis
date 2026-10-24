@@ -672,6 +672,7 @@ impl ClientShellState {
                     &self.config.palette,
                 )?;
                 occlusion.cover(rendered.area);
+                self.hits.overlay_rows = rendered.menu_rows;
                 self.hits.overlay_primary = rendered.primary;
                 self.hits.overlay_clear = rendered.clear;
                 self.hits.overlay_cancel = rendered.cancel;

@@ -2,7 +2,6 @@ use crossterm::event::{KeyCode, KeyModifiers};
 
 mod io;
 mod keybinds;
-mod legacy;
 mod model;
 mod sidebar;
 mod sound;
@@ -40,7 +39,6 @@ pub use self::{
 };
 
 pub(crate) use self::keybinds::parse_key_combo;
-pub use self::legacy::import_legacy_settings;
 pub(crate) use self::write::{update_file_at, write_edit, ConfigEdit};
 pub(crate) use self::{
     io::upsert_top_level_bool,

@@ -174,6 +174,64 @@ impl ClientShellState {
         }
     }
 
+    /// Typed characters on the Herdr import offer: space and `x` toggle the
+    /// highlighted item, `j`/`k` move.
+    pub(super) fn route_herdr_import_text(&mut self, text: &str, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::HerdrImport(import)) = self.overlay.as_mut() else {
+            return;
+        };
+        let last = crate::herdr_import::IMPORT_ITEMS.len().saturating_sub(1);
+        for character in text.chars() {
+            match character {
+                ' ' | 'x' => import.toggle(import.cursor),
+                'j' => import.cursor = (import.cursor + 1).min(last),
+                'k' => import.cursor = import.cursor.saturating_sub(1),
+                _ => continue,
+            }
+            outcome.repaint = true;
+        }
+    }
+
+    /// Queues the chosen Herdr import and leaves the client: the import runs
+    /// once the first-launch server has stopped, then oasis starts again.
+    pub(super) fn accept_herdr_import(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::HerdrImport(import)) = self.overlay.take() else {
+            return;
+        };
+        self.config.startup_herdr_import = None;
+        if import.plan.is_empty() {
+            self.finish_herdr_import_offer(&import, outcome);
+            return;
+        }
+        crate::herdr_import::set_pending(import.install, import.plan);
+        outcome.detach = true;
+    }
+
+    pub(super) fn skip_herdr_import(&mut self, outcome: &mut ClientShellInput) {
+        let Some(ClientShellOverlay::HerdrImport(import)) = self.overlay.take() else {
+            return;
+        };
+        self.config.startup_herdr_import = None;
+        self.finish_herdr_import_offer(&import, outcome);
+    }
+
+    fn finish_herdr_import_offer(
+        &mut self,
+        import: &ClientHerdrImportOverlay,
+        outcome: &mut ClientShellInput,
+    ) {
+        if let Err(error) = crate::herdr_import::record_decision(
+            &import.install.dirs.oasis_state,
+            crate::herdr_import::Decision::Skipped,
+        ) {
+            self.set_local_config_diagnostic(Some(format!(
+                "could not remember the Herdr import choice: {error}"
+            )));
+        }
+        self.overlay = super::state::startup_overlay(&self.config);
+        outcome.repaint = true;
+    }
+
     pub(super) fn complete_onboarding(&mut self, outcome: &mut ClientShellInput) {
         if self.snapshot.is_none() {
             return;
@@ -476,6 +534,28 @@ impl ClientShellState {
         outcome: &mut ClientShellInput,
     ) {
         use crossterm::event::KeyModifiers;
+
+        if let Some(ClientShellOverlay::HerdrImport(import)) = self.overlay.as_mut() {
+            let last = crate::herdr_import::IMPORT_ITEMS.len().saturating_sub(1);
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => import.cursor = import.cursor.saturating_sub(1),
+                KeyCode::Down | KeyCode::Char('j') | KeyCode::Tab => {
+                    import.cursor = (import.cursor + 1).min(last);
+                }
+                KeyCode::Char(' ') | KeyCode::Char('x') => import.toggle(import.cursor),
+                KeyCode::Enter => {
+                    self.accept_herdr_import(outcome);
+                    return;
+                }
+                KeyCode::Esc => {
+                    self.skip_herdr_import(outcome);
+                    return;
+                }
+                _ => return,
+            }
+            outcome.repaint = true;
+            return;
+        }
 
         if matches!(self.overlay, Some(ClientShellOverlay::Onboarding)) {
             if matches!(

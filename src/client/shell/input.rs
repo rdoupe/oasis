@@ -255,6 +255,10 @@ impl ClientShellState {
                 }
                 RawInputEvent::Text(text) => {
                     let text = text.into_string();
+                    if matches!(self.overlay, Some(ClientShellOverlay::HerdrImport(_))) {
+                        self.route_herdr_import_text(&text, &mut outcome);
+                        continue;
+                    }
                     if matches!(
                         self.overlay,
                         Some(
@@ -291,7 +295,8 @@ impl ClientShellState {
                     if matches!(
                         self.overlay,
                         Some(
-                            ClientShellOverlay::Onboarding
+                            ClientShellOverlay::HerdrImport(_)
+                                | ClientShellOverlay::Onboarding
                                 | ClientShellOverlay::ProductAnnouncement(_)
                                 | ClientShellOverlay::ReleaseNotes(_)
                         )
@@ -627,7 +632,8 @@ impl ClientShellState {
         if matches!(
             self.overlay,
             Some(
-                ClientShellOverlay::Onboarding
+                ClientShellOverlay::HerdrImport(_)
+                    | ClientShellOverlay::Onboarding
                     | ClientShellOverlay::ProductAnnouncement(_)
                     | ClientShellOverlay::ReleaseNotes(_)
             )
@@ -1105,7 +1111,8 @@ impl ClientShellState {
         if matches!(
             self.overlay,
             Some(
-                ClientShellOverlay::Onboarding
+                ClientShellOverlay::HerdrImport(_)
+                    | ClientShellOverlay::Onboarding
                     | ClientShellOverlay::ProductAnnouncement(_)
                     | ClientShellOverlay::ReleaseNotes(_)
             )

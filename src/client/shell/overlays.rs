@@ -56,6 +56,7 @@ pub(crate) fn render_client_overlay(
         }
     }
     match o {
+        ClientShellOverlay::HerdrImport(v) => render_herdr_import_overlay(b, v, p),
         ClientShellOverlay::Onboarding => render_onboarding_overlay(b, k, p),
         ClientShellOverlay::ProductAnnouncement(v) => render_product_announcement_overlay(b, v, p),
         ClientShellOverlay::ReleaseNotes(v) => {
@@ -533,6 +534,117 @@ fn render_product_announcement_overlay(
         product_announcement_scrollbar: track.unwrap_or_default(),
         product_announcement_scroll_metrics: Some(metrics),
         product_announcement_max_scroll: max_scroll,
+        ..OverlayRender::default()
+    })
+}
+
+/// The first-launch Herdr import offer: one checkbox row per item, with
+/// its detail or the reason it is unavailable underneath.
+fn render_herdr_import_overlay(
+    b: &mut Buffer,
+    v: &ClientHerdrImportOverlay,
+    p: &Palette,
+) -> Option<OverlayRender> {
+    let items = crate::herdr_import::IMPORT_ITEMS;
+    let content_height = items.len() as u16 * 2;
+    let outer = popup_with_width_cap(b.area, 66, content_height + 9, 3)?;
+    let inner = panel(b, outer, p.accent, p.panel_bg)?;
+    let stack = crate::ui::modal_stack_areas(inner, 2, 0, 1, 1);
+    let base = Style::default()
+        .bg(p.panel_bg)
+        .remove_modifier(Modifier::DIM);
+    put_text(
+        b,
+        stack.header.x,
+        stack.header.y,
+        stack.header.width,
+        "Bring your Herdr setup into oasis",
+        base.fg(p.text).add_modifier(Modifier::BOLD),
+    );
+    put_text(
+        b,
+        stack.header.x,
+        stack.header.y.saturating_add(1),
+        stack.header.width,
+        "Pick what to import. Herdr itself is left as it is.",
+        base.fg(p.overlay0),
+    );
+
+    let mut rows = Vec::new();
+    for (index, item) in items.iter().enumerate() {
+        let y = stack.content.y.saturating_add(index as u16 * 2);
+        if y.saturating_add(1) >= stack.content.bottom() {
+            break;
+        }
+        let row = Rect::new(stack.content.x, y, stack.content.width, 2);
+        let availability = v.install.availability(*item);
+        let available = availability.is_available();
+        let highlighted = index == v.cursor;
+        let row_style = if highlighted {
+            base.bg(p.surface0)
+        } else {
+            base
+        };
+        b.set_style(Rect::new(row.x, row.y, row.width, 1), row_style);
+        let mark = if v.plan.get(*item) { "[x]" } else { "[ ]" };
+        let label_style = if available {
+            row_style.fg(p.text).add_modifier(Modifier::BOLD)
+        } else {
+            row_style.fg(p.overlay0)
+        };
+        put_text(
+            b,
+            row.x,
+            row.y,
+            row.width,
+            &format!(" {mark} {}", item.label()),
+            label_style,
+        );
+        let detail = match availability {
+            crate::herdr_import::Availability::Available => item.detail().to_owned(),
+            crate::herdr_import::Availability::Unavailable(reason) => reason.clone(),
+        };
+        put_text(
+            b,
+            row.x.saturating_add(5),
+            row.y.saturating_add(1),
+            row.width.saturating_sub(5),
+            &detail,
+            base.fg(p.overlay0),
+        );
+        rows.push((row, index));
+    }
+
+    let actions = stack.actions.unwrap_or_default();
+    let buttons = row(actions, &[12, 10], 2, 0);
+    let [import, skip] = buttons.as_slice() else {
+        return None;
+    };
+    button(
+        b,
+        *import,
+        " ↵ import ",
+        Style::default()
+            .fg(contrast(p))
+            .bg(p.accent)
+            .add_modifier(Modifier::BOLD)
+            .remove_modifier(Modifier::DIM),
+    );
+    button(
+        b,
+        *skip,
+        " esc skip ",
+        Style::default()
+            .fg(p.text)
+            .bg(p.surface0)
+            .add_modifier(Modifier::BOLD)
+            .remove_modifier(Modifier::DIM),
+    );
+    Some(OverlayRender {
+        area: outer,
+        menu_rows: rows,
+        primary: *import,
+        clear: *skip,
         ..OverlayRender::default()
     })
 }

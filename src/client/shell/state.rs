@@ -52,6 +52,8 @@ pub(crate) struct ClientShellConfig {
     pub(super) preferences: preferences::ClientChromePreferences,
     pub(super) startup_config_diagnostic: Option<String>,
     pub(super) startup_onboarding: bool,
+    /// A Herdr install to offer importing on this first launch.
+    pub(super) startup_herdr_import: Option<crate::herdr_import::HerdrInstall>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +118,8 @@ pub(super) struct ShellHitMap {
     pub(super) notification_toast: Rect,
     pub(super) global_menu_rows: Vec<(Rect, usize)>,
     pub(super) context_menu_rows: Vec<(Rect, usize)>,
+    /// Selectable rows of a modal overlay, such as the Herdr import items.
+    pub(super) overlay_rows: Vec<(Rect, usize)>,
     pub(super) overlay_primary: Rect,
     pub(super) overlay_clear: Rect,
     pub(super) overlay_cancel: Rect,
@@ -286,6 +290,7 @@ pub(super) enum ClientShellMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum ClientShellOverlayKind {
+    HerdrImport,
     Onboarding,
     ProductAnnouncement,
     ReleaseNotes,
@@ -578,6 +583,42 @@ pub(super) struct ClientTabCloseConfirmation {
     pub(super) workspace: WorkspaceNavigationTarget,
 }
 
+/// The first-launch offer to bring a Herdr install over.
+#[derive(Debug)]
+pub(super) struct ClientHerdrImportOverlay {
+    pub(super) install: crate::herdr_import::HerdrInstall,
+    pub(super) plan: crate::herdr_import::ImportPlan,
+    /// The highlighted row in [`crate::herdr_import::IMPORT_ITEMS`].
+    pub(super) cursor: usize,
+}
+
+impl ClientHerdrImportOverlay {
+    pub(super) fn new(install: crate::herdr_import::HerdrInstall) -> Self {
+        let plan = install.default_plan();
+        Self {
+            install,
+            plan,
+            cursor: 0,
+        }
+    }
+
+    /// Toggles an item; unavailable items stay off. Taking over the server
+    /// brings the windows with it, so it selects them too.
+    pub(super) fn toggle(&mut self, index: usize) {
+        let Some(item) = crate::herdr_import::IMPORT_ITEMS.get(index).copied() else {
+            return;
+        };
+        if !self.install.availability(item).is_available() {
+            return;
+        }
+        let value = !self.plan.get(item);
+        self.plan.set(item, value);
+        if item == crate::herdr_import::ImportItem::Server && value {
+            self.plan.windows = self.install.windows.is_available() || self.plan.windows;
+        }
+    }
+}
+
 #[derive(Debug)]
 pub(super) struct ClientConfirmCloseOverlay {
     pub(super) workspace_id: String,
@@ -589,6 +630,7 @@ pub(super) struct ClientConfirmCloseOverlay {
 
 #[derive(Debug)]
 pub(super) enum ClientShellOverlay {
+    HerdrImport(ClientHerdrImportOverlay),
     Onboarding,
     ProductAnnouncement(crate::app::state::ProductAnnouncementState),
     ReleaseNotes(crate::app::state::ReleaseNotesState),
@@ -607,6 +649,7 @@ pub(super) enum ClientShellOverlay {
 impl ClientShellOverlay {
     pub(super) fn kind(&self) -> ClientShellOverlayKind {
         match self {
+            Self::HerdrImport(_) => ClientShellOverlayKind::HerdrImport,
             Self::Onboarding => ClientShellOverlayKind::Onboarding,
             Self::ProductAnnouncement(_) => ClientShellOverlayKind::ProductAnnouncement,
             Self::ReleaseNotes(_) => ClientShellOverlayKind::ReleaseNotes,
@@ -1023,13 +1066,24 @@ pub(super) struct WorkspaceEntry {
     pub(super) last_child: bool,
 }
 
+/// The overlay a client starts with: the Herdr import offer first, then
+/// onboarding.
+pub(super) fn startup_overlay(config: &ClientShellConfig) -> Option<ClientShellOverlay> {
+    if let Some(install) = config.startup_herdr_import.clone() {
+        return Some(ClientShellOverlay::HerdrImport(
+            ClientHerdrImportOverlay::new(install),
+        ));
+    }
+    config
+        .startup_onboarding
+        .then_some(ClientShellOverlay::Onboarding)
+}
+
 impl ClientShellState {
     pub(crate) fn new(mut config: ClientShellConfig) -> Self {
         let preferences = config.preferences.clone();
         let local_config_diagnostic = config.startup_config_diagnostic.take();
-        let overlay = config
-            .startup_onboarding
-            .then_some(ClientShellOverlay::Onboarding);
+        let overlay = startup_overlay(&config);
         let sidebar_collapsed = preferences
             .sidebar_collapsed
             .unwrap_or(config.sidebar_start_collapsed);
@@ -1303,10 +1357,7 @@ impl ClientShellState {
         self.endpoint_error_deadline = None;
         self.navigate_workspace_id = None;
         self.pending_workspace_highlight = None;
-        self.overlay = self
-            .config
-            .startup_onboarding
-            .then_some(ClientShellOverlay::Onboarding);
+        self.overlay = startup_overlay(&self.config);
         self.previous_pane_id = None;
         self.pane_mouse_gesture = None;
         self.link_hover = None;
@@ -1715,12 +1766,13 @@ impl ClientShellState {
             self.navigate_workspace_id = None;
             if !matches!(
                 self.overlay.as_ref(),
-                Some(ClientShellOverlay::Onboarding | ClientShellOverlay::ProductAnnouncement(_))
+                Some(
+                    ClientShellOverlay::HerdrImport(_)
+                        | ClientShellOverlay::Onboarding
+                        | ClientShellOverlay::ProductAnnouncement(_)
+                )
             ) {
-                self.overlay = self
-                    .config
-                    .startup_onboarding
-                    .then_some(ClientShellOverlay::Onboarding);
+                self.overlay = startup_overlay(&self.config);
             }
             self.selection = None;
             self.last_pane_click = None;

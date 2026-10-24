@@ -25,6 +25,7 @@ mod detect;
 mod events;
 use ghostty_vt as ghostty;
 mod handoff_runtime;
+mod herdr_import;
 mod input;
 mod integration;
 mod ipc;
@@ -516,6 +517,61 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
     }
 }
 
+/// `oasis import-herdr` forgets the Herdr import decision, then starts oasis
+/// normally so the first-launch import screen shows again.
+/// `oasis import-herdr --apply <items>` imports without the screen.
+fn herdr_import_command(mut raw_args: Vec<String>) -> Result<Vec<String>, i32> {
+    if raw_args.get(1).map(String::as_str) != Some(herdr_import::REIMPORT_COMMAND) {
+        return Ok(raw_args);
+    }
+    let usage = || {
+        eprintln!(
+            "usage: oasis {0}\n       oasis {0} --apply settings,remotes,windows,server",
+            herdr_import::REIMPORT_COMMAND
+        );
+        2
+    };
+    let apply = match raw_args.get(2).map(String::as_str) {
+        None => None,
+        Some("--apply") if raw_args.len() == 4 => {
+            Some(herdr_import::parse_items(&raw_args[3]).map_err(|err| {
+                eprintln!("error: {err}");
+                2
+            })?)
+        }
+        Some(_) => return Err(usage()),
+    };
+    if let Err(err) = herdr_import::forget_decision(&config::state_dir()) {
+        eprintln!("error: could not reset the Herdr import: {err}");
+        return Err(1);
+    }
+    let Some(install) = herdr_import::detect_current() else {
+        eprintln!("oasis: no Herdr install found to import");
+        return Err(1);
+    };
+    let Some(mut plan) = apply else {
+        raw_args.truncate(1);
+        return Ok(raw_args);
+    };
+    for item in herdr_import::IMPORT_ITEMS {
+        if let herdr_import::Availability::Unavailable(reason) = install.availability(item) {
+            if plan.get(item) {
+                eprintln!("oasis: skipping {}: {reason}", item.label());
+                plan.set(item, false);
+            }
+        }
+    }
+    let report = herdr_import::run_import(&install, plan, &herdr_import::OasisSockets::current());
+    for line in &report.lines {
+        println!("{line}");
+    }
+    Err(if report.server_taken_over == Some(false) {
+        1
+    } else {
+        0
+    })
+}
+
 fn main() -> io::Result<()> {
     let raw_args: Vec<String> = match args_as_utf8(std::env::args_os()) {
         Ok(args) => args,
@@ -525,11 +581,14 @@ fn main() -> io::Result<()> {
             std::process::exit(2);
         }
     };
-    config::import_legacy_settings();
     #[cfg(windows)]
     if let Some(result) = platform::maybe_activate_desktop_notification(&raw_args) {
         return result;
     }
+    let raw_args = match herdr_import_command(raw_args) {
+        Ok(args) => args,
+        Err(code) => std::process::exit(code),
+    };
     if let Some(outcome) = cli::maybe_run_machine(&raw_args) {
         return finish_cli(outcome);
     }

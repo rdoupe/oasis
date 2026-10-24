@@ -336,7 +336,30 @@ pub fn auto_detect_launch(saved_federation: bool) -> io::Result<()> {
     }
 
     // Now attach as a thin client.
-    crate::client::run_client()
+    crate::client::run_client()?;
+    if let Some((install, plan)) = crate::herdr_import::take_pending() {
+        run_herdr_import_and_relaunch(&install, plan);
+    }
+    Ok(())
+}
+
+/// Runs the import chosen on the first-launch screen, then starts oasis again
+/// so it comes up on the imported settings, machines and windows.
+fn run_herdr_import_and_relaunch(
+    install: &crate::herdr_import::HerdrInstall,
+    plan: crate::herdr_import::ImportPlan,
+) {
+    eprintln!("oasis: importing from Herdr...");
+    let sockets = crate::herdr_import::OasisSockets::current();
+    for line in crate::herdr_import::run_import(install, plan, &sockets).lines {
+        eprintln!("oasis: {line}");
+    }
+    let args = std::env::args_os()
+        .skip(1)
+        .filter(|arg| arg != crate::herdr_import::REIMPORT_COMMAND)
+        .collect::<Vec<_>>();
+    let error = crate::platform::relaunch_current_process(&args);
+    eprintln!("oasis: import finished; start oasis again ({error})");
 }
 
 // ---------------------------------------------------------------------------

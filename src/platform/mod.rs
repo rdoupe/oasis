@@ -464,6 +464,29 @@ extern "C" fn record_terminal_resize_signal(_signal: libc::c_int) {
     }
 }
 
+/// Replaces this process with a fresh run of the same executable and
+/// arguments, so a restarted client starts with no leftover threads.
+#[cfg(unix)]
+pub(crate) fn relaunch_current_process(args: &[std::ffi::OsString]) -> std::io::Error {
+    use std::os::unix::process::CommandExt as _;
+    match std::env::current_exe() {
+        Ok(exe) => std::process::Command::new(exe).args(args).exec(),
+        Err(err) => err,
+    }
+}
+
+/// Windows cannot replace a process image: run the new client to completion
+/// and exit with its status.
+#[cfg(windows)]
+pub(crate) fn relaunch_current_process(args: &[std::ffi::OsString]) -> std::io::Error {
+    let status =
+        std::env::current_exe().and_then(|exe| std::process::Command::new(exe).args(args).status());
+    match status {
+        Ok(status) => std::process::exit(status.code().unwrap_or(1)),
+        Err(err) => err,
+    }
+}
+
 /// Records SIGWINCH events that size polling can miss.
 #[cfg(unix)]
 pub(crate) fn watch_terminal_resize_signal() {
