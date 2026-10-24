@@ -31,7 +31,7 @@ name = "oasis"
 path = "src/main.rs"
 
 [workspace]
-members = ["crates/ghostty-vt"]
+members = ["crates/ghostty-vt", "crates/clawmux"]
 default-members = [".", "crates/ghostty-vt"]
 
 [dependencies]

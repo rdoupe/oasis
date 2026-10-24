@@ -1,0 +1,21 @@
+[package]
+name = "clawmux"
+version = "0.1.0"
+edition = "2021"
+description = "Native GTK4 client for the oasis terminal workspace server"
+license = "Apache-2.0"
+publish = false
+
+[[bin]]
+name = "newnewoasisclawmux"
+path = "src/main.rs"
+
+[dependencies]
+oasis_core = { package = "herdr", path = "../.." }
+gtk = { package = "gtk4", version = "0.11", features = ["v4_14"] }
+async-channel = "2"
+crossterm = "0.29"
+serde_json = "1"
+toml = "0.8"
+unicode-width = "0.2"
+base64 = "0.22"
