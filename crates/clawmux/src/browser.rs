@@ -36,8 +36,22 @@ fn default_browser_new_window() -> Option<Vec<String>> {
     let exec = file
         .string(&format!("Desktop Action {action}"), "Exec")
         .ok()?;
-    let argv = exec_argv(&exec);
+    let argv = ensure_new_window_flag(exec_argv(&exec));
     (!argv.is_empty()).then_some(argv)
+}
+
+/// Chromium-family new-window actions are the bare browser command, which turns a URL
+/// into a tab in an existing window; `--new-window` (understood by Chromium, Firefox
+/// and GNOME Web alike) makes it a window.
+fn ensure_new_window_flag(mut argv: Vec<String>) -> Vec<String> {
+    if !argv.is_empty()
+        && !argv
+            .iter()
+            .any(|arg| arg == "--new-window" || arg == "-new-window")
+    {
+        argv.push("--new-window".into());
+    }
+    argv
 }
 
 fn is_new_window_action(action: &str) -> bool {
@@ -224,6 +238,18 @@ mod tests {
         assert_eq!(
             exec_argv("\"/opt/My Browser/browser\" --new-window"),
             vec!["/opt/My Browser/browser", "--new-window"]
+        );
+    }
+
+    #[test]
+    fn bare_new_window_actions_get_the_new_window_flag() {
+        assert_eq!(
+            ensure_new_window_flag(vec!["/usr/bin/google-chrome-stable".into()]),
+            vec!["/usr/bin/google-chrome-stable", "--new-window"]
+        );
+        assert_eq!(
+            ensure_new_window_flag(vec!["firefox".into(), "--new-window".into()]),
+            vec!["firefox", "--new-window"]
         );
     }
 
