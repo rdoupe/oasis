@@ -371,3 +371,20 @@ fn notification_delivery_matches_the_toast_settings() {
         }
     );
 }
+
+#[test]
+fn sidebar_prefs_load_reads_toast_delivery_and_sound() {
+    let dir = std::env::temp_dir().join(format!("oasis-prefs-{}", std::process::id()));
+    let config_dir = dir.join(crate::config::app_dir_name());
+    std::fs::create_dir_all(&config_dir).unwrap();
+    std::fs::write(
+        config_dir.join("config.toml"),
+        "onboarding = false\n[ui.toast]\ndelivery = \"system\"\n[ui.sound]\nenabled = false\n",
+    )
+    .unwrap();
+    std::env::set_var("XDG_CONFIG_HOME", &dir);
+    let prefs = SidebarPrefs::load();
+    assert_eq!(prefs.toast_delivery, ToastDelivery::System);
+    assert!(!prefs.sound_enabled);
+    let _ = std::fs::remove_dir_all(dir);
+}

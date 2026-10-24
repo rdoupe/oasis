@@ -482,6 +482,10 @@ pub struct SidebarPrefs {
     pub collapsed_groups: BTreeMap<String, HashSet<String>>,
     /// The primary leader (prefix) key label, e.g. `ctrl+b`.
     pub leader: String,
+    /// `[ui.toast] delivery`, the input to [`notification_delivery`].
+    pub toast_delivery: crate::config::ToastDelivery,
+    /// `[ui.sound] enabled`.
+    pub sound_enabled: bool,
 }
 
 impl SidebarPrefs {
@@ -502,6 +506,8 @@ impl SidebarPrefs {
             sort: config.ui.agent_panel_sort,
             collapsed_groups: BTreeMap::new(),
             leader: keybinds.primary_prefix_label(),
+            toast_delivery: config.ui.toast.delivery,
+            sound_enabled: config.ui.sound.enabled,
         }
     }
 }
