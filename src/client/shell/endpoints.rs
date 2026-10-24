@@ -571,6 +571,7 @@ impl ClientShellState {
         {
             return;
         }
+        self.filter_incoming_snapshot(endpoint_id, &mut snapshot);
         let boot_changed = self.endpoints[index]
             .snapshot
             .as_deref()

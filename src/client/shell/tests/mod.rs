@@ -263,6 +263,7 @@ mod keybindings_settings;
 mod link_hover;
 mod mobile;
 mod mouse_selection;
+mod pending_close;
 mod popup_focus_projection;
 mod remote_activity;
 mod startup_overlays;

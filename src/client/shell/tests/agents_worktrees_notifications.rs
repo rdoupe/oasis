@@ -285,6 +285,19 @@ fn duplicate_repo_parents_remain_visible_and_focusable_when_collapsed() {
                 [ClientShellAction::Endpoint { request, .. }]
                     if matches!(&request.method, crate::api::schema::Method::WorkspaceClose(params)
                         if params.workspace_id == "ws_duplicate" && !params.close_group)));
+            // The server answers before the next snapshot, which is then the
+            // truth even though it still lists the workspace.
+            let Some(ClientShellAction::Endpoint {
+                boot_id, request, ..
+            }) = close.actions.first()
+            else {
+                unreachable!("checked above");
+            };
+            state.handle_endpoint_result(
+                boot_id,
+                &request.id,
+                Ok(crate::api::schema::ResponseResult::Ok {}),
+            );
         }
     }
 }

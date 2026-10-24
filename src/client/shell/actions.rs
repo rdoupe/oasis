@@ -416,14 +416,19 @@ impl ClientShellState {
                 kind,
             },
         );
+        let close_target = self.close_target_for(&method);
         outcome.actions.push(ClientShellAction::Endpoint {
             endpoint_id: self.active_endpoint_id.clone(),
             boot_id: snapshot.boot_id.clone(),
             request: Box::new(crate::api::schema::Request {
-                id: request_id,
+                id: request_id.clone(),
                 method,
             }),
         });
+        if let Some(target) = close_target {
+            self.begin_pending_close(request_id, target);
+            outcome.repaint = true;
+        }
         true
     }
 
@@ -497,6 +502,17 @@ impl ClientShellState {
     }
 
     pub(crate) fn handle_endpoint_result(
+        &mut self,
+        boot_id: &str,
+        request_id: &str,
+        result: Result<crate::api::schema::ResponseResult, ClientShellEndpointError>,
+    ) -> (bool, Vec<ClientShellAction>) {
+        let close_settled = self.settle_pending_close(request_id, result.is_ok());
+        let (repaint, actions) = self.handle_endpoint_result_inner(boot_id, request_id, result);
+        (repaint || close_settled, actions)
+    }
+
+    fn handle_endpoint_result_inner(
         &mut self,
         boot_id: &str,
         request_id: &str,

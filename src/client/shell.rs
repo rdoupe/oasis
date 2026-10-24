@@ -27,6 +27,7 @@ mod mouse;
 mod notification_policy;
 mod notifications;
 mod overlay_input;
+mod pending_close;
 mod preferences;
 mod remote_activity;
 mod render;

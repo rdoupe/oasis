@@ -1019,6 +1019,10 @@ pub(crate) struct ClientShellState {
     pub(super) popup_pending_deadline: Option<std::time::Instant>,
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
+    /// Closes hidden ahead of the server's answer; see `pending_close`.
+    pub(super) pending_closes: Vec<super::pending_close::PendingClose>,
+    /// The server's own snapshot for endpoints with closes pending.
+    pub(super) unfiltered_snapshots: HashMap<ClientEndpointId, Box<ClientShellSnapshot>>,
     pub(super) pending_integration_installs: usize,
     pub(super) pending_notifications: Vec<ClientPendingNotification>,
     pub(super) visible_notification: Option<ClientVisibleNotification>,
@@ -1195,6 +1199,8 @@ impl ClientShellState {
             popup_pending_deadline: None,
             next_request_id: 1,
             pending_requests: HashMap::new(),
+            pending_closes: Vec::new(),
+            unfiltered_snapshots: HashMap::new(),
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),
             visible_notification: None,
@@ -1343,6 +1349,7 @@ impl ClientShellState {
         self.last_composed_at = None;
         self.selection_repaint_deadline = None;
         self.pending_requests.clear();
+        self.abandon_pending_closes();
         self.pane_scroll_in_flight.clear();
         self.pane_scroll_queued.clear();
         self.pane_scroll_targets.clear();

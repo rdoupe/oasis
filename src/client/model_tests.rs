@@ -388,3 +388,32 @@ fn sidebar_prefs_load_reads_toast_delivery_and_sound() {
     assert!(!prefs.sound_enabled);
     let _ = std::fs::remove_dir_all(dir);
 }
+
+#[test]
+fn hiding_the_first_active_tab_focuses_the_next_and_renumbers() {
+    let mut first = workspace("ws_1", 1, AgentStatus::Idle);
+    first.focused = true;
+    first.active_tab_id = "tab_1".into();
+    let mut snapshot = snapshot(
+        vec![first],
+        vec![agent("pane_1", "ws_1", AgentStatus::Idle, 1)],
+    );
+    snapshot.panes[0].tab_id = "tab_1".into();
+    snapshot.focused_tab_id = Some("tab_1".into());
+    snapshot.focused_pane_id = Some("pane_1".into());
+    let mut second = snapshot.tabs[0].clone();
+    second.tab_id = "tab_2".into();
+    second.number = 2;
+    second.focused = false;
+    snapshot.tabs.push(second);
+    let mut pane = snapshot.panes[0].clone();
+    pane.pane_id = "pane_2".into();
+    pane.tab_id = "tab_2".into();
+    pane.focused = false;
+    snapshot.panes.push(pane);
+    hide_closed_target(&mut snapshot, &CloseTarget::Tab("tab_1".into()));
+    assert_eq!(snapshot.focused_tab_id.as_deref(), Some("tab_2"));
+    assert_eq!(snapshot.focused_pane_id.as_deref(), Some("pane_2"));
+    assert_eq!(snapshot.tabs[0].number, 1);
+    assert!(!CloseTarget::Tab("tab_1".into()).present_in(&snapshot));
+}

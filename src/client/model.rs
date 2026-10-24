@@ -752,6 +752,218 @@ fn machine_entry(
     }
 }
 
+/// Something the person asked to close that the server has not confirmed yet.
+/// Front ends hide it at once so a slow server does not make the close feel
+/// slow; see [`hide_closed_target`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CloseTarget {
+    Tab(String),
+    Pane(String),
+    /// A workspace, or a worktree group closed together.
+    Workspaces(Vec<String>),
+}
+
+impl CloseTarget {
+    /// Whether `snapshot` still contains anything this close removes.
+    pub fn present_in(&self, snapshot: &ClientShellSnapshot) -> bool {
+        match self {
+            Self::Tab(tab_id) => snapshot.tabs.iter().any(|tab| &tab.tab_id == tab_id),
+            Self::Pane(pane_id) => snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id),
+            Self::Workspaces(ids) => snapshot
+                .workspaces
+                .iter()
+                .any(|workspace| ids.contains(&workspace.workspace_id)),
+        }
+    }
+}
+
+/// Removes `target` from `snapshot` the way the server will, moving focus to
+/// the neighbor it picks: the previous tab (or the next one at the start), a
+/// remaining pane in the tab, or the workspace that takes the closed one's
+/// place. Closing a tab's last pane closes the tab, and a workspace's last tab
+/// closes the workspace, as on the server.
+pub fn hide_closed_target(snapshot: &mut ClientShellSnapshot, target: &CloseTarget) {
+    match target {
+        CloseTarget::Pane(pane_id) => {
+            let Some(pane) = snapshot.panes.iter().find(|pane| &pane.pane_id == pane_id) else {
+                return;
+            };
+            let tab_id = pane.tab_id.clone();
+            let last_in_tab = !snapshot
+                .panes
+                .iter()
+                .any(|other| other.tab_id == tab_id && &other.pane_id != pane_id);
+            if last_in_tab {
+                return hide_closed_target(snapshot, &CloseTarget::Tab(tab_id));
+            }
+            snapshot.panes.retain(|pane| &pane.pane_id != pane_id);
+            snapshot.agents.retain(|agent| &agent.pane_id != pane_id);
+            snapshot.agent_order.retain(|id| id != pane_id);
+            if snapshot.focused_pane_id.as_deref() == Some(pane_id.as_str()) {
+                let next = snapshot
+                    .panes
+                    .iter()
+                    .find(|pane| pane.tab_id == tab_id)
+                    .map(|pane| pane.pane_id.clone());
+                set_focused_pane(snapshot, next);
+            }
+        }
+        CloseTarget::Tab(tab_id) => {
+            let Some(tab) = snapshot.tabs.iter().find(|tab| &tab.tab_id == tab_id) else {
+                return;
+            };
+            let workspace_id = tab.workspace_id.clone();
+            let siblings = snapshot
+                .tabs
+                .iter()
+                .filter(|tab| tab.workspace_id == workspace_id)
+                .map(|tab| tab.tab_id.clone())
+                .collect::<Vec<_>>();
+            if siblings.len() <= 1 {
+                return hide_closed_target(snapshot, &CloseTarget::Workspaces(vec![workspace_id]));
+            }
+            let closed = siblings.iter().position(|id| id == tab_id).unwrap_or(0);
+            let active_tab_id = snapshot
+                .workspaces
+                .iter()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+                .map(|workspace| workspace.active_tab_id.clone());
+            let mut active = active_tab_id
+                .and_then(|active| siblings.iter().position(|id| *id == active))
+                .unwrap_or(0);
+            // Workspace::close_tab
+            let remaining = siblings.len() - 1;
+            if active >= remaining {
+                active = remaining - 1;
+            } else if closed <= active && active > 0 {
+                active -= 1;
+            }
+            let remaining_ids = siblings
+                .iter()
+                .filter(|id| *id != tab_id)
+                .collect::<Vec<_>>();
+            let next_active = remaining_ids[active.min(remaining_ids.len() - 1)].clone();
+            remove_tab_contents(snapshot, tab_id);
+            renumber(
+                snapshot
+                    .tabs
+                    .iter_mut()
+                    .filter(|tab| tab.workspace_id == workspace_id)
+                    .map(|tab| &mut tab.number),
+            );
+            if let Some(workspace) = snapshot
+                .workspaces
+                .iter_mut()
+                .find(|workspace| workspace.workspace_id == workspace_id)
+            {
+                workspace.active_tab_id = next_active.clone();
+            }
+            if snapshot.focused_workspace_id.as_deref() == Some(workspace_id.as_str()) {
+                focus_tab(snapshot, Some(next_active));
+            }
+        }
+        CloseTarget::Workspaces(ids) => {
+            let first_closed = snapshot
+                .workspaces
+                .iter()
+                .position(|workspace| ids.contains(&workspace.workspace_id));
+            let Some(first_closed) = first_closed else {
+                return;
+            };
+            let focused_closed = snapshot
+                .focused_workspace_id
+                .as_ref()
+                .is_some_and(|focused| ids.contains(focused));
+            let tab_ids = snapshot
+                .tabs
+                .iter()
+                .filter(|tab| ids.contains(&tab.workspace_id))
+                .map(|tab| tab.tab_id.clone())
+                .collect::<Vec<_>>();
+            for tab_id in &tab_ids {
+                remove_tab_contents(snapshot, tab_id);
+            }
+            snapshot
+                .workspaces
+                .retain(|workspace| !ids.contains(&workspace.workspace_id));
+            renumber(
+                snapshot
+                    .workspaces
+                    .iter_mut()
+                    .map(|workspace| &mut workspace.number),
+            );
+            if focused_closed {
+                // AppState::close_workspaces keeps the closed index, clamped.
+                let next = snapshot
+                    .workspaces
+                    .get(first_closed.min(snapshot.workspaces.len().saturating_sub(1)))
+                    .map(|workspace| workspace.workspace_id.clone());
+                for workspace in &mut snapshot.workspaces {
+                    workspace.focused = Some(&workspace.workspace_id) == next.as_ref();
+                }
+                let active_tab = next.as_ref().and_then(|next| {
+                    snapshot
+                        .workspaces
+                        .iter()
+                        .find(|workspace| &workspace.workspace_id == next)
+                        .map(|workspace| workspace.active_tab_id.clone())
+                });
+                snapshot.focused_workspace_id = next;
+                focus_tab(snapshot, active_tab);
+            }
+        }
+    }
+}
+
+fn remove_tab_contents(snapshot: &mut ClientShellSnapshot, tab_id: &str) {
+    let pane_ids = snapshot
+        .panes
+        .iter()
+        .filter(|pane| pane.tab_id == tab_id)
+        .map(|pane| pane.pane_id.clone())
+        .collect::<HashSet<_>>();
+    snapshot.tabs.retain(|tab| tab.tab_id != tab_id);
+    snapshot.panes.retain(|pane| pane.tab_id != tab_id);
+    snapshot
+        .agents
+        .retain(|agent| !pane_ids.contains(&agent.pane_id));
+    snapshot.agent_order.retain(|id| !pane_ids.contains(id));
+}
+
+/// Keeps numbers 1..n when they were 1..n, as the server renumbers on close.
+fn renumber<'a>(numbers: impl Iterator<Item = &'a mut usize>) {
+    let mut numbers = numbers.collect::<Vec<_>>();
+    numbers.sort_by_key(|number| **number);
+    for (index, number) in numbers.into_iter().enumerate() {
+        *number = index + 1;
+    }
+}
+
+fn focus_tab(snapshot: &mut ClientShellSnapshot, tab_id: Option<String>) {
+    for tab in &mut snapshot.tabs {
+        tab.focused = Some(&tab.tab_id) == tab_id.as_ref();
+    }
+    let pane = tab_id.as_ref().and_then(|tab_id| {
+        snapshot
+            .panes
+            .iter()
+            .find(|pane| &pane.tab_id == tab_id)
+            .map(|pane| pane.pane_id.clone())
+    });
+    snapshot.focused_tab_id = tab_id;
+    set_focused_pane(snapshot, pane);
+}
+
+fn set_focused_pane(snapshot: &mut ClientShellSnapshot, pane_id: Option<String>) {
+    for pane in &mut snapshot.panes {
+        pane.focused = Some(&pane.pane_id) == pane_id.as_ref();
+    }
+    for agent in &mut snapshot.agents {
+        agent.focused = Some(&agent.pane_id) == pane_id.as_ref();
+    }
+    snapshot.focused_pane_id = pane_id;
+}
+
 #[cfg(test)]
 #[path = "model_tests.rs"]
 pub(crate) mod tests;
