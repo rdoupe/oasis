@@ -756,6 +756,11 @@ impl App {
             self.paste();
             return glib::Propagation::Stop;
         }
+        // The key handler sees keys before GTK's shortcuts, so quit is handled here.
+        if key.is(KeyCode::Char('Q'), ctrl_shift) || key.is(KeyCode::Char('q'), ctrl_shift) {
+            self.application.quit();
+            return glib::Propagation::Stop;
+        }
         if let Some(zoom) = font_zoom(&key) {
             self.zoom_font(zoom);
             return glib::Propagation::Stop;
