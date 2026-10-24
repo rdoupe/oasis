@@ -8392,3 +8392,35 @@ async fn background_activity_reaches_client_shell_agent_tokens() {
         .contains(&("oasis:agents".to_owned(), "2".to_owned())));
     shutdown_test_runtimes(&mut server);
 }
+
+/// A requested change (new tab, split, close, focus) renders before the output
+/// pacing interval ends; output-driven work still waits; both stop once the
+/// interval's budget is spent.
+#[test]
+fn requested_changes_render_without_waiting_for_output_pacing() {
+    assert!(
+        early_render_due(true, true, || false),
+        "request renders now"
+    );
+    assert!(
+        !early_render_due(false, true, || false),
+        "plain output waits"
+    );
+    assert!(
+        early_render_due(false, true, || true),
+        "typed output still renders now"
+    );
+    assert!(
+        !early_render_due(true, false, || false),
+        "spent budget defers requests"
+    );
+
+    let mut server = test_headless_server();
+    let now = Instant::now();
+    assert!(server.interactive_render_budget_left(now));
+    for _ in 0..INTERACTIVE_RENDER_BUDGET {
+        server.record_interactive_render(now);
+    }
+    assert!(!server.interactive_render_budget_left(now));
+    assert!(server.interactive_render_budget_left(now + crate::app::MIN_RENDER_INTERVAL));
+}

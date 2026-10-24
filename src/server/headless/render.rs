@@ -8,11 +8,16 @@ impl HeadlessServer {
             .insert(pane_id, now + INTERACTIVE_RENDER_WINDOW);
     }
 
-    pub(super) fn can_render_interactive(&self, now: Instant) -> bool {
-        if self.interactive_render_budget.is_some_and(|(epoch, used)| {
+    /// Whether this pacing interval still has room for an immediate render.
+    pub(super) fn interactive_render_budget_left(&self, now: Instant) -> bool {
+        !self.interactive_render_budget.is_some_and(|(epoch, used)| {
             now.duration_since(epoch) < crate::app::MIN_RENDER_INTERVAL
                 && used >= INTERACTIVE_RENDER_BUDGET
-        }) {
+        })
+    }
+
+    pub(super) fn can_render_interactive(&self, now: Instant) -> bool {
+        if !self.interactive_render_budget_left(now) {
             return false;
         }
         self.app

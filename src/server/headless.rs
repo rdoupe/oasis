@@ -165,6 +165,18 @@ const CLIENT_ACCEPT_POLL_INTERVAL: Duration = Duration::from_millis(250);
 
 // Split shell redraws need several early updates; sustained output still coalesces.
 const INTERACTIVE_RENDER_BUDGET: u8 = 16;
+
+/// Whether a render may run before the output pacing interval ends: for a
+/// change someone requested (new tab, split, close, focus), or for pane output
+/// right after typing in it. Both share the per-interval budget, so a burst of
+/// requests cannot flood clients with frames.
+fn early_render_due(
+    request_driven: bool,
+    budget_left: bool,
+    typed_output_due: impl FnOnce() -> bool,
+) -> bool {
+    (request_driven && budget_left) || typed_output_due()
+}
 const INTERACTIVE_RENDER_WINDOW: Duration = Duration::from_millis(32);
 
 // ---------------------------------------------------------------------------
@@ -431,6 +443,9 @@ impl HeadlessServer {
         let mut needs_render = true;
         let mut needs_full_render = true;
         let mut needs_graphics_render = false;
+        // A pending change someone asked for (an API or window request): render
+        // it now instead of waiting out the output pacing interval.
+        let mut request_driven = false;
 
         loop {
             crate::render_prof::event("loop.tick");
@@ -550,7 +565,11 @@ impl HeadlessServer {
             let interactive_due = needs_render
                 && !render_cadence_due
                 && !presentation_due
-                && self.can_render_interactive(now);
+                && early_render_due(
+                    request_driven,
+                    self.interactive_render_budget_left(now),
+                    || self.can_render_interactive(now),
+                );
             if needs_render && (render_cadence_due || presentation_due || interactive_due) {
                 crate::render_prof::event("render.attempt");
                 let render_request = self.app.render_dirty.take();
@@ -580,6 +599,7 @@ impl HeadlessServer {
                     // Its deferred PTY repaint has its own signal; do not manufacture
                     // a full UI render for this client-local side effect.
                     needs_render = false;
+                    request_driven = false;
                     continue;
                 }
                 let hidden_only = pty_dirty
@@ -604,6 +624,7 @@ impl HeadlessServer {
                 needs_render = false;
                 needs_full_render = false;
                 needs_graphics_render = false;
+                request_driven = false;
                 continue;
             }
 
@@ -691,12 +712,15 @@ impl HeadlessServer {
                     if self.handle_api_request_with_shutdown_check(*msg) {
                         needs_render = true;
                         needs_full_render = true;
+                        request_driven = true;
                     }
                 }
                 LoopEvent::ServerEvent(ev) => {
+                    let requested = Self::server_event_is_request(&ev);
                     if self.handle_server_event_with_render_impact(ev) == RenderImpact::Full {
                         needs_render = true;
                         needs_full_render = true;
+                        request_driven |= requested;
                     }
                 }
                 LoopEvent::RenderRequested => {
@@ -714,6 +738,12 @@ impl HeadlessServer {
 
         info!("headless server exiting");
         Ok(())
+    }
+
+    /// Server events that carry someone's request (a window's command), as
+    /// opposed to output or connection bookkeeping.
+    fn server_event_is_request(event: &ServerEvent) -> bool {
+        matches!(event, ServerEvent::ClientShellEndpointRequest { .. })
     }
 
     fn host_shutdown_requested(&self) -> bool {
