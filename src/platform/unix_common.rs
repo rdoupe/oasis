@@ -100,6 +100,16 @@ pub(crate) fn local_listener_raw_fd(listener: &crate::ipc::LocalListener) -> std
     listener.as_fd().as_raw_fd()
 }
 
+/// Wraps one end of a Unix socket pair as a client stream, so a child
+/// process connected to the other end looks like a local server.
+pub(crate) fn local_stream_from_unix(
+    stream: std::os::unix::net::UnixStream,
+) -> crate::ipc::LocalStream {
+    crate::ipc::LocalStream::UdSocket(interprocess::os::unix::uds_local_socket::Stream::from(
+        stream,
+    ))
+}
+
 pub(crate) fn shutdown_client_stream(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
     let crate::ipc::LocalStream::UdSocket(stream) = stream;
     stream.inner().shutdown(std::net::Shutdown::Both)

@@ -3036,6 +3036,26 @@ impl BridgeStopWake {
     }
 }
 
+/// Starts a saved machine's TUI endpoint directly over ssh, using the same
+/// remote command as its bridge would.
+#[cfg(unix)]
+pub(super) fn start_saved_direct_endpoint(
+    target: &str,
+    remote_herdr: &RemoteHerdr,
+    session_name: &str,
+    ssh_options: Option<&ManagedSshOptions>,
+    cancelled: &AtomicBool,
+) -> io::Result<(crate::ipc::LocalStream, DirectSshEndpoint)> {
+    let remote_command = if remote_herdr.bridge_idle_timeout {
+        remote_herdr
+            .executable
+            .bridge_command_with_idle_timeout(session_name, true)
+    } else {
+        remote_herdr.executable.bridge_command(session_name)
+    };
+    DirectSshEndpoint::start(target, &remote_command, ssh_options, cancelled)
+}
+
 impl SshStdioBridge {
     pub(super) fn start(
         target: String,
@@ -3314,6 +3334,17 @@ fn bridge_connection(
     bridge_stop: &Arc<AtomicBool>,
     stop_wake: Option<&BridgeStopWake>,
 ) -> io::Result<()> {
+    let command = ssh_bridge_command(target, remote_command, ssh_options, noninteractive);
+    bridge_child(stream, command, bridge_stop, stop_wake)
+}
+
+/// The ssh command that runs a remote endpoint over its stdio.
+fn ssh_bridge_command(
+    target: &str,
+    remote_command: &str,
+    ssh_options: Option<&ManagedSshOptions>,
+    noninteractive: bool,
+) -> Command {
     let mut command = Command::new("ssh");
     apply_managed_ssh_options(&mut command, ssh_options);
     if noninteractive {
@@ -3330,8 +3361,7 @@ fn bridge_connection(
         } else {
             Stdio::inherit()
         });
-
-    bridge_child(stream, command, bridge_stop, stop_wake)
+    command
 }
 
 fn bridge_child(
@@ -3544,38 +3574,70 @@ fn capture_ssh_stderr(mut stderr: impl io::Read) -> io::Result<Vec<u8>> {
     }
 }
 
+/// Recognizes the line the remote command prints once its output is the
+/// endpoint protocol; everything before it is login banner noise.
+struct RemoteOutputMarker {
+    matched: usize,
+    matching: bool,
+}
+
+impl RemoteOutputMarker {
+    fn new() -> Self {
+        Self {
+            matched: 0,
+            matching: true,
+        }
+    }
+
+    /// Feeds one output byte; true once the marker line has ended.
+    fn feed(&mut self, byte: u8) -> bool {
+        let marker = REMOTE_OUTPUT_READY_MARKER.as_bytes();
+        if byte == b'\n' {
+            if self.matching && self.matched == marker.len() {
+                return true;
+            }
+            self.matched = 0;
+            self.matching = true;
+        } else if self.matching && self.matched < marker.len() && byte == marker[self.matched] {
+            self.matched += 1;
+        } else if self.matching && (self.matched != marker.len() || byte != b'\r') {
+            self.matching = false;
+        }
+        false
+    }
+
+    /// Whether output ending here still counts as a complete marker line.
+    fn complete_at_eof(&self) -> bool {
+        self.matching && self.matched == REMOTE_OUTPUT_READY_MARKER.len()
+    }
+}
+
+fn missing_output_marker() -> io::Error {
+    io::Error::new(
+        io::ErrorKind::UnexpectedEof,
+        "remote command exited before producing its output marker",
+    )
+}
+
 fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<()> {
-    let marker = REMOTE_OUTPUT_READY_MARKER.as_bytes();
-    let mut matched = 0;
-    let mut matching = true;
+    let mut marker = RemoteOutputMarker::new();
     loop {
         let (consumed, ready) = {
             let buffer = reader.fill_buf()?;
             if buffer.is_empty() {
-                if matching && matched == marker.len() {
+                if marker.complete_at_eof() {
                     return Ok(());
                 }
-                return Err(io::Error::new(
-                    io::ErrorKind::UnexpectedEof,
-                    "remote command exited before producing its output marker",
-                ));
+                return Err(missing_output_marker());
             }
 
             let mut consumed = 0;
             let mut ready = false;
             for &byte in buffer {
                 consumed += 1;
-                if byte == b'\n' {
-                    if matching && matched == marker.len() {
-                        ready = true;
-                        break;
-                    }
-                    matched = 0;
-                    matching = true;
-                } else if matching && matched < marker.len() && byte == marker[matched] {
-                    matched += 1;
-                } else if matching && (matched != marker.len() || byte != b'\r') {
-                    matching = false;
+                if marker.feed(byte) {
+                    ready = true;
+                    break;
                 }
             }
             (consumed, ready)
@@ -3583,6 +3645,146 @@ fn discard_remote_output_preamble(reader: &mut impl io::BufRead) -> io::Result<(
         reader.consume(consumed);
         if ready {
             return Ok(());
+        }
+    }
+}
+
+/// How often the direct endpoint's preamble read rechecks cancellation. It
+/// only runs while connecting.
+#[cfg(unix)]
+const DIRECT_PREAMBLE_POLL: Duration = Duration::from_millis(250);
+
+/// A saved machine's endpoint spoken straight over ssh's stdio. ssh's stdin
+/// and stdout are one end of a socket pair and the client reads and writes
+/// the other end, so no bridge thread copies each frame. Dropping it stops
+/// ssh; the transport's own shutdown wakes its reader.
+#[cfg(unix)]
+pub(super) struct DirectSshEndpoint {
+    child: Option<OwnedSshChild>,
+    pipe_control: Arc<PipeControl>,
+    stderr_reader: Option<JoinHandle<io::Result<Vec<u8>>>>,
+}
+
+#[cfg(unix)]
+impl DirectSshEndpoint {
+    pub(super) fn start(
+        target: &str,
+        remote_command: &str,
+        ssh_options: Option<&ManagedSshOptions>,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(crate::ipc::LocalStream, Self)> {
+        Self::spawn(
+            ssh_bridge_command(target, remote_command, ssh_options, true),
+            cancelled,
+        )
+    }
+
+    /// Runs `command` with its stdio on a socket pair; stderr must be piped.
+    fn spawn(
+        mut command: Command,
+        cancelled: &AtomicBool,
+    ) -> io::Result<(crate::ipc::LocalStream, Self)> {
+        let (mut ours, theirs) = std::os::unix::net::UnixStream::pair()?;
+        command
+            .stdin(Stdio::from(std::os::fd::OwnedFd::from(theirs.try_clone()?)))
+            .stdout(Stdio::from(std::os::fd::OwnedFd::from(theirs)));
+        let mut child = OwnedSshChild(command.spawn().map_err(|err| {
+            io::Error::new(err.kind(), format!("failed to start ssh bridge: {err}"))
+        })?);
+        // The command holds the parent's copies of ssh's stdio; only ssh may keep
+        // them, so its exit reaches our end as EOF.
+        drop(command);
+        let pipe_control = PipeControl::new(Arc::new(AtomicBool::new(false)));
+        let stderr_reader = child
+            .0
+            .stderr
+            .take()
+            .map(crate::platform::ChildPipe::new_reader)
+            .transpose()?
+            .map(|pipe| CancellablePipe::new(pipe, &pipe_control))
+            .map(|stderr| thread::spawn(move || capture_ssh_stderr(stderr)));
+        let mut endpoint = Self {
+            child: Some(child),
+            pipe_control,
+            stderr_reader,
+        };
+        endpoint.discard_preamble(&mut ours, cancelled)?;
+        Ok((crate::platform::local_stream_from_unix(ours), endpoint))
+    }
+
+    /// Reads the banner up to the output marker one byte at a time, so no
+    /// protocol bytes after it are consumed.
+    fn discard_preamble(
+        &mut self,
+        stream: &mut std::os::unix::net::UnixStream,
+        cancelled: &AtomicBool,
+    ) -> io::Result<()> {
+        stream.set_read_timeout(Some(DIRECT_PREAMBLE_POLL))?;
+        let mut marker = RemoteOutputMarker::new();
+        let mut byte = [0_u8; 1];
+        loop {
+            match stream.read(&mut byte) {
+                Ok(0) => {
+                    if marker.complete_at_eof() {
+                        break;
+                    }
+                    return Err(self.exit_error().unwrap_or_else(missing_output_marker));
+                }
+                Ok(_) => {
+                    if marker.feed(byte[0]) {
+                        break;
+                    }
+                }
+                Err(err) if err.kind() == io::ErrorKind::Interrupted => {}
+                Err(err)
+                    if matches!(
+                        err.kind(),
+                        io::ErrorKind::WouldBlock | io::ErrorKind::TimedOut
+                    ) =>
+                {
+                    if cancelled.load(Ordering::Acquire) {
+                        return Err(super::process::cancelled());
+                    }
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        stream.set_read_timeout(None)
+    }
+
+    /// The error ssh reported, once it has exited without the marker.
+    fn exit_error(&mut self) -> Option<io::Error> {
+        let status = self.child.as_mut()?.0.wait().ok()?;
+        self.pipe_control.finish_reads();
+        let stderr = self
+            .stderr_reader
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        (!status.success()).then(|| ssh_bridge_exit_error(status, &stderr))
+    }
+}
+
+#[cfg(unix)]
+impl Drop for DirectSshEndpoint {
+    fn drop(&mut self) {
+        let exited = self
+            .child
+            .as_mut()
+            .and_then(|child| child.0.try_wait().ok().flatten());
+        // Dropping the child kills and reaps ssh; its stderr then ends.
+        drop(self.child.take());
+        self.pipe_control.finish_reads();
+        let stderr = self
+            .stderr_reader
+            .take()
+            .and_then(|reader| reader.join().ok())
+            .and_then(Result::ok)
+            .unwrap_or_default();
+        if let Some(status) = exited.filter(|status| !status.success()) {
+            let error = ssh_bridge_exit_error(status, &stderr);
+            tracing::warn!(error = %error, "saved SSH endpoint bridge failed");
         }
     }
 }
@@ -3764,6 +3966,111 @@ fn sanitize_path_component(input: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(unix)]
+    fn direct_command(script: &str) -> Command {
+        let mut command = Command::new("/bin/sh");
+        command
+            .arg("-c")
+            .arg(script)
+            .env("MARKER", REMOTE_OUTPUT_READY_MARKER)
+            .stderr(Stdio::piped());
+        command
+    }
+
+    #[cfg(unix)]
+    fn read_some(stream: &mut crate::ipc::LocalStream, want: usize) -> Vec<u8> {
+        let mut received = Vec::new();
+        let mut buffer = [0_u8; 64];
+        while received.len() < want {
+            let read = stream.read(&mut buffer).unwrap();
+            if read == 0 {
+                break;
+            }
+            received.extend_from_slice(&buffer[..read]);
+        }
+        received
+    }
+
+    /// The banner before the marker is discarded without consuming any
+    /// protocol bytes after it, and input reaches the remote command.
+    #[cfg(unix)]
+    #[test]
+    fn direct_endpoint_skips_banner_and_keeps_protocol_bytes() {
+        let cancelled = AtomicBool::new(false);
+        let (mut stream, _endpoint) = DirectSshEndpoint::spawn(
+            direct_command(
+                "printf 'Welcome banner\\nlast login\\n%s\\nPROTO' \"$MARKER\"; \
+                 IFS= read -r line; printf ':%s' \"$line\"",
+            ),
+            &cancelled,
+        )
+        .unwrap();
+        assert_eq!(read_some(&mut stream, 5), b"PROTO");
+        stream.write_all(b"input\n").unwrap();
+        assert_eq!(read_some(&mut stream, 6), b":input");
+    }
+
+    /// ssh failing before the marker reports its own error, not a bare EOF.
+    #[cfg(unix)]
+    #[test]
+    fn direct_endpoint_reports_ssh_stderr_when_it_fails() {
+        let cancelled = AtomicBool::new(false);
+        let error = DirectSshEndpoint::spawn(
+            direct_command("echo 'Permission denied (publickey).' >&2; exit 255"),
+            &cancelled,
+        )
+        .err()
+        .expect("failed ssh must not connect");
+        assert!(
+            error.to_string().contains("Permission denied (publickey)."),
+            "{error}"
+        );
+    }
+
+    /// Cancelling while ssh is still connecting stops the attempt promptly.
+    #[cfg(unix)]
+    #[test]
+    fn direct_endpoint_connect_can_be_cancelled() {
+        let cancelled = Arc::new(AtomicBool::new(false));
+        let canceller = Arc::clone(&cancelled);
+        let timer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(100));
+            canceller.store(true, Ordering::Release);
+        });
+        let started = Instant::now();
+        let error = DirectSshEndpoint::spawn(direct_command("exec sleep 30"), &cancelled)
+            .err()
+            .expect("cancelled attempt must not connect");
+        timer.join().unwrap();
+        assert_eq!(error.kind(), io::ErrorKind::ConnectionAborted);
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
+
+    /// Dropping the endpoint stops ssh, which ends a reader blocked on the
+    /// stream with no timeout.
+    #[cfg(unix)]
+    #[test]
+    fn dropping_direct_endpoint_ends_a_blocked_read() {
+        let cancelled = AtomicBool::new(false);
+        let (mut stream, endpoint) = DirectSshEndpoint::spawn(
+            direct_command("printf '%s\\n' \"$MARKER\"; exec sleep 30"),
+            &cancelled,
+        )
+        .unwrap();
+        let (done, finished) = mpsc::channel();
+        thread::spawn(move || {
+            let mut buffer = [0_u8; 8];
+            done.send(stream.read(&mut buffer).map_err(|error| error.kind()))
+                .unwrap();
+        });
+        thread::sleep(Duration::from_millis(50));
+        assert!(finished.try_recv().is_err(), "reader waits for frames");
+        let started = Instant::now();
+        drop(endpoint);
+        assert_eq!(finished.recv_timeout(Duration::from_secs(5)), Ok(Ok(0)));
+        assert!(started.elapsed() < Duration::from_secs(2));
+    }
 
     #[cfg(unix)]
     #[test]

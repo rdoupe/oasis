@@ -4,12 +4,15 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+#[cfg(not(unix))]
 use std::time::{Duration, Instant};
 
 use super::attach::{find_installed_remote_herdr, RemoteSsh, SshStdioBridge};
 
+/// Keeps a saved machine's endpoint transport alive: ssh itself on Unix,
+/// where the client speaks to it directly, or a local bridge elsewhere.
 pub(crate) struct SavedSshBridge {
-    _bridge: SshStdioBridge,
+    _transport: Box<dyn Send>,
 }
 
 pub(crate) struct SavedSshStream {
@@ -31,28 +34,45 @@ pub(crate) fn connect_saved_ssh(
     if cancelled.load(Ordering::Acquire) {
         return Err(super::process::cancelled());
     }
-    let path = saved_bridge_path(profile_id);
-    let bridge = SshStdioBridge::start(
-        target.to_owned(),
-        remote_herdr,
-        path.clone(),
-        session.to_owned(),
-        ssh.options(),
-        true,
-        Arc::clone(&cancelled),
-    )?;
-    let stream = crate::ipc::connect_local_stream_cancellable(
-        &path,
-        &cancelled,
-        Instant::now() + Duration::from_secs(5),
-    )?;
+    #[cfg(unix)]
+    let (stream, transport): (_, Box<dyn Send>) = {
+        let (stream, endpoint) = super::attach::start_saved_direct_endpoint(
+            target,
+            &remote_herdr,
+            session,
+            ssh.options(),
+            &cancelled,
+        )?;
+        (stream, Box::new(endpoint))
+    };
+    #[cfg(not(unix))]
+    let (stream, transport): (_, Box<dyn Send>) = {
+        let path = saved_bridge_path(profile_id);
+        let bridge = SshStdioBridge::start(
+            target.to_owned(),
+            remote_herdr,
+            path.clone(),
+            session.to_owned(),
+            ssh.options(),
+            true,
+            Arc::clone(&cancelled),
+        )?;
+        let stream = crate::ipc::connect_local_stream_cancellable(
+            &path,
+            &cancelled,
+            Instant::now() + Duration::from_secs(5),
+        )?;
+        (stream, Box::new(bridge))
+    };
     if let Some(metadata) = metadata {
         crate::client::endpoint::SshMetadataCache::new(profile_id, target, session)?
             .store(&metadata);
     }
     Ok(SavedSshStream {
         stream,
-        bridge: SavedSshBridge { _bridge: bridge },
+        bridge: SavedSshBridge {
+            _transport: transport,
+        },
     })
 }
 
@@ -179,6 +199,8 @@ pub(crate) fn saved_ssh_failure_needs_attention(error: &io::Error) -> bool {
     .any(|needle| message.contains(needle))
 }
 
+// Windows saved machines still connect through a local bridge socket.
+#[cfg(any(not(unix), test))]
 fn saved_bridge_path(profile_id: &str) -> PathBuf {
     let pid = std::process::id();
     let readable = format!("herdr-ssh-{pid}-{profile_id}.sock");
