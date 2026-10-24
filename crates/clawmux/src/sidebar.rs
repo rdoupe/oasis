@@ -374,6 +374,8 @@ fn activity_markup(part: &ActivityPart) -> Option<String> {
         ActivityKind::Monitors => "\u{f0379}",  // monitor
         ActivityKind::Subagents => "\u{f06a9}", // robot
         ActivityKind::McpTasks => "\u{f0493}",  // cog
+        // The row's logo already names the tool.
+        ActivityKind::Agent => return None,
         _ => return Some(glib::markup_escape_text(&part.text).to_string()),
     };
     let (r, g, b) = part.color.rgb();
