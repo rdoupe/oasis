@@ -116,11 +116,11 @@ fn herdr_agent_change_requests_one_read_and_its_counts_reach_the_background_toke
         Some("build-box"),
     )
     .expect("agent row");
-    assert!(row
-        .rows
-        .iter()
-        .flatten()
-        .any(|token| token.kind == crate::ui::ResolvedTokenKind::Custom("💲1 📺1".into())));
+    assert!(row.rows.iter().flatten().any(|token| matches!(
+        &token.kind,
+        crate::ui::ResolvedTokenKind::Activity(parts)
+            if parts.iter().map(|part| part.text.as_str()).collect::<Vec<_>>() == ["1s", "1m"]
+    )));
 
     // The next snapshot from the server keeps the counts the client read.
     state.set_endpoint_snapshot(

@@ -536,7 +536,8 @@ pub struct PaneInfo {
 }
 
 /// Background work an agent's own UI lists as still running after its turn:
-/// shells, monitors, subagents and MCP tasks, plus a scheduled wakeup.
+/// shells, monitors, subagents and MCP tasks, plus a scheduled wakeup and an
+/// active goal.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct BackgroundActivityInfo {
     #[serde(default, skip_serializing_if = "is_zero")]
@@ -549,6 +550,8 @@ pub struct BackgroundActivityInfo {
     pub mcp_tasks: u16,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub loop_next: Option<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal: bool,
 }
 
 fn is_zero(value: &u16) -> bool {
@@ -565,6 +568,7 @@ impl BackgroundActivityInfo {
             agents: activity.agents,
             mcp_tasks: activity.mcp_tasks,
             loop_next: activity.loop_next.clone(),
+            goal: activity.goal,
         })
     }
 
@@ -585,6 +589,7 @@ impl BackgroundActivityInfo {
                 .clone()
                 .map(|next| ("oasis:loop_next".to_owned(), next)),
         )
+        .chain(self.goal.then(|| ("oasis:goal".to_owned(), "1".to_owned())))
         .collect()
     }
 }

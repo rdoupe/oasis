@@ -1,3 +1,5 @@
+use ratatui::style::Color;
+
 use crate::config::{
     AgentSidebarToken, AgentsSidebarConfig, SidebarTokenStyle, SpaceSidebarToken,
     SpacesSidebarConfig,
@@ -20,8 +22,19 @@ pub enum ResolvedTokenKind {
     Agent(String),
     TerminalTitle(String),
     Branch(String),
-    GitStatus { ahead: usize, behind: usize },
+    GitStatus {
+        ahead: usize,
+        behind: usize,
+    },
     Custom(String),
+    /// Background work drawn in the agent's own glyphs and colors.
+    Activity(Vec<ActivityPart>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ActivityPart {
+    pub text: String,
+    pub color: Color,
 }
 
 impl ResolvedTokenKind {
@@ -36,7 +49,7 @@ impl ResolvedTokenKind {
             | Self::TerminalTitle(value)
             | Self::Branch(value)
             | Self::Custom(value) => Some(value),
-            Self::StateIcon | Self::GitStatus { .. } => None,
+            Self::StateIcon | Self::GitStatus { .. } | Self::Activity(_) => None,
         }
     }
 }
@@ -103,25 +116,12 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::TerminalTitleStripped => context
                             .terminal_title_stripped
                             .map(|value| ResolvedTokenKind::TerminalTitle(value.to_string())),
-                        AgentSidebarToken::Background => {
-                            background_summary(context.tokens).map(ResolvedTokenKind::Custom)
-                        }
-                        AgentSidebarToken::Shells => {
-                            counted_activity(context.tokens, "shells", SHELL_ICON)
-                                .map(ResolvedTokenKind::Custom)
-                        }
-                        AgentSidebarToken::Monitors => {
-                            counted_activity(context.tokens, "monitors", MONITOR_ICON)
-                                .map(ResolvedTokenKind::Custom)
-                        }
-                        AgentSidebarToken::Subagents => {
-                            counted_activity(context.tokens, "agents", SUBAGENT_ICON)
-                                .map(ResolvedTokenKind::Custom)
-                        }
-                        AgentSidebarToken::Wakeup => context
-                            .tokens
-                            .get("oasis:loop_next")
-                            .map(|next| ResolvedTokenKind::Custom(format!("{WAKEUP_ICON}{next}"))),
+                        AgentSidebarToken::Background => activity(background_parts(context.tokens)),
+                        AgentSidebarToken::Shells => activity(shells_part(context.tokens)),
+                        AgentSidebarToken::Monitors => activity(monitors_part(context.tokens)),
+                        AgentSidebarToken::Subagents => activity(subagents_part(context.tokens)),
+                        AgentSidebarToken::Wakeup => activity(loop_part(context.tokens)),
+                        AgentSidebarToken::Goal => activity(goal_part(context.tokens)),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -140,39 +140,84 @@ pub(crate) fn agent_rows(
         .collect()
 }
 
-// Emoji with default emoji presentation, so every terminal draws them two
-// cells wide. 🖥 would need a variation selector, so the screen is 📺, and a
-// shell is the `$` prompt as 💲.
-const SHELL_ICON: &str = "💲";
-const MONITOR_ICON: &str = "📺";
-const SUBAGENT_ICON: &str = "🤖";
-const MCP_TASK_ICON: &str = "🔌";
-const WAKEUP_ICON: &str = "⏰";
+// Claude Code's own footer glyphs and colors, read from a live pane: `◎ goal:`
+// in 256-color 213, `↻ loop:` in 114, the `1 shell, 1 monitor` counts in cyan
+// and a grey `◯` row per subagent. Claude draws no glyph for shells, monitors
+// or MCP tasks, so those are short counts in its cyan.
+const GOAL_COLOR: Color = Color::Indexed(213);
+const LOOP_COLOR: Color = Color::Indexed(114);
+const COUNT_COLOR: Color = Color::Rgb(0, 204, 204);
+const SUBAGENT_COLOR: Color = Color::Rgb(153, 153, 153);
 
-/// `"💲2"` from the reserved `oasis:<key>` count the server attaches.
-fn counted_activity(
-    tokens: &std::collections::HashMap<String, String>,
-    key: &str,
-    icon: &str,
-) -> Option<String> {
-    let count = tokens.get(&format!("oasis:{key}"))?;
-    Some(format!("{icon}{count}"))
+fn part(text: String, color: Color) -> ActivityPart {
+    ActivityPart { text, color }
 }
 
-fn background_summary(tokens: &std::collections::HashMap<String, String>) -> Option<String> {
-    let parts = [
-        counted_activity(tokens, "shells", SHELL_ICON),
-        counted_activity(tokens, "monitors", MONITOR_ICON),
-        counted_activity(tokens, "agents", SUBAGENT_ICON),
-        counted_activity(tokens, "mcp_tasks", MCP_TASK_ICON),
-        tokens
-            .get("oasis:loop_next")
-            .map(|next| format!("{WAKEUP_ICON}{next}")),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>();
-    (!parts.is_empty()).then(|| parts.join(" "))
+fn activity(parts: impl IntoIterator<Item = ActivityPart>) -> Option<ResolvedTokenKind> {
+    let parts = parts.into_iter().collect::<Vec<_>>();
+    (!parts.is_empty()).then_some(ResolvedTokenKind::Activity(parts))
+}
+
+/// The reserved `oasis:<key>` count the server attaches.
+fn count(tokens: &std::collections::HashMap<String, String>, key: &str) -> Option<u16> {
+    tokens
+        .get(&format!("oasis:{key}"))?
+        .parse()
+        .ok()
+        .filter(|count| *count > 0)
+}
+
+fn goal_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    tokens
+        .contains_key("oasis:goal")
+        .then(|| part("◎".to_owned(), GOAL_COLOR))
+}
+
+fn loop_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    tokens
+        .get("oasis:loop_next")
+        .map(|next| part(format!("↻{next}"), LOOP_COLOR))
+}
+
+fn shells_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    count(tokens, "shells").map(|count| part(format!("{count}s"), COUNT_COLOR))
+}
+
+fn monitors_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    count(tokens, "monitors").map(|count| part(format!("{count}m"), COUNT_COLOR))
+}
+
+fn mcp_tasks_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    count(tokens, "mcp_tasks").map(|count| part(format!("{count}mcp"), COUNT_COLOR))
+}
+
+/// One `◯` per subagent, as Claude lists a row for each.
+fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    count(tokens, "agents").map(|count| part("◯".repeat(usize::from(count)), SUBAGENT_COLOR))
+}
+
+/// A goal or loop leads. While either drives the pane, its shells, monitors
+/// and MCP tasks are the plumbing it runs on and stay hidden; subagents stay.
+fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<ActivityPart> {
+    let goal = goal_part(tokens);
+    let wakeup = loop_part(tokens);
+    let driven = goal.is_some() || wakeup.is_some();
+    let plumbing = (!driven)
+        .then(|| {
+            [
+                shells_part(tokens),
+                monitors_part(tokens),
+                mcp_tasks_part(tokens),
+            ]
+        })
+        .into_iter()
+        .flatten();
+    [goal, wakeup]
+        .into_iter()
+        .chain(plumbing)
+        .chain([subagents_part(tokens)])
+        .flatten()
+        .collect()
 }
 
 pub(crate) struct SpaceTokenContext<'a> {
@@ -639,22 +684,76 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         );
     }
 
+    fn activity_texts(parts: &[ActivityPart]) -> Vec<&str> {
+        parts.iter().map(|part| part.text.as_str()).collect()
+    }
+
     #[test]
-    fn background_tokens_read_reserved_activity_keys() {
+    fn background_parts_use_claude_glyphs() {
         let tokens = std::collections::HashMap::from([
             ("oasis:shells".to_owned(), "1".to_owned()),
-            ("oasis:agents".to_owned(), "3".to_owned()),
-            ("oasis:loop_next".to_owned(), "19:10".to_owned()),
+            ("oasis:monitors".to_owned(), "2".to_owned()),
+            ("oasis:agents".to_owned(), "4".to_owned()),
         ]);
+        let parts = background_parts(&tokens);
+        assert_eq!(activity_texts(&parts), ["1s", "2m", "◯◯◯◯"]);
+        assert_eq!(parts[0].color, COUNT_COLOR);
+        assert_eq!(parts[2].color, SUBAGENT_COLOR);
+        assert!(background_parts(&std::collections::HashMap::new()).is_empty());
+    }
+
+    #[test]
+    fn background_token_draws_each_part_in_its_own_color() {
+        use ratatui::style::Style;
+        let config: AgentsSidebarConfig = toml::from_str(r#"rows = [["background"]]"#).unwrap();
+        let mut entry = entry();
+        entry.tokens = std::collections::HashMap::from([
+            ("oasis:goal".to_owned(), "1".to_owned()),
+            ("oasis:agents".to_owned(), "2".to_owned()),
+        ]);
+        let rows = agent_rows(&config, context(&entry), "working");
+        let draw = |width| {
+            super::super::resolved_token_spans(
+                &rows[0],
+                ("*", Style::default()),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                Style::default(),
+                &super::super::Palette::catppuccin(),
+                width,
+            )
+        };
+        let spans = draw(40);
+        let drawn = spans
+            .iter()
+            .map(|span| (span.content.as_ref(), span.style.fg))
+            .collect::<Vec<_>>();
         assert_eq!(
-            background_summary(&tokens).as_deref(),
-            Some("💲1 🤖3 ⏰19:10")
+            drawn,
+            [("◎", Some(GOAL_COLOR)), (" ◯◯", Some(SUBAGENT_COLOR))]
         );
-        assert_eq!(
-            counted_activity(&tokens, "agents", SUBAGENT_ICON).as_deref(),
-            Some("🤖3")
-        );
-        assert_eq!(counted_activity(&tokens, "monitors", MONITOR_ICON), None);
-        assert_eq!(background_summary(&std::collections::HashMap::new()), None);
+        let narrow = draw(2);
+        let width = narrow
+            .iter()
+            .map(|span| super::super::display_width(&span.content))
+            .sum::<usize>();
+        assert!(width <= 2);
+    }
+
+    #[test]
+    fn goal_and_loop_lead_and_hide_shells_and_monitors() {
+        let mut tokens = std::collections::HashMap::from([
+            ("oasis:shells".to_owned(), "3".to_owned()),
+            ("oasis:monitors".to_owned(), "1".to_owned()),
+            ("oasis:agents".to_owned(), "2".to_owned()),
+            ("oasis:loop_next".to_owned(), "22:42".to_owned()),
+        ]);
+        assert_eq!(activity_texts(&background_parts(&tokens)), ["↻22:42", "◯◯"]);
+        tokens.insert("oasis:goal".to_owned(), "1".to_owned());
+        tokens.remove("oasis:loop_next");
+        let parts = background_parts(&tokens);
+        assert_eq!(activity_texts(&parts), ["◎", "◯◯"]);
+        assert_eq!(parts[0].color, GOAL_COLOR);
     }
 }

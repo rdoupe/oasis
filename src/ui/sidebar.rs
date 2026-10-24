@@ -138,6 +138,7 @@ pub(crate) fn resolved_token_spans(
             | ResolvedTokenKind::TerminalTitle(text)
             | ResolvedTokenKind::Branch(text)
             | ResolvedTokenKind::Custom(text) => display_width(text),
+            ResolvedTokenKind::Activity(parts) => activity_width(parts),
             _ => 0,
         })
         .collect::<Vec<_>>();
@@ -270,9 +271,36 @@ pub(crate) fn resolved_token_spans(
                     apply_token_style(custom_style, token.style),
                 ));
             }
+            ResolvedTokenKind::Activity(parts) => {
+                let mut budget = budgets[index];
+                for (position, part) in parts.iter().enumerate() {
+                    if budget == 0 {
+                        break;
+                    }
+                    let text = if position == 0 {
+                        truncate_end(&part.text, budget)
+                    } else {
+                        truncate_end(&format!(" {}", part.text), budget)
+                    };
+                    budget = budget.saturating_sub(display_width(&text));
+                    spans.push(Span::styled(
+                        text,
+                        apply_token_style(Style::default().fg(part.color), token.style),
+                    ));
+                }
+            }
         }
     }
     spans
+}
+
+/// Parts are space-separated, each in its own color.
+fn activity_width(parts: &[tokens::ActivityPart]) -> usize {
+    parts
+        .iter()
+        .map(|part| display_width(&part.text))
+        .sum::<usize>()
+        + parts.len().saturating_sub(1)
 }
 
 fn apply_token_style(mut style: Style, patch: crate::config::SidebarTokenStyle) -> Style {

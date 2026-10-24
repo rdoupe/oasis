@@ -3,7 +3,8 @@
 //! Claude Code lists what keeps running after a turn ends on the line under its
 //! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor · ← 3 agents`), shows a
 //! row per running subagent (`◯ general-purpose  Writing tests  2m 3s`), and a
-//! `↻ loop: … · next 19:10` line while a scheduled wakeup is armed. Only text
+//! `↻ loop: … · next 19:10` line while a scheduled wakeup is armed, and a
+//! `◎ goal: …` line while a `/goal` is active. Only text
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
 
@@ -20,6 +21,8 @@ pub struct BackgroundActivity {
     pub mcp_tasks: u16,
     /// The time of the next scheduled wakeup, as the agent shows it.
     pub loop_next: Option<String>,
+    /// A `/goal` is active.
+    pub goal: bool,
 }
 
 impl BackgroundActivity {
@@ -55,6 +58,10 @@ fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
             if !rest.trim_start().starts_with("main") {
                 agent_rows = agent_rows.saturating_add(1);
             }
+            continue;
+        }
+        if trimmed.starts_with("◎ goal:") {
+            activity.goal = true;
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("↻ loop:") {
@@ -170,11 +177,26 @@ mod tests {
     }
 
     #[test]
+    fn reads_an_active_goal() {
+        // Captured from a live Claude Code pane with a /goal running.
+        let content = screen(&[
+            "  ◎ goal: finish the plan with clawmux, validate that oasis still performs…",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+            "  ● main",
+            "  ◯ fork  Pointing justfile bench recipes at lib   5m 9s · ↓ 513.5k tokens",
+        ]);
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.goal);
+        assert_eq!(activity.agents, 1);
+    }
+
+    #[test]
     fn prompt_and_transcript_text_cannot_impersonate_counts() {
         let content = [
             "⏺ I started 3 shells · 2 monitors for you.",
             "──────────────────────────────────────────",
             "❯ make it 4 shells · ← 9 agents",
+            "◎ goal: pretend",
             "──────────────────────────────────────────",
             "  ⏵⏵ auto mode on",
         ]

@@ -80,13 +80,16 @@
           "type": "string"
         },
         "BackgroundActivityInfo": {
-          "description": "Background work an agent's own UI lists as still running after its turn:\nshells, monitors, subagents and MCP tasks, plus a scheduled wakeup.",
+          "description": "Background work an agent's own UI lists as still running after its turn:\nshells, monitors, subagents and MCP tasks, plus a scheduled wakeup and an\nactive goal.",
           "properties": {
             "agents": {
               "format": "uint16",
               "maximum": 65535,
               "minimum": 0,
               "type": "integer"
+            },
+            "goal": {
+              "type": "boolean"
             },
             "loop_next": {
               "type": [
@@ -6833,13 +6836,16 @@
           "type": "string"
         },
         "BackgroundActivityInfo": {
-          "description": "Background work an agent's own UI lists as still running after its turn:\nshells, monitors, subagents and MCP tasks, plus a scheduled wakeup.",
+          "description": "Background work an agent's own UI lists as still running after its turn:\nshells, monitors, subagents and MCP tasks, plus a scheduled wakeup and an\nactive goal.",
           "properties": {
             "agents": {
               "format": "uint16",
               "maximum": 65535,
               "minimum": 0,
               "type": "integer"
+            },
+            "goal": {
+              "type": "boolean"
             },
             "loop_next": {
               "type": [
