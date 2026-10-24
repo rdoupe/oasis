@@ -2821,6 +2821,11 @@ pub fn process_exists(pid: u32) -> bool {
 
 static LAST_CLIPBOARD_WRITE_SEQUENCE: AtomicU32 = AtomicU32::new(0);
 
+/// Clipboard writes here are in-process API calls; nothing to move off-thread.
+pub fn clipboard_write_spawns_process() -> bool {
+    false
+}
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     let Ok(text) = std::str::from_utf8(bytes) else {
         return false;

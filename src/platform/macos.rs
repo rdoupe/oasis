@@ -643,6 +643,11 @@ fn kern_procargs2(pid: u32) -> Option<Vec<u8>> {
     }
 }
 
+/// `write_clipboard` runs pbcopy, a separate process.
+pub fn clipboard_write_spawns_process() -> bool {
+    true
+}
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     run_clipboard_command(
         &ClipboardCommand {

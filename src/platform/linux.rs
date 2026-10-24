@@ -852,6 +852,19 @@ pub fn process_exists(pid: u32) -> bool {
     }
 }
 
+/// Whether `write_clipboard` would run a helper process (wl-copy, xclip,
+/// xsel) that is installed, so callers can run it off a latency-sensitive thread.
+pub fn clipboard_write_spawns_process() -> bool {
+    clipboard_commands()
+        .iter()
+        .any(|command| program_on_path(command.program))
+}
+
+fn program_on_path(program: &str) -> bool {
+    std::env::var_os("PATH")
+        .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join(program).is_file()))
+}
+
 pub fn write_clipboard(bytes: &[u8]) -> bool {
     for command in clipboard_commands() {
         if run_clipboard_command(&command, bytes) {

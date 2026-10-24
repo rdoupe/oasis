@@ -367,6 +367,15 @@ pub fn write_osc52_bytes(bytes: &[u8]) -> bool {
         return false;
     }
 
+    // Clipboard helpers (wl-copy, xclip, pbcopy) are separate processes that can
+    // take up to ~100 ms to start; run them off the caller's thread.
+    if !prefer_osc52
+        && crate::platform::clipboard_write_spawns_process()
+        && clipboard_worker().submit(bytes.to_vec())
+    {
+        return true;
+    }
+
     if !prefer_osc52 && crate::platform::write_clipboard(bytes) {
         true
     } else {
@@ -376,9 +385,120 @@ pub fn write_osc52_bytes(bytes: &[u8]) -> bool {
     }
 }
 
+fn clipboard_worker() -> &'static ClipboardWorker {
+    static WORKER: std::sync::OnceLock<ClipboardWorker> = std::sync::OnceLock::new();
+    WORKER.get_or_init(|| {
+        ClipboardWorker::spawn(|bytes| {
+            if !crate::platform::write_clipboard(bytes) {
+                tracing::warn!(
+                    bytes = bytes.len(),
+                    "clipboard helper failed to take the copy"
+                );
+            }
+        })
+    })
+}
+
+/// Writes clipboard contents on its own thread. Only the latest pending copy
+/// is kept, and copies are written one at a time, so an earlier copy can never
+/// land after a later one.
+pub(crate) struct ClipboardWorker {
+    pending: std::sync::Arc<(std::sync::Mutex<Option<Vec<u8>>>, std::sync::Condvar)>,
+    running: bool,
+}
+
+impl ClipboardWorker {
+    pub(crate) fn spawn(write: impl Fn(&[u8]) + Send + 'static) -> Self {
+        let pending = std::sync::Arc::new((
+            std::sync::Mutex::new(None::<Vec<u8>>),
+            std::sync::Condvar::new(),
+        ));
+        let worker = std::sync::Arc::clone(&pending);
+        let spawned = std::thread::Builder::new()
+            .name("clipboard-writer".into())
+            .spawn(move || {
+                let (slot, ready) = &*worker;
+                loop {
+                    let bytes = {
+                        let Ok(mut guard) = slot.lock() else {
+                            return;
+                        };
+                        loop {
+                            if let Some(bytes) = guard.take() {
+                                break bytes;
+                            }
+                            guard = match ready.wait(guard) {
+                                Ok(guard) => guard,
+                                Err(_) => return,
+                            };
+                        }
+                    };
+                    write(&bytes);
+                }
+            });
+        if let Err(err) = &spawned {
+            tracing::warn!(%err, "failed to start the clipboard writer");
+        }
+        Self {
+            pending,
+            running: spawned.is_ok(),
+        }
+    }
+
+    /// Queues `bytes` as the next copy; false when the writer is not running,
+    /// so the caller writes inline instead.
+    pub(crate) fn submit(&self, bytes: Vec<u8>) -> bool {
+        if !self.running {
+            return false;
+        }
+        let (slot, ready) = &*self.pending;
+        let Ok(mut guard) = slot.lock() else {
+            return false;
+        };
+        *guard = Some(bytes);
+        ready.notify_one();
+        true
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A slow clipboard helper must not hold up the caller, and a burst of
+    /// copies ends with the newest one written last.
+    #[test]
+    fn clipboard_worker_never_blocks_and_writes_the_latest_copy_last() {
+        let written = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<u8>>::new()));
+        let record = std::sync::Arc::clone(&written);
+        let worker = ClipboardWorker::spawn(move |bytes| {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            record.lock().unwrap().push(bytes.to_vec());
+        });
+        let started = std::time::Instant::now();
+        for copy in [&b"first"[..], b"second", b"third"] {
+            assert!(worker.submit(copy.to_vec()));
+        }
+        assert!(
+            started.elapsed() < std::time::Duration::from_millis(100),
+            "submitting copies must not wait for the helper"
+        );
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while written.lock().unwrap().last().map(Vec::as_slice) != Some(b"third") {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "latest copy never written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let written = written.lock().unwrap();
+        assert_eq!(written.last().map(Vec::as_slice), Some(&b"third"[..]));
+        assert!(
+            written.len() <= 2,
+            "pending copies are replaced, not queued: {written:?}"
+        );
+    }
 
     #[test]
     fn visible_rects_match_selection_cells_when_scrolled_and_reversed() {

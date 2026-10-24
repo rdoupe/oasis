@@ -246,6 +246,11 @@ pub fn process_exists(_pid: u32) -> bool {
 }
 
 /// Unsupported platform stub.
+/// Clipboard writes here are in-process API calls; nothing to move off-thread.
+pub fn clipboard_write_spawns_process() -> bool {
+    false
+}
+
 pub fn write_clipboard(_bytes: &[u8]) -> bool {
     false
 }
