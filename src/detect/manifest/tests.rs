@@ -918,10 +918,13 @@ fn claude_background_only_footer_is_idle_but_live_turns_and_menus_win() {
         let live = format!("✢ Crafting… (1m 42s · ↓ 1.3k tokens)\n{footer}");
         let menu = format!("Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n{footer}");
         let waiting = format!("✻ Waiting for 1 background agent to finish\n\n{footer}");
+        let hook =
+            format!("✢ Choreographing… (running Stop hook · 4m 27s · ↓ 6.6k tokens)\n{footer}");
         for (screen, state, rule) in [
             (footer.to_owned(), AgentState::Idle, "background_only_idle"),
             (waiting, AgentState::Idle, "background_only_idle"),
             (live, AgentState::Working, "osc_title_working"),
+            (hook, AgentState::Working, "osc_title_working"),
         ] {
             let result = explain_with_input(
                 Agent::Claude,
