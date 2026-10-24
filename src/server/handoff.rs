@@ -65,6 +65,22 @@ pub(crate) fn handoff_socket_path() -> PathBuf {
     crate::session::data_dir().join(format!("herdr-handoff-{}.sock", std::process::id()))
 }
 
+/// Linux reports a running binary whose file was replaced as
+/// `<path> (deleted)`. Installing a new build that way is the normal update,
+/// so hand off to the file now at the original path when one exists.
+#[cfg(unix)]
+fn installed_executable(current: PathBuf) -> PathBuf {
+    let Some(name) = current.file_name().and_then(|name| name.to_str()) else {
+        return current;
+    };
+    match name.strip_suffix(" (deleted)") {
+        Some(original) if current.with_file_name(original).is_file() => {
+            current.with_file_name(original)
+        }
+        _ => current,
+    }
+}
+
 #[cfg(unix)]
 pub(crate) fn spawn_handoff_import(
     import_exe: Option<&Path>,
@@ -75,12 +91,12 @@ pub(crate) fn spawn_handoff_import(
     let exe = if let Some(import_exe) = import_exe {
         import_exe
     } else {
-        fallback_exe = std::env::current_exe().map_err(|err| {
+        fallback_exe = installed_executable(std::env::current_exe().map_err(|err| {
             io::Error::new(
                 err.kind(),
                 format!("failed to determine herdr executable path: {err}"),
             )
-        })?;
+        })?);
         &fallback_exe
     };
     let mut command = Command::new(exe);
@@ -534,6 +550,23 @@ pub(crate) fn log_import_result(panes: usize) {
 #[cfg(all(test, unix))]
 mod tests {
     use super::*;
+
+    #[test]
+    fn replaced_binary_hands_off_to_the_new_file_at_its_path() {
+        let dir = std::env::temp_dir().join(format!("oasis-handoff-exe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let installed = dir.join("oasis");
+        let deleted = dir.join("oasis (deleted)");
+        assert_eq!(
+            installed_executable(deleted.clone()),
+            deleted,
+            "nothing installed yet"
+        );
+        std::fs::write(&installed, b"").unwrap();
+        assert_eq!(installed_executable(deleted), installed);
+        assert_eq!(installed_executable(installed.clone()), installed);
+        let _ = std::fs::remove_dir_all(dir);
+    }
 
     fn empty_snapshot() -> crate::persist::SessionSnapshot {
         crate::persist::SessionSnapshot {
