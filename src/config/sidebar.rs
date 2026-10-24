@@ -133,6 +133,8 @@ pub enum AgentSidebarToken {
     Wakeup,
     /// An active goal.
     Goal,
+    /// A one-cell mark for the agent, e.g. ✳ for Claude.
+    AgentIcon,
     Custom(String),
     Styled {
         token: Box<AgentSidebarToken>,
@@ -303,6 +305,7 @@ fn agent_token_name(token: &AgentSidebarToken) -> String {
         AgentSidebarToken::Subagents => "subagents".into(),
         AgentSidebarToken::Wakeup => "wakeup".into(),
         AgentSidebarToken::Goal => "goal".into(),
+        AgentSidebarToken::AgentIcon => "agent_icon".into(),
         AgentSidebarToken::Custom(name) => format!("${name}"),
         AgentSidebarToken::Styled { token, .. } => agent_token_name(token),
     }
@@ -368,6 +371,7 @@ impl<'de> Deserialize<'de> for AgentSidebarToken {
                 ("subagents", Self::Subagents),
                 ("wakeup", Self::Wakeup),
                 ("goal", Self::Goal),
+                ("agent_icon", Self::AgentIcon),
             ],
         )
         .map_err(serde::de::Error::custom)?;

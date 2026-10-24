@@ -353,9 +353,10 @@ const DEFAULT_CONFIG: &str = r##"# herdr configuration
 # accent = "cyan"
 
 # Expanded agent rows. Built-ins are state_icon, state_text, machine, workspace, tab,
-# pane, agent, terminal_title, and terminal_title_stripped. Claude Code's background
-# work is available as background ("💲2 📺1 🤖3"), shells, monitors,
-# subagents, and wakeup ("next 19:10"); each is empty when nothing is running.
+# pane, agent, agent_icon (a one-cell mark, ✳ for Claude), terminal_title, and
+# terminal_title_stripped. Claude Code's background work is available as
+# background ("2s 1m ◯◯◯", or "↻ 19:10" / "◎" when a loop or goal leads), shells,
+# monitors, subagents, wakeup and goal; each is empty when nothing is running.
 # Custom values reported through pane metadata use a $name token.
 # A token occurrence may be styled with { token = "workspace", fg = "#89b4fa", bold = true, dim = false }.
 # Omitted style fields preserve the contextual default.

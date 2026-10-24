@@ -52,6 +52,9 @@ pub enum ActivityKind {
     Monitors,
     Subagents,
     McpTasks,
+    /// The agent itself, as a small mark. Front ends with their own icons can
+    /// draw from `AgentEntry::agent` instead.
+    Agent,
 }
 
 impl ResolvedTokenKind {
@@ -139,6 +142,10 @@ pub(crate) fn agent_rows(
                         AgentSidebarToken::Subagents => activity(subagents_part(context.tokens)),
                         AgentSidebarToken::Wakeup => activity(loop_part(context.tokens)),
                         AgentSidebarToken::Goal => activity(goal_part(context.tokens)),
+                        AgentSidebarToken::AgentIcon => activity(agent_icon_part(
+                            context.canonical_agent,
+                            context.agent_label,
+                        )),
                         AgentSidebarToken::Custom(name) => context
                             .tokens
                             .get(name)
@@ -167,6 +174,36 @@ const GOAL_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x87, 0x
 const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x87, 0xd7, 0x87);
 const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
 const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
+
+// One-cell marks for agents, so a row can name its agent without the word.
+// Claude's is the ✳ Claude Code puts in its own window title.
+const CLAUDE_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xd9, 0x77, 0x57);
+const CODEX_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x10, 0xa3, 0x7f);
+const GEMINI_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x42, 0x85, 0xf4);
+const AGENT_FALLBACK_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
+
+fn agent_icon_part(
+    agent: Option<crate::detect::Agent>,
+    label: Option<&str>,
+) -> Option<ActivityPart> {
+    use crate::detect::Agent;
+    let (text, color) = match agent {
+        Some(Agent::Claude) => ("✳".to_owned(), CLAUDE_COLOR),
+        Some(Agent::Codex) => ("◇".to_owned(), CODEX_COLOR),
+        Some(Agent::Gemini) => ("✦".to_owned(), GEMINI_COLOR),
+        _ => (
+            label?.chars().next()?.to_uppercase().collect::<String>(),
+            AGENT_FALLBACK_COLOR,
+        ),
+    };
+    Some(ActivityPart {
+        kind: ActivityKind::Agent,
+        count: 1,
+        label: None,
+        text,
+        color,
+    })
+}
 
 fn activity(parts: impl IntoIterator<Item = ActivityPart>) -> Option<ResolvedTokenKind> {
     let parts = parts.into_iter().collect::<Vec<_>>();
@@ -835,5 +872,37 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         let parts = background_parts(&tokens);
         assert_eq!(activity_texts(&parts), ["◎", "◯◯"]);
         assert_eq!(parts[0].color, GOAL_COLOR);
+    }
+}
+
+#[cfg(test)]
+mod agent_icon_tests {
+    use super::*;
+
+    #[test]
+    fn agent_icon_marks_known_agents_and_falls_back_to_a_letter() {
+        let claude = agent_icon_part(Some(crate::detect::Agent::Claude), Some("claude")).unwrap();
+        assert_eq!(
+            (claude.text.as_str(), claude.kind),
+            ("✳", ActivityKind::Agent)
+        );
+        assert_eq!(claude.color, CLAUDE_COLOR);
+        let pi = agent_icon_part(Some(crate::detect::Agent::Pi), Some("pi")).unwrap();
+        assert_eq!((pi.text.as_str(), pi.color), ("P", AGENT_FALLBACK_COLOR));
+        assert!(agent_icon_part(None, None).is_none());
+    }
+
+    #[test]
+    fn agent_icon_token_parses_from_config() {
+        let config: crate::config::Config = toml::from_str(
+            "[ui.sidebar.agents.rows_by_agent]\nclaude = [[\"state_icon\", \"agent_icon\", \"workspace\"]]\n",
+        )
+        .unwrap();
+        let rows = config
+            .ui
+            .sidebar
+            .agents
+            .rows_for_agent(Some(crate::detect::Agent::Claude));
+        assert!(rows[0].contains(&crate::config::AgentSidebarToken::AgentIcon));
     }
 }
