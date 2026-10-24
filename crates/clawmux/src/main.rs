@@ -7,6 +7,7 @@ mod app;
 mod conn;
 mod grid;
 mod keys;
+mod logos;
 mod sidebar;
 mod termview;
 mod theme;

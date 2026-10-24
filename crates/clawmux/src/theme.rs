@@ -3,7 +3,7 @@
 
 use std::path::PathBuf;
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub struct Rgb(pub u8, pub u8, pub u8);
 
 impl Rgb {

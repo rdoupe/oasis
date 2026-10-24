@@ -571,7 +571,22 @@ impl App {
             .map(|conn| conn.active().as_str().to_owned())
             .unwrap_or_default();
         if let Some(model) = self.model.borrow().as_ref() {
-            self.sidebar.render(model, &active);
+            let mut kinds = std::collections::HashMap::new();
+            for machine in self.machines.borrow().iter() {
+                let Some(snapshot) = machine.snapshot.as_ref() else {
+                    continue;
+                };
+                for agent in &snapshot.agents {
+                    if let Some(kind) = agent.agent.clone() {
+                        kinds.insert(
+                            (machine.id.as_str().to_owned(), agent.pane_id.clone()),
+                            kind,
+                        );
+                    }
+                }
+            }
+            let fg = self.theme.borrow().foreground;
+            self.sidebar.render(model, &active, &kinds, fg);
         }
         self.update_status();
         let snapshot = self.snapshot.borrow();

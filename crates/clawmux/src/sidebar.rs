@@ -111,7 +111,14 @@ impl SidebarView {
         }
     }
 
-    pub fn render(self: &Rc<Self>, model: &SidebarModel, active_endpoint: &str) {
+    /// `agent_kinds` maps (endpoint, pane id) to the agent identity oasis reports, for logos.
+    pub fn render(
+        self: &Rc<Self>,
+        model: &SidebarModel,
+        active_endpoint: &str,
+        agent_kinds: &std::collections::HashMap<(String, String), String>,
+        fg: crate::theme::Rgb,
+    ) {
         self.list.remove_all();
         let mut targets = Vec::new();
         let several = model.machines.len() > 1;
@@ -204,6 +211,15 @@ impl SidebarView {
         for agent in &model.agents {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&dot(agent.status));
+            let kind = agent_kinds.get(&(agent.endpoint.clone(), agent.pane_id.clone()));
+            if let Some(texture) = kind.and_then(|kind| crate::logos::texture(kind, fg)) {
+                let logo = gtk::Image::from_paintable(Some(&texture));
+                logo.set_pixel_size(14);
+                logo.set_valign(gtk::Align::Center);
+                logo.add_css_class("agent-logo");
+                logo.set_tooltip_text(kind.map(String::as_str));
+                row.append(&logo);
+            }
             row.append(&token_rows(&agent.rows));
             let list_row = self.push(
                 row.upcast_ref(),
