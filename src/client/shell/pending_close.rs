@@ -7,16 +7,10 @@
 //! close puts the target back with the usual endpoint notice.
 
 use super::*;
-use crate::client::model::{hide_closed_target, CloseTarget};
+use crate::client::model::{CloseSettle, CloseTarget, IncomingCloses, PendingCloses};
 
-pub(super) struct PendingClose {
-    pub(super) request_id: String,
-    pub(super) endpoint_id: ClientEndpointId,
-    pub(super) boot_id: String,
-    pub(super) target: CloseTarget,
-    /// The server answered success; the next snapshot is the truth.
-    pub(super) confirmed: bool,
-}
+/// The window's pending closes: per endpoint, keyed by request id.
+pub(super) type ShellPendingCloses = PendingCloses<ClientEndpointId, String>;
 
 impl ClientShellState {
     /// What a close method removes, if `method` is a close.
@@ -74,39 +68,26 @@ impl ClientShellState {
         self.unfiltered_snapshots
             .entry(endpoint_id.clone())
             .or_insert(cached);
-        self.pending_closes.push(PendingClose {
-            request_id,
-            endpoint_id: endpoint_id.clone(),
-            boot_id,
-            target,
-            confirmed: false,
-        });
+        self.pending_closes
+            .begin(request_id, endpoint_id.clone(), boot_id, target);
         self.reapply_pending_closes(&endpoint_id);
     }
 
     /// Applies the server's answer to a close. Returns whether the view changed.
     pub(super) fn settle_pending_close(&mut self, request_id: &str, succeeded: bool) -> bool {
-        let Some(index) = self
+        let unfiltered = &self.unfiltered_snapshots;
+        let request_id = request_id.to_owned();
+        match self
             .pending_closes
-            .iter()
-            .position(|pending| pending.request_id == request_id)
-        else {
-            return false;
-        };
-        let endpoint_id = self.pending_closes[index].endpoint_id.clone();
-        if succeeded {
-            let still_present = self
-                .unfiltered_snapshots
-                .get(&endpoint_id)
-                .is_some_and(|raw| self.pending_closes[index].target.present_in(raw));
-            if still_present {
-                self.pending_closes[index].confirmed = true;
-                return false;
+            .settle(&request_id, succeeded, |endpoint| {
+                unfiltered.get(endpoint).map(Box::as_ref)
+            }) {
+            CloseSettle::Unknown | CloseSettle::Confirmed => false,
+            CloseSettle::Settled { endpoint, failed } => {
+                self.reapply_pending_closes(&endpoint);
+                failed
             }
         }
-        self.pending_closes.remove(index);
-        self.reapply_pending_closes(&endpoint_id);
-        !succeeded
     }
 
     /// Keeps hiding unsettled closes in a snapshot just received, and settles
@@ -116,33 +97,14 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         snapshot: &mut ClientShellSnapshot,
     ) {
-        if !self
-            .pending_closes
-            .iter()
-            .any(|pending| &pending.endpoint_id == endpoint_id)
-        {
-            return;
-        }
-        self.pending_closes.retain(|pending| {
-            &pending.endpoint_id != endpoint_id
-                || (pending.boot_id == snapshot.boot_id
-                    && !pending.confirmed
-                    && pending.target.present_in(snapshot))
-        });
-        if self
-            .pending_closes
-            .iter()
-            .any(|pending| &pending.endpoint_id == endpoint_id)
-        {
-            self.unfiltered_snapshots
-                .insert(endpoint_id.clone(), Box::new(snapshot.clone()));
-            for pending in &self.pending_closes {
-                if &pending.endpoint_id == endpoint_id {
-                    hide_closed_target(snapshot, &pending.target);
-                }
+        match self.pending_closes.filter_incoming(endpoint_id, snapshot) {
+            IncomingCloses::Untracked => {}
+            IncomingCloses::AllSettled => {
+                self.unfiltered_snapshots.remove(endpoint_id);
             }
-        } else {
-            self.unfiltered_snapshots.remove(endpoint_id);
+            IncomingCloses::StillHidden(raw) => {
+                self.unfiltered_snapshots.insert(endpoint_id.clone(), raw);
+            }
         }
     }
 
@@ -150,15 +112,9 @@ impl ClientShellState {
     /// are abandoned on a reset; later snapshots show what really happened.
     pub(super) fn abandon_pending_closes(&mut self) {
         let endpoint_id = self.active_endpoint_id.clone();
-        if !self
-            .pending_closes
-            .iter()
-            .any(|pending| pending.endpoint_id == endpoint_id)
-        {
+        if !self.pending_closes.abandon(&endpoint_id) {
             return;
         }
-        self.pending_closes
-            .retain(|pending| pending.endpoint_id != endpoint_id);
         if let Some(raw) = self.unfiltered_snapshots.remove(&endpoint_id) {
             if let Some(endpoint) = self
                 .endpoints
@@ -177,13 +133,7 @@ impl ClientShellState {
             return;
         };
         let mut shown = raw.clone();
-        let mut any = false;
-        for pending in &self.pending_closes {
-            if &pending.endpoint_id == endpoint_id {
-                hide_closed_target(&mut shown, &pending.target);
-                any = true;
-            }
-        }
+        let any = self.pending_closes.apply(endpoint_id, &mut shown);
         if !any {
             self.unfiltered_snapshots.remove(endpoint_id);
         }

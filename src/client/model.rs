@@ -915,6 +915,170 @@ pub fn hide_closed_target(snapshot: &mut ClientShellSnapshot, target: &CloseTarg
     }
 }
 
+/// Closes hidden before their server confirms them, per endpoint `K` and
+/// request `R`. Both the TUI and [`crate::client::core::ClientCore`] keep one:
+/// the target is hidden from every snapshot until a snapshot without it, or a
+/// success answer followed by the next snapshot, settles it. A failure puts it
+/// back, and a snapshot from a new server boot drops it.
+#[derive(Debug)]
+pub struct PendingCloses<K, R> {
+    entries: Vec<PendingCloseEntry<K, R>>,
+}
+
+#[derive(Debug)]
+struct PendingCloseEntry<K, R> {
+    request: R,
+    endpoint: K,
+    boot_id: String,
+    target: CloseTarget,
+    /// The server answered success; the next snapshot is the truth.
+    confirmed: bool,
+}
+
+/// What a server answer did to a pending close.
+#[derive(Debug, PartialEq, Eq)]
+pub enum CloseSettle<K> {
+    /// No close waits on that request.
+    Unknown,
+    /// Succeeded, but the last snapshot still shows the target: keep hiding it
+    /// until the next one.
+    Confirmed,
+    /// No longer pending; rebuild the endpoint's shown snapshot.
+    Settled { endpoint: K, failed: bool },
+}
+
+/// What [`PendingCloses::filter_incoming`] did to a snapshot.
+#[derive(Debug)]
+pub enum IncomingCloses {
+    /// Nothing was pending for the endpoint.
+    Untracked,
+    /// The snapshot settled every pending close for the endpoint.
+    AllSettled,
+    /// Some closes are still pending and were hidden; this is the snapshot as
+    /// the server sent it.
+    StillHidden(Box<ClientShellSnapshot>),
+}
+
+impl<K, R> Default for PendingCloses<K, R> {
+    fn default() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+}
+
+impl<K: PartialEq + Clone, R: PartialEq> PendingCloses<K, R> {
+    pub fn is_empty(&self) -> bool {
+        self.entries.is_empty()
+    }
+
+    pub fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    pub fn begin(&mut self, request: R, endpoint: K, boot_id: String, target: CloseTarget) {
+        self.entries.push(PendingCloseEntry {
+            request,
+            endpoint,
+            boot_id,
+            target,
+            confirmed: false,
+        });
+    }
+
+    pub fn tracks(&self, endpoint: &K) -> bool {
+        self.entries.iter().any(|entry| &entry.endpoint == endpoint)
+    }
+
+    pub fn contains_request(&self, request: &R) -> bool {
+        self.entries.iter().any(|entry| &entry.request == request)
+    }
+
+    /// Hides every close pending on `endpoint`; returns whether any was.
+    pub fn apply(&self, endpoint: &K, snapshot: &mut ClientShellSnapshot) -> bool {
+        let mut any = false;
+        for entry in self
+            .entries
+            .iter()
+            .filter(|entry| &entry.endpoint == endpoint)
+        {
+            hide_closed_target(snapshot, &entry.target);
+            any = true;
+        }
+        any
+    }
+
+    /// Applies the server's answer to `request`. `raw` gives the endpoint's
+    /// last snapshot as the server sent it.
+    pub fn settle<'a>(
+        &mut self,
+        request: &R,
+        succeeded: bool,
+        raw: impl FnOnce(&K) -> Option<&'a ClientShellSnapshot>,
+    ) -> CloseSettle<K> {
+        let Some(index) = self
+            .entries
+            .iter()
+            .position(|entry| &entry.request == request)
+        else {
+            return CloseSettle::Unknown;
+        };
+        if succeeded
+            && raw(&self.entries[index].endpoint)
+                .is_some_and(|snapshot| self.entries[index].target.present_in(snapshot))
+        {
+            self.entries[index].confirmed = true;
+            return CloseSettle::Confirmed;
+        }
+        let entry = self.entries.remove(index);
+        CloseSettle::Settled {
+            endpoint: entry.endpoint,
+            failed: !succeeded,
+        }
+    }
+
+    /// Settles the closes `snapshot` shows are done (or that belong to an
+    /// earlier boot) and hides the rest in it.
+    pub fn filter_incoming(
+        &mut self,
+        endpoint: &K,
+        snapshot: &mut ClientShellSnapshot,
+    ) -> IncomingCloses {
+        if !self.tracks(endpoint) {
+            return IncomingCloses::Untracked;
+        }
+        self.entries.retain(|entry| {
+            &entry.endpoint != endpoint
+                || (entry.boot_id == snapshot.boot_id
+                    && !entry.confirmed
+                    && entry.target.present_in(snapshot))
+        });
+        if !self.tracks(endpoint) {
+            return IncomingCloses::AllSettled;
+        }
+        let raw = Box::new(snapshot.clone());
+        self.apply(endpoint, snapshot);
+        IncomingCloses::StillHidden(raw)
+    }
+
+    /// Drops one pending close, e.g. when its request timed out. Returns its
+    /// endpoint.
+    pub fn remove_request(&mut self, request: &R) -> Option<K> {
+        let index = self
+            .entries
+            .iter()
+            .position(|entry| &entry.request == request)?;
+        Some(self.entries.remove(index).endpoint)
+    }
+
+    /// Drops every close pending on `endpoint`; returns whether any was.
+    pub fn abandon(&mut self, endpoint: &K) -> bool {
+        let before = self.entries.len();
+        self.entries.retain(|entry| &entry.endpoint != endpoint);
+        self.entries.len() != before
+    }
+}
+
 fn remove_tab_contents(snapshot: &mut ClientShellSnapshot, tab_id: &str) {
     let pane_ids = snapshot
         .panes

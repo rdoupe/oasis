@@ -266,3 +266,62 @@ fn a_core_started_without_a_server_reports_it() {
     drop(core);
     let _ = fs::remove_dir_all(&base);
 }
+
+/// `ClientCore::close` hides the tab in the very next drain, before the server
+/// has answered, and the server's own snapshot later agrees.
+#[test]
+fn a_close_through_the_core_is_hidden_before_the_server_answers() {
+    use oasis_core::embed::sidebar::CloseTarget;
+    let _server = start_server();
+    let core = start_core();
+    let local = EndpointId::local();
+    let method = |json: &str| -> oasis_core::embed::wire::Method {
+        serde_json::from_str::<oasis_core::embed::wire::Request>(json)
+            .unwrap()
+            .method
+    };
+    core.request(
+        &local,
+        method(r#"{"id":"w","method":"workspace.create","params":{"focus":true}}"#),
+    );
+    let mut tabs: Vec<String> = Vec::new();
+    let mut created_second = false;
+    drain_until(&core, Duration::from_secs(20), |drained| {
+        for update in &drained.endpoints {
+            if let Some(snapshot) = &update.snapshot {
+                tabs = snapshot.tabs.iter().map(|tab| tab.tab_id.clone()).collect();
+            }
+        }
+        if tabs.len() == 1 && !created_second {
+            created_second = true;
+            core.request(
+                &local,
+                method(r#"{"id":"t","method":"tab.create","params":{"focus":true}}"#),
+            );
+        }
+        tabs.len() == 2
+    });
+
+    let closing = tabs[1].clone();
+    core.close(&local, CloseTarget::Tab(closing.clone()));
+    let drained = core.drain();
+    let snapshot = drained
+        .endpoints
+        .iter()
+        .find_map(|update| update.snapshot.as_ref())
+        .expect("the close publishes a snapshot at once");
+    assert!(
+        snapshot.tabs.iter().all(|tab| tab.tab_id != closing),
+        "the closed tab is hidden before the server answers"
+    );
+
+    let mut confirmed = false;
+    drain_until(&core, Duration::from_secs(10), |drained| {
+        for event in &drained.events {
+            if let CoreEvent::Response { result, .. } = event {
+                confirmed |= result.is_ok();
+            }
+        }
+        confirmed
+    });
+}

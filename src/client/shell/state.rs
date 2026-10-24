@@ -1020,7 +1020,7 @@ pub(crate) struct ClientShellState {
     pub(super) next_request_id: u64,
     pub(super) pending_requests: HashMap<String, PendingEndpointRequest>,
     /// Closes hidden ahead of the server's answer; see `pending_close`.
-    pub(super) pending_closes: Vec<super::pending_close::PendingClose>,
+    pub(super) pending_closes: super::pending_close::ShellPendingCloses,
     /// The server's own snapshot for endpoints with closes pending.
     pub(super) unfiltered_snapshots: HashMap<ClientEndpointId, Box<ClientShellSnapshot>>,
     pub(super) pending_integration_installs: usize,
@@ -1199,7 +1199,7 @@ impl ClientShellState {
             popup_pending_deadline: None,
             next_request_id: 1,
             pending_requests: HashMap::new(),
-            pending_closes: Vec::new(),
+            pending_closes: Default::default(),
             unfiltered_snapshots: HashMap::new(),
             pending_integration_installs: 0,
             pending_notifications: Vec::new(),

@@ -29,6 +29,9 @@ const MAX_QUEUED_EVENTS: usize = 1024;
 const HEALTH_TICK: Duration = Duration::from_millis(2500);
 /// How long the core waits for a Local server it started to open its socket.
 const LOCAL_START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long a close stays hidden without an answer before it is put back,
+/// matching the TUI's endpoint command timeout.
+const CLOSE_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// How the core connects. Built with [`CoreOptions::default`] and adjusted.
 #[derive(Clone, Debug)]
@@ -227,6 +230,12 @@ enum Command {
         endpoint: EndpointId,
         method: Box<crate::api::schema::Method>,
     },
+    /// A close already hidden by [`ClientCore::close`]; sends its method.
+    Close {
+        id: RequestId,
+        endpoint: EndpointId,
+        method: Box<crate::api::schema::Method>,
+    },
     PaneInput {
         endpoint: EndpointId,
         pane_id: String,
@@ -256,6 +265,7 @@ impl ClientCore {
         let shared = Arc::new(Shared {
             outbox: Mutex::new(Outbox::default()),
             wake: crate::platform::CoreWake::new()?,
+            closes: Mutex::new(CoreCloses::default()),
         });
         let (commands, command_rx) = tokio::sync::mpsc::unbounded_channel();
         let thread_shared = Arc::clone(&shared);
@@ -313,6 +323,28 @@ impl ClientCore {
                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
         );
         self.send(Command::Request {
+            id,
+            endpoint: endpoint.clone(),
+            method: Box::new(method),
+        });
+        id
+    }
+
+    /// Closes a tab, pane or workspace, hiding it at once: the next
+    /// [`Self::drain`] already reports the endpoint's snapshot without it, and
+    /// the sidebar model follows. Every later snapshot keeps hiding it until
+    /// the server confirms. An error, a timeout or a disconnect puts it back
+    /// and emits [`CoreEvent::Error`]; the answer still arrives as
+    /// [`CoreEvent::Response`] with the returned id.
+    pub fn close(&self, endpoint: &EndpointId, target: super::model::CloseTarget) -> RequestId {
+        let id = RequestId(
+            self.next_request
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        );
+        let method = close_method(&target);
+        self.shared
+            .begin_close(id, endpoint, target, Instant::now());
+        self.send(Command::Close {
             id,
             endpoint: endpoint.clone(),
             method: Box::new(method),
@@ -384,9 +416,228 @@ impl Drop for ClientCore {
 struct Shared {
     outbox: Mutex<Outbox>,
     wake: crate::platform::CoreWake,
+    /// Closes hidden before the server confirms them. Shared so
+    /// [`ClientCore::close`] hides the target before returning.
+    closes: Mutex<CoreCloses>,
+}
+
+/// The core's optimistic closes: the servers' own snapshots and what is
+/// still hidden from them.
+#[derive(Default)]
+struct CoreCloses {
+    raw: HashMap<EndpointId, Box<ClientShellSnapshot>>,
+    labels: HashMap<EndpointId, String>,
+    pending: super::model::PendingCloses<EndpointId, RequestId>,
+    deadlines: Vec<(RequestId, Instant)>,
+}
+
+impl CoreCloses {
+    /// The endpoint's last snapshot with every pending close hidden.
+    fn shown(&self, endpoint: &EndpointId) -> Option<Box<ClientShellSnapshot>> {
+        let mut shown = self.raw.get(endpoint)?.clone();
+        self.pending.apply(endpoint, &mut shown);
+        Some(shown)
+    }
+
+    fn label(&self, endpoint: &EndpointId) -> String {
+        self.labels
+            .get(endpoint)
+            .cloned()
+            .unwrap_or_else(|| endpoint.0.clone())
+    }
+
+    fn prune_deadlines(&mut self) {
+        let pending = &self.pending;
+        self.deadlines
+            .retain(|(request, _)| pending.contains_request(request));
+    }
+}
+
+/// The method that closes `target`.
+fn close_method(target: &super::model::CloseTarget) -> crate::api::schema::Method {
+    use super::model::CloseTarget;
+    use crate::api::schema::{Method, PaneTarget, TabTarget, WorkspaceCloseParams};
+    match target {
+        CloseTarget::Tab(tab_id) => Method::TabClose(TabTarget {
+            tab_id: tab_id.clone(),
+        }),
+        CloseTarget::Pane(pane_id) => Method::PaneClose(PaneTarget {
+            pane_id: pane_id.clone(),
+        }),
+        CloseTarget::Workspaces(ids) => Method::WorkspaceClose(WorkspaceCloseParams {
+            workspace_id: ids.first().cloned().unwrap_or_default(),
+            close_group: ids.len() > 1,
+        }),
+    }
 }
 
 impl Shared {
+    fn lock_closes(&self) -> std::sync::MutexGuard<'_, CoreCloses> {
+        self.closes
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Hides `target` on `endpoint` and publishes the snapshot without it.
+    /// Returns the shown snapshot, or `None` before the endpoint's first
+    /// snapshot (then nothing is hidden and the request just goes out).
+    fn begin_close(
+        &self,
+        request: RequestId,
+        endpoint: &EndpointId,
+        target: super::model::CloseTarget,
+        now: Instant,
+    ) -> Option<Box<ClientShellSnapshot>> {
+        let (shown, label) = {
+            let mut closes = self.lock_closes();
+            let boot_id = closes.raw.get(endpoint)?.boot_id.clone();
+            closes
+                .pending
+                .begin(request, endpoint.clone(), boot_id, target);
+            closes.deadlines.push((request, now + CLOSE_TIMEOUT));
+            (closes.shown(endpoint)?, closes.label(endpoint))
+        };
+        let published = shown.clone();
+        self.publish(|outbox| outbox.endpoint(endpoint, &label).snapshot = Some(published));
+        Some(shown)
+    }
+
+    /// Records a snapshot from the server, hides what is still pending in it,
+    /// and publishes it. Returns the shown snapshot.
+    fn record_snapshot(
+        &self,
+        endpoint: &EndpointId,
+        label: &str,
+        snapshot: Box<ClientShellSnapshot>,
+    ) -> Box<ClientShellSnapshot> {
+        let mut shown = snapshot.clone();
+        {
+            let mut closes = self.lock_closes();
+            closes.raw.insert(endpoint.clone(), snapshot);
+            closes.labels.insert(endpoint.clone(), label.to_owned());
+            let _ = closes.pending.filter_incoming(endpoint, &mut shown);
+            closes.prune_deadlines();
+        }
+        let published = shown.clone();
+        self.publish(|outbox| outbox.endpoint(endpoint, label).snapshot = Some(published));
+        shown
+    }
+
+    /// Applies the server's answer to `request`. A failed close is put back:
+    /// returns the endpoint and its shown snapshot, which was published along
+    /// with a [`CoreEvent::Error`].
+    fn settle_close(
+        &self,
+        request: RequestId,
+        failure: Option<&str>,
+    ) -> Option<(EndpointId, Box<ClientShellSnapshot>)> {
+        let (endpoint, shown, label) = {
+            let mut closes = self.lock_closes();
+            let CoreCloses { raw, pending, .. } = &mut *closes;
+            let settled = pending.settle(&request, failure.is_none(), |endpoint| {
+                raw.get(endpoint).map(Box::as_ref)
+            });
+            closes.prune_deadlines();
+            let super::model::CloseSettle::Settled {
+                endpoint,
+                failed: true,
+            } = settled
+            else {
+                return None;
+            };
+            let shown = closes.shown(&endpoint)?;
+            let label = closes.label(&endpoint);
+            (endpoint, shown, label)
+        };
+        self.publish_restored(&endpoint, &label, &shown, failure.unwrap_or_default());
+        Some((endpoint, shown))
+    }
+
+    /// Puts back every close pending on a disconnected endpoint.
+    fn abandon_closes(
+        &self,
+        endpoint: &EndpointId,
+        reason: &str,
+    ) -> Option<Box<ClientShellSnapshot>> {
+        let (shown, label) = {
+            let mut closes = self.lock_closes();
+            if !closes.pending.abandon(endpoint) {
+                return None;
+            }
+            closes.prune_deadlines();
+            (closes.shown(endpoint)?, closes.label(endpoint))
+        };
+        self.publish_restored(endpoint, &label, &shown, reason);
+        Some(shown)
+    }
+
+    /// Puts back closes nobody answered within [`CLOSE_TIMEOUT`].
+    fn expire_closes(&self, now: Instant) -> Vec<(EndpointId, Box<ClientShellSnapshot>)> {
+        let restored = {
+            let mut closes = self.lock_closes();
+            let expired = closes
+                .deadlines
+                .iter()
+                .filter(|(_, deadline)| *deadline <= now)
+                .map(|(request, _)| *request)
+                .collect::<Vec<_>>();
+            let mut endpoints = Vec::new();
+            for request in expired {
+                if let Some(endpoint) = closes.pending.remove_request(&request) {
+                    if !endpoints.contains(&endpoint) {
+                        endpoints.push(endpoint);
+                    }
+                }
+            }
+            closes.prune_deadlines();
+            endpoints
+                .into_iter()
+                .filter_map(|endpoint| {
+                    let shown = closes.shown(&endpoint)?;
+                    let label = closes.label(&endpoint);
+                    Some((endpoint, shown, label))
+                })
+                .collect::<Vec<_>>()
+        };
+        restored
+            .into_iter()
+            .map(|(endpoint, shown, label)| {
+                self.publish_restored(&endpoint, &label, &shown, "the server did not answer");
+                (endpoint, shown)
+            })
+            .collect()
+    }
+
+    fn next_close_deadline(&self) -> Option<Instant> {
+        self.lock_closes()
+            .deadlines
+            .iter()
+            .map(|(_, deadline)| *deadline)
+            .min()
+    }
+
+    fn publish_restored(
+        &self,
+        endpoint: &EndpointId,
+        label: &str,
+        shown: &ClientShellSnapshot,
+        reason: &str,
+    ) {
+        let snapshot = Box::new(shown.clone());
+        let message = if reason.is_empty() {
+            "Couldn't close it".to_owned()
+        } else {
+            format!("Couldn't close it: {reason}")
+        };
+        self.publish(|outbox| {
+            outbox.endpoint(endpoint, label).snapshot = Some(snapshot);
+            outbox.event(CoreEvent::Error {
+                endpoint: endpoint.clone(),
+                message,
+            });
+        });
+    }
+
     /// Updates the outbox and raises the wake only on the empty → non-empty
     /// transition, so a front end that drains late is woken once.
     fn publish(&self, update: impl FnOnce(&mut Outbox)) {
@@ -557,6 +808,9 @@ struct CoreLoop {
     labels: HashMap<ClientEndpointId, String>,
     /// Latest snapshot boot id per endpoint, needed to address requests.
     boot_ids: HashMap<ClientEndpointId, String>,
+    /// Why the Local server could not be started. Kept until Local comes
+    /// online, so retry statuses do not hide the reason from the embedder.
+    local_start_error: Option<String>,
     active: ClientEndpointId,
     /// Endpoints currently asked to stream their surface.
     streaming: BTreeSet<String>,
@@ -686,6 +940,7 @@ impl CoreLoop {
             reader_rx,
             labels,
             boot_ids: HashMap::new(),
+            local_start_error: None,
             active,
             streaming: BTreeSet::new(),
             responses: HashMap::new(),
@@ -728,6 +983,7 @@ impl CoreLoop {
             let deadline = [
                 self.supervisors.next_attempt_due(now),
                 self.next_health_tick,
+                self.shared.next_close_deadline(),
             ]
             .into_iter()
             .flatten()
@@ -744,6 +1000,7 @@ impl CoreLoop {
                         self.registry.tick_health(Instant::now());
                         self.schedule_health();
                     }
+                    self.expire_closes();
                 }
             }
             self.handle_failures();
@@ -773,14 +1030,14 @@ impl CoreLoop {
             Ok(Err(error)) => error.to_string(),
             Err(error) => error.to_string(),
         };
+        let message = format!("Local server did not start: {error}");
+        self.local_start_error = Some(message.clone());
         let id = ClientEndpointId::Local;
         let label = self.label(&id);
         self.shared.publish(|outbox| {
             outbox
                 .endpoint(&EndpointId::from_client(&id), &label)
-                .status = Some(EndpointStatus::Attention(format!(
-                "Local server did not start: {error}"
-            )));
+                .status = Some(EndpointStatus::Attention(message));
         });
     }
 
@@ -886,6 +1143,9 @@ impl CoreLoop {
                     pending.status = Some(EndpointStatus::Online);
                     pending.negotiation = Some(published);
                 });
+                if endpoint_id.is_local() {
+                    self.local_start_error = None;
+                }
                 self.sidebar_online(&endpoint_id, true);
             }
         }
@@ -894,6 +1154,16 @@ impl CoreLoop {
     fn publish_status(&mut self, id: &ClientEndpointId, status: EndpointStatus) {
         let label = self.label(id);
         let online = status == EndpointStatus::Online;
+        let status = match (&status, id.is_local(), &self.local_start_error) {
+            (EndpointStatus::Online, true, _) => {
+                self.local_start_error = None;
+                status
+            }
+            (EndpointStatus::Connecting | EndpointStatus::Reconnecting(_), true, Some(error)) => {
+                EndpointStatus::Attention(error.clone())
+            }
+            _ => status,
+        };
         self.shared.publish(|outbox| {
             outbox.endpoint(&EndpointId::from_client(id), &label).status = Some(status);
         });
@@ -929,6 +1199,10 @@ impl CoreLoop {
     }
 
     fn lost(&mut self, endpoint_id: &ClientEndpointId, generation: u64, reason: &str) {
+        let id = EndpointId::from_client(endpoint_id);
+        if let Some(shown) = self.shared.abandon_closes(&id, reason) {
+            self.sidebar_snapshot(endpoint_id, shown);
+        }
         self.registry.disconnect(endpoint_id);
         self.streaming.remove(&endpoint_id.storage_key());
         self.boot_ids.remove(endpoint_id);
@@ -1065,14 +1339,10 @@ impl CoreLoop {
             .insert(endpoint_id.clone(), snapshot.boot_id.clone());
         let id = EndpointId::from_client(endpoint_id);
         let label = self.label(endpoint_id);
+        let shown = self.shared.record_snapshot(&id, &label, snapshot);
         if let Some(sidebar) = self.sidebar.as_mut() {
-            sidebar
-                .snapshots
-                .insert(endpoint_id.clone(), snapshot.clone());
+            sidebar.snapshots.insert(endpoint_id.clone(), shown);
         }
-        self.shared.publish(|outbox| {
-            outbox.endpoint(&id, &label).snapshot = Some(snapshot);
-        });
         self.refresh_sidebar();
         self.ensure_streaming(endpoint_id);
     }
@@ -1109,6 +1379,10 @@ impl CoreLoop {
                 message: error.message,
             });
         let endpoint = EndpointId::from_client(endpoint_id);
+        let failure = result.as_ref().err().map(|error| error.message.clone());
+        if let Some((_, shown)) = self.shared.settle_close(id, failure.as_deref()) {
+            self.sidebar_snapshot(endpoint_id, shown);
+        }
         self.shared.publish(|outbox| {
             outbox.event(CoreEvent::Response {
                 id,
@@ -1116,6 +1390,26 @@ impl CoreLoop {
                 result,
             })
         });
+    }
+
+    /// Shows `snapshot` for `endpoint_id` in the sidebar model.
+    fn sidebar_snapshot(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        snapshot: Box<ClientShellSnapshot>,
+    ) {
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            sidebar.snapshots.insert(endpoint_id.clone(), snapshot);
+            self.refresh_sidebar();
+        }
+    }
+
+    fn expire_closes(&mut self) {
+        for (endpoint, shown) in self.shared.expire_closes(Instant::now()) {
+            if let Some(endpoint_id) = self.client_id(&endpoint) {
+                self.sidebar_snapshot(&endpoint_id, shown);
+            }
+        }
     }
 
     /// Sends a JSON request. `id` 0 marks an internal request whose response
@@ -1203,6 +1497,35 @@ impl CoreLoop {
 
     fn command(&mut self, command: Command) {
         match command {
+            Command::Close {
+                id,
+                endpoint,
+                method,
+            } => {
+                let Some(endpoint_id) = self.client_id(&endpoint) else {
+                    let _ = self.shared.settle_close(id, Some("unknown endpoint"));
+                    return;
+                };
+                let shown = self.shared.lock_closes().shown(&endpoint);
+                if let Some(shown) = shown {
+                    self.sidebar_snapshot(&endpoint_id, shown);
+                }
+                if let Err(message) = self.send_request(&endpoint_id, id, *method) {
+                    if let Some((_, shown)) = self.shared.settle_close(id, Some(&message)) {
+                        self.sidebar_snapshot(&endpoint_id, shown);
+                    }
+                    self.shared.publish(|outbox| {
+                        outbox.event(CoreEvent::Response {
+                            id,
+                            endpoint,
+                            result: Err(EndpointError {
+                                code: Some("endpoint_unavailable".into()),
+                                message,
+                            }),
+                        })
+                    });
+                }
+            }
             Command::Request {
                 id,
                 endpoint,

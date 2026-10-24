@@ -188,6 +188,7 @@ fn the_wake_is_raised_once_per_empty_to_non_empty_transition() {
     let shared = Shared {
         outbox: Mutex::new(Outbox::default()),
         wake: crate::platform::CoreWake::new().unwrap(),
+        closes: Mutex::new(CoreCloses::default()),
     };
     assert!(!wake_pending(&shared), "idle: nothing to wake for");
     for count in 0..5 {
@@ -223,6 +224,7 @@ fn sidebar_changes_wake_once_and_drain_while_unchanged_snapshots_stay_quiet() {
     let shared = Shared {
         outbox: Mutex::new(Outbox::default()),
         wake: crate::platform::CoreWake::new().unwrap(),
+        closes: Mutex::new(CoreCloses::default()),
     };
     let mut sidebar = CoreSidebar::new(super::super::model::SidebarPrefs::default());
     let order = [ClientEndpointId::Local];
@@ -266,4 +268,190 @@ fn sidebar_changes_wake_once_and_drain_while_unchanged_snapshots_stay_quiet() {
     assert!(wake_pending(&shared));
     let drained = shared.outbox.lock().unwrap().take();
     assert_eq!(drained.sidebar.map(|model| model.revision()), Some(2));
+}
+
+fn close_shared() -> Shared {
+    Shared {
+        outbox: Mutex::new(Outbox::default()),
+        wake: crate::platform::CoreWake::new().unwrap(),
+        closes: Mutex::new(CoreCloses::default()),
+    }
+}
+
+/// One workspace with tabs `tab_1` (focused) and `tab_2`.
+fn two_tabs(boot_id: &str) -> Box<ClientShellSnapshot> {
+    let mut workspace =
+        crate::client::model::tests::workspace("ws_1", 1, crate::api::schema::AgentStatus::Idle);
+    workspace.focused = true;
+    workspace.active_tab_id = "tab_1".into();
+    let mut snapshot = crate::client::model::tests::snapshot(vec![workspace], Vec::new());
+    snapshot.boot_id = boot_id.into();
+    snapshot.focused_tab_id = Some("tab_1".into());
+    let mut second = snapshot.tabs[0].clone();
+    second.tab_id = "tab_2".into();
+    second.number = 2;
+    second.focused = false;
+    snapshot.tabs.push(second);
+    Box::new(snapshot)
+}
+
+fn tab_ids(snapshot: &ClientShellSnapshot) -> Vec<&str> {
+    snapshot
+        .tabs
+        .iter()
+        .map(|tab| tab.tab_id.as_str())
+        .collect()
+}
+
+fn drained_snapshot(shared: &Shared) -> Option<Box<ClientShellSnapshot>> {
+    let drained = {
+        let mut outbox = shared.outbox.lock().unwrap();
+        shared.wake.clear();
+        outbox.take()
+    };
+    drained
+        .endpoints
+        .into_iter()
+        .find(|update| update.id == local())
+        .and_then(|update| update.snapshot)
+}
+
+fn drained_events(shared: &Shared) -> Vec<CoreEvent> {
+    let mut outbox = shared.outbox.lock().unwrap();
+    shared.wake.clear();
+    outbox.take().events
+}
+
+#[test]
+fn a_close_hides_its_target_in_the_next_drain_and_wakes_once() {
+    let shared = close_shared();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    drained_snapshot(&shared);
+
+    let shown = shared.begin_close(
+        RequestId(7),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_1".into()),
+        Instant::now(),
+    );
+    assert_eq!(tab_ids(&shown.unwrap()), ["tab_2"]);
+    assert_eq!(pipe_bytes(&shared), 1, "the hide wakes the front end once");
+    let drained = drained_snapshot(&shared).expect("hidden snapshot is published");
+    assert_eq!(tab_ids(&drained), ["tab_2"]);
+    assert_eq!(drained.focused_tab_id.as_deref(), Some("tab_2"));
+}
+
+#[test]
+fn a_snapshot_still_showing_the_target_keeps_it_hidden_until_one_without_it() {
+    let shared = close_shared();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    shared.begin_close(
+        RequestId(7),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_1".into()),
+        Instant::now(),
+    );
+    // A stale snapshot from before the close does not bring it back.
+    let shown = shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    assert_eq!(tab_ids(&shown), ["tab_2"]);
+    // Success while the server still lists it: keep hiding until the next one.
+    assert!(shared.settle_close(RequestId(7), None).is_none());
+    let mut confirmed = two_tabs("boot");
+    confirmed.tabs.retain(|tab| tab.tab_id != "tab_1");
+    let shown = shared.record_snapshot(&local(), "Local", confirmed);
+    assert_eq!(tab_ids(&shown), ["tab_2"]);
+    assert!(shared.lock_closes().pending.is_empty(), "settled");
+    assert!(shared.next_close_deadline().is_none());
+}
+
+#[test]
+fn a_failed_close_is_put_back_with_an_error() {
+    let shared = close_shared();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    shared.begin_close(
+        RequestId(7),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_1".into()),
+        Instant::now(),
+    );
+    drained_events(&shared);
+    let (endpoint, shown) = shared
+        .settle_close(RequestId(7), Some("tab is pinned"))
+        .expect("restored");
+    assert_eq!(endpoint, local());
+    assert_eq!(tab_ids(&shown), ["tab_1", "tab_2"]);
+    let events = drained_events(&shared);
+    assert!(events.iter().any(|event| matches!(
+        event,
+        CoreEvent::Error { message, .. } if message.contains("tab is pinned")
+    )));
+}
+
+#[test]
+fn an_unanswered_close_times_out_and_a_disconnect_puts_closes_back() {
+    let shared = close_shared();
+    let now = Instant::now();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    shared.begin_close(
+        RequestId(7),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_1".into()),
+        now,
+    );
+    assert!(shared.expire_closes(now).is_empty(), "not due yet");
+    let restored = shared.expire_closes(now + CLOSE_TIMEOUT);
+    assert_eq!(tab_ids(&restored[0].1), ["tab_1", "tab_2"]);
+
+    shared.begin_close(
+        RequestId(8),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_2".into()),
+        now,
+    );
+    let shown = shared
+        .abandon_closes(&local(), "connection lost")
+        .expect("restored");
+    assert_eq!(tab_ids(&shown), ["tab_1", "tab_2"]);
+    assert!(shared.next_close_deadline().is_none());
+}
+
+#[test]
+fn a_new_server_boot_drops_pending_closes() {
+    let shared = close_shared();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    shared.begin_close(
+        RequestId(7),
+        &local(),
+        crate::client::model::CloseTarget::Tab("tab_1".into()),
+        Instant::now(),
+    );
+    let shown = shared.record_snapshot(&local(), "Local", two_tabs("rebooted"));
+    assert_eq!(tab_ids(&shown), ["tab_1", "tab_2"]);
+    assert!(shared.lock_closes().pending.is_empty());
+}
+
+#[test]
+fn the_sidebar_model_hides_a_pending_close() {
+    let shared = close_shared();
+    shared.record_snapshot(&local(), "Local", two_tabs("boot"));
+    let shown = shared
+        .begin_close(
+            RequestId(7),
+            &local(),
+            crate::client::model::CloseTarget::Tab("tab_1".into()),
+            Instant::now(),
+        )
+        .unwrap();
+    let mut sidebar = CoreSidebar::new(super::super::model::SidebarPrefs::default());
+    sidebar.online.insert(ClientEndpointId::Local);
+    sidebar.snapshots.insert(ClientEndpointId::Local, shown);
+    let labels = HashMap::from([(ClientEndpointId::Local, "Local".to_owned())]);
+    publish_sidebar(&shared, &mut sidebar, &[ClientEndpointId::Local], &labels);
+    let model = shared.outbox.lock().unwrap().take().sidebar.expect("model");
+    let tabs = model.machines[0]
+        .tabs
+        .iter()
+        .map(|tab| tab.tab_id.as_str())
+        .collect::<Vec<_>>();
+    assert_eq!(tabs, ["tab_2"]);
 }

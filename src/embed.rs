@@ -214,9 +214,10 @@ pub mod wire {
 /// shows changed. Tokens carry text and a neutral style; draw them in order.
 pub mod sidebar {
     pub use crate::client::model::{
-        notification_delivery, AgentEntry, FooterEntry, GroupToggle, MachineEntry,
-        NotificationDelivery, NotificationToast, SidebarEndpoint, SidebarModel, SidebarPrefs,
-        SpaceEntry, TabEntry, TokenRow,
+        hide_closed_target, notification_delivery, AgentEntry, CloseSettle, CloseTarget,
+        FooterEntry, GroupToggle, IncomingCloses, MachineEntry, NotificationDelivery,
+        NotificationToast, PendingCloses, SidebarEndpoint, SidebarModel, SidebarPrefs, SpaceEntry,
+        TabEntry, TokenRow,
     };
     pub use crate::config::{
         AgentPanelSortConfig, AgentsSidebarConfig, SidebarTokenColor, SidebarTokenStyle,
