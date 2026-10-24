@@ -263,6 +263,7 @@ mod link_hover;
 mod mobile;
 mod mouse_selection;
 mod popup_focus_projection;
+mod remote_activity;
 mod startup_overlays;
 
 /// An idle client must not poll: it sleeps the idle tick unless a shell

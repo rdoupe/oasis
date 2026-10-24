@@ -31,6 +31,10 @@ pub const AGENT_VIEW_PROJECTION_CAPABILITY: &str = "agent_view_projection";
 pub const AGENT_VIEW_PROJECTION_KIND: &str = "endpoint.agent-view.v1";
 pub const AGENT_COMPLETIONS_CAPABILITY: &str = "agent_completions";
 pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
+/// The server attaches agents' background activity (shells, monitors,
+/// subagents) as reserved `oasis:` agent tokens. Herdr servers lack it, and
+/// the client reads that activity itself.
+pub const BACKGROUND_ACTIVITY_CAPABILITY: &str = "oasis.background_activity";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -174,6 +178,7 @@ impl EndpointServerWelcome {
                 HEALTH_CHECK_CAPABILITY.into(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
+                BACKGROUND_ACTIVITY_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -385,6 +390,7 @@ mod tests {
                 HEALTH_CHECK_CAPABILITY.to_string(),
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
+                BACKGROUND_ACTIVITY_CAPABILITY.to_string(),
             ]
         );
     }

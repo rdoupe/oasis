@@ -69,7 +69,9 @@ fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
         if !is_mode_line(trimmed) {
             continue;
         }
-        for segment in trimmed.split('·').map(str::trim) {
+        // Parts are `·`-separated, and shells and monitors share one part as
+        // `1 shell, 1 monitor`.
+        for segment in trimmed.split(['·', ',']).map(str::trim) {
             if let Some(count) = counted(segment, "shell") {
                 activity.shells = count;
             } else if let Some(count) = counted(segment, "monitor") {
@@ -132,6 +134,23 @@ mod tests {
                 agents: 1,
                 ..Default::default()
             }
+        );
+    }
+
+    #[test]
+    fn reads_comma_joined_shell_and_monitor_counts() {
+        // Captured from a live Claude Code pane with a shell and a monitor running.
+        let content = screen(&[
+            "  claude-opus-5-5 - read 1649.6M cached · effort: medium · context: 62%",
+            "  ⏵⏵ auto mode on · 1 shell, 1 monitor",
+            "",
+            "  ● main",
+            "  ◯ general-purpose  Amending bench rotation in port_comparison   1h 6m 37s",
+        ]);
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert_eq!(
+            (activity.shells, activity.monitors, activity.agents),
+            (1, 1, 1)
         );
     }
 

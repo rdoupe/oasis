@@ -31,6 +31,7 @@ mod image_files;
 mod input;
 mod loop_config;
 mod notifications;
+mod remote_activity;
 mod shell;
 mod shell_runtime;
 mod startup;
@@ -647,6 +648,7 @@ async fn run_client_loop(
     };
     let mut supervisors =
         endpoint::EndpointSupervisors::new(&endpoint_catalog.ssh, std::time::Instant::now());
+    let mut remote_activity = remote_activity::RemoteActivityReaders::default();
     if federated {
         supervisors.add_local(
             client_socket_path(),
@@ -723,6 +725,7 @@ async fn run_client_loop(
                             profiles,
                             now,
                         );
+                        remote_activity.retain_profiles(&endpoint_catalog.ssh);
                         if active_removed {
                             clear_endpoint_host_effects(
                                 &mut state,
@@ -859,6 +862,20 @@ async fn run_client_loop(
                 }
             }
             ClientLoopEvent::EndpointCatalog(reload) => pending_catalog = Some(reload),
+            ClientLoopEvent::RemoteAgentScreen {
+                endpoint_id,
+                pane_id,
+                text,
+            } => {
+                if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                    shell
+                        .receive_remote_agent_screen(&endpoint_id, &pane_id, text.as_deref())
+                        .then(|| shell.compose(state.reported_size.0, state.reported_size.1))
+                        .flatten()
+                }) {
+                    state.present_frame(frame);
+                }
+            }
             #[cfg(unix)]
             ClientLoopEvent::StdinInput(data) => {
                 let image_bridge_active = endpoint_accepts_local_images(
@@ -1403,6 +1420,12 @@ async fn run_client_loop(
                         shell.set_endpoint_agent_view_projection_supported(
                             &endpoint_id,
                             agent_view_projection_supported,
+                        );
+                        shell.set_endpoint_background_activity_supported(
+                            &endpoint_id,
+                            negotiation.supports_capability(
+                                crate::protocol::endpoint::BACKGROUND_ACTIVITY_CAPABILITY,
+                            ),
                         );
                         shell.compose(state.reported_size.0, state.reported_size.1)
                     });
@@ -2334,6 +2357,19 @@ async fn run_client_loop(
                     );
                 }
                 if state.shell.is_some() {
+                    let activity_reads = state
+                        .shell
+                        .as_mut()
+                        .map(|shell| shell.take_remote_activity_reads(now))
+                        .unwrap_or_default();
+                    for (endpoint_id, pane_id) in activity_reads {
+                        remote_activity.read(
+                            &endpoint_catalog.ssh,
+                            endpoint_id,
+                            pane_id,
+                            &event_tx,
+                        );
+                    }
                     let expired_endpoints = endpoint_commands
                         .expire(now)
                         .into_iter()

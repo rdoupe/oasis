@@ -22,6 +22,7 @@ pub(crate) struct ClientShellEndpoint {
     pending_agent_view_projection: Option<ClientEndpointAgentViewProjection>,
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
+    pub(super) remote_activity: super::remote_activity::EndpointRemoteActivity,
 }
 
 pub(super) struct MachineHit {
@@ -88,6 +89,9 @@ impl ClientShellState {
                 agent_view_projection_supported: previous
                     .is_some_and(|endpoint| endpoint.agent_view_projection_supported),
                 methods: previous.and_then(|endpoint| endpoint.methods.clone()),
+                remote_activity: previous
+                    .map(|endpoint| endpoint.remote_activity.clone())
+                    .unwrap_or_default(),
             });
         }
 
@@ -587,6 +591,7 @@ impl ClientShellState {
                 .agent_presentation
                 .acknowledge_surface(&mut snapshot, surface, self.outer_focused);
         }
+        self.observe_remote_activity(index, &mut snapshot);
         let previous = self.endpoints[index].snapshot.as_deref();
         let mut next_recency = self
             .endpoints
@@ -742,5 +747,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         pending_agent_view_projection: None,
         agent_view_projection_supported: false,
         methods: None,
+        remote_activity: Default::default(),
     }
 }

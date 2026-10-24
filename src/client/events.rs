@@ -33,5 +33,11 @@ pub(super) enum ClientLoopEvent {
         /// latest target have the same identity after restoration.
         force: bool,
     },
+    /// A saved machine's answer to a background-activity pane read.
+    RemoteAgentScreen {
+        endpoint_id: endpoint::ClientEndpointId,
+        pane_id: String,
+        text: Option<String>,
+    },
     Timer,
 }
