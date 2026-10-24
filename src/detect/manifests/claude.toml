@@ -1,7 +1,7 @@
 id = "claude"
-version = "2026.10.23.1"
+version = "2026.10.24.1"
 min_engine_version = 2
-updated_at = "2026-10-23T00:00:00Z"
+updated_at = "2026-10-24T00:00:00Z"
 aliases = ["claude-code"]
 
 [[rules]]
@@ -12,7 +12,8 @@ region = "bottom_non_empty_lines(16)"
 visible_idle = true
 # Since 2.1.228 the half-circle title spinner stays up while only background
 # shells, monitors or subagents run. An open prompt with that footer and no
-# live-turn marker means the main agent is waiting for input.
+# live-turn marker means the main agent is waiting for input, even under a
+# "Waiting for N background agents to finish" line.
 all = [
   { line_regex = ['^\s*❯(?:\s*$|\s+[^\d\s])'] },
   { any = [
@@ -23,7 +24,6 @@ all = [
 not = [
   { line_regex = ['esc to interrupt'] },
   { line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
-  { line_regex = ['Waiting for [1-9]\d* background agents? to finish'] },
   { contains = ["enter to select"] },
   { contains = ["esc to cancel"] },
   { contains = ["Esc to cancel"] },
@@ -52,14 +52,6 @@ any = [
   { line_regex = ['^\s*[⏸⏵].*esc to interrupt(?:\s|·|$)'] },
   { line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
 ]
-
-[[rules]]
-id = "background_agents_working"
-state = "working"
-priority = 965
-region = "last_non_empty_above_prompt_box"
-visible_working = true
-line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2736}\x{273B}\x{273D}]\s+Waiting for [1-9]\d* background agents? to finish\s*$']
 
 [[rules]]
 id = "background_mcp_task_working"
