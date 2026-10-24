@@ -85,8 +85,13 @@ pub struct App {
 
 #[derive(Clone, Copy)]
 enum DragState {
-    Select { start: (f64, f64) },
-    Forward { button: ClientMouseButton },
+    Select {
+        start: (f64, f64),
+        bounds: ((u16, u16), (u16, u16)),
+    },
+    Forward {
+        button: ClientMouseButton,
+    },
 }
 
 impl App {
@@ -220,7 +225,8 @@ impl App {
 
     fn wire(self: &Rc<Self>) {
         let app = self.clone();
-        self.view.connect_resize(move |cols, rows| app.on_resize(cols, rows));
+        self.view
+            .connect_resize(move |cols, rows| app.on_resize(cols, rows));
 
         let app = self.clone();
         self.window.connect_close_request(move |_| {
@@ -278,7 +284,9 @@ impl App {
         click.set_button(gdk::BUTTON_SECONDARY);
         let app = self.clone();
         click.connect_pressed(move |_, _, x, y| {
-            let Some(row) = app.spaces.row_at_y(y as i32) else { return };
+            let Some(row) = app.spaces.row_at_y(y as i32) else {
+                return;
+            };
             let Some(id) = app.space_ids.borrow().get(row.index() as usize).cloned() else {
                 return;
             };
@@ -336,12 +344,16 @@ impl App {
         });
         let app = self.clone();
         drag.connect_drag_update(move |gesture, dx, dy| {
-            let Some((sx, sy)) = gesture.start_point() else { return };
+            let Some((sx, sy)) = gesture.start_point() else {
+                return;
+            };
             app.mouse_drag(sx + dx, sy + dy, gesture.current_event_state());
         });
         let app = self.clone();
         drag.connect_drag_end(move |gesture, dx, dy| {
-            let Some((sx, sy)) = gesture.start_point() else { return };
+            let Some((sx, sy)) = gesture.start_point() else {
+                return;
+            };
             app.mouse_up(sx + dx, sy + dy, gesture.current_event_state());
         });
         self.view.add_controller(drag);
@@ -360,7 +372,9 @@ impl App {
         let dir = crate::theme::theme_dir();
         let Some(parent) = dir.parent() else { return };
         let file = gio::File::for_path(parent);
-        let Ok(monitor) = file.monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE) else {
+        let Ok(monitor) =
+            file.monitor_directory(gio::FileMonitorFlags::WATCH_MOVES, gio::Cancellable::NONE)
+        else {
             return;
         };
         let app = self.clone();
@@ -526,7 +540,9 @@ impl App {
 
     fn rebuild_chrome(self: &Rc<Self>) {
         let snapshot = self.snapshot.borrow();
-        let Some(snapshot) = snapshot.as_ref() else { return };
+        let Some(snapshot) = snapshot.as_ref() else {
+            return;
+        };
 
         self.spaces.remove_all();
         let mut space_ids = Vec::new();
@@ -780,8 +796,12 @@ impl App {
     }
 
     fn send_key_to_pane(&self, key: &Key) {
-        let Some(event) = key.pane_event() else { return };
-        let Some(pane_id) = self.focused_pane_id() else { return };
+        let Some(event) = key.pane_event() else {
+            return;
+        };
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
         if let Some(conn) = self.conn.borrow().as_ref() {
             conn.pane_input(&pane_id, vec![event]);
         }
@@ -833,7 +853,9 @@ impl App {
             }
             Action::PreviousWorkspace | Action::NextWorkspace => {
                 let ids = self.space_ids.borrow().clone();
-                if let Some(next) = step(&ids, workspace.as_deref(), action == Action::NextWorkspace) {
+                if let Some(next) =
+                    step(&ids, workspace.as_deref(), action == Action::NextWorkspace)
+                {
                     self.request("workspace.focus", json!({ "workspace_id": next }));
                 }
             }
@@ -865,18 +887,27 @@ impl App {
             Action::MoveTab(next) => {
                 let ids = self.tab_ids();
                 let Some(tab) = tab else { return };
-                let Some(source) = ids.iter().position(|id| *id == tab) else { return };
+                let Some(source) = ids.iter().position(|id| *id == tab) else {
+                    return;
+                };
                 if ids.len() <= 1 {
                     return;
                 }
                 let insert_index = if next {
-                    if source + 1 >= ids.len() { 0 } else { source + 2 }
+                    if source + 1 >= ids.len() {
+                        0
+                    } else {
+                        source + 2
+                    }
                 } else if source == 0 {
                     ids.len()
                 } else {
                     source - 1
                 };
-                self.request("tab.move", json!({ "tab_id": tab, "insert_index": insert_index }));
+                self.request(
+                    "tab.move",
+                    json!({ "tab_id": tab, "insert_index": insert_index }),
+                );
             }
             Action::SwitchTab(index) => {
                 if let Some(id) = self.tab_ids().get(index) {
@@ -887,12 +918,14 @@ impl App {
                 "pane.focus_direction",
                 json!({ "pane_id": pane, "direction": direction }),
             ),
-            Action::SwapPane(direction) => {
-                self.request("pane.swap", json!({ "pane_id": pane, "direction": direction }))
-            }
-            Action::ResizePane(direction) => {
-                self.request("pane.resize", json!({ "pane_id": pane, "direction": direction }))
-            }
+            Action::SwapPane(direction) => self.request(
+                "pane.swap",
+                json!({ "pane_id": pane, "direction": direction }),
+            ),
+            Action::ResizePane(direction) => self.request(
+                "pane.resize",
+                json!({ "pane_id": pane, "direction": direction }),
+            ),
             Action::CyclePane(next) => {
                 let ids: Vec<String> = self
                     .snapshot
@@ -959,7 +992,9 @@ impl App {
 
     fn tab_ids(&self) -> Vec<String> {
         let snapshot = self.snapshot.borrow();
-        let Some(snapshot) = snapshot.as_ref() else { return Vec::new() };
+        let Some(snapshot) = snapshot.as_ref() else {
+            return Vec::new();
+        };
         let Some(workspace) = snapshot.focused_workspace_id.as_deref() else {
             return Vec::new();
         };
@@ -984,7 +1019,10 @@ impl App {
             .unwrap_or_default();
         let (app, id) = (self.clone(), workspace_id.to_owned());
         self.prompt("Rename space", &current, move |label| {
-            app.request("workspace.rename", json!({ "workspace_id": id, "label": label }));
+            app.request(
+                "workspace.rename",
+                json!({ "workspace_id": id, "label": label }),
+            );
         });
     }
 
@@ -1066,9 +1104,12 @@ impl App {
             .map(|w| w.label.clone())
             .unwrap_or_else(|| "this space".into());
         let (app, id) = (self.clone(), workspace_id.to_owned());
-        self.confirm(&format!("Close {label} and everything running in it?"), move || {
-            app.request("workspace.close", json!({ "workspace_id": id }));
-        });
+        self.confirm(
+            &format!("Close {label} and everything running in it?"),
+            move || {
+                app.request("workspace.close", json!({ "workspace_id": id }));
+            },
+        );
     }
 
     fn confirm_close_tab(self: &Rc<Self>, tab_id: &str) {
@@ -1083,8 +1124,14 @@ impl App {
     fn pane_event_position(&self, pane: &PaneSurfacePane, cell: (u16, u16)) -> ClientMousePosition {
         let inner = pane.inner_rect;
         ClientMousePosition::Cell {
-            column: cell.0.saturating_sub(inner.x).min(inner.width.saturating_sub(1)),
-            row: cell.1.saturating_sub(inner.y).min(inner.height.saturating_sub(1)),
+            column: cell
+                .0
+                .saturating_sub(inner.x)
+                .min(inner.width.saturating_sub(1)),
+            row: cell
+                .1
+                .saturating_sub(inner.y)
+                .min(inner.height.saturating_sub(1)),
         }
     }
 
@@ -1102,9 +1149,16 @@ impl App {
         bits.bits()
     }
 
-    fn forward_mouse(&self, kind: ClientMouseKind, cell: (u16, u16), state: gdk::ModifierType) -> bool {
+    fn forward_mouse(
+        &self,
+        kind: ClientMouseKind,
+        cell: (u16, u16),
+        state: gdk::ModifierType,
+    ) -> bool {
         let grid = self.grid.borrow();
-        let Some(pane) = grid.pane_at(cell.0, cell.1) else { return false };
+        let Some(pane) = grid.pane_at(cell.0, cell.1) else {
+            return false;
+        };
         let event = ClientPaneInputEvent::Mouse {
             kind,
             position: self.pane_event_position(pane, cell),
@@ -1121,16 +1175,30 @@ impl App {
     }
 
     fn mouse_down(&self, button: u32, x: f64, y: f64, state: gdk::ModifierType) {
-        debug(|| format!("mouse down {button} at {x:.0},{y:.0} cell {:?}", self.view.cell_at(x, y)));
+        debug(|| {
+            format!(
+                "mouse down {button} at {x:.0},{y:.0} cell {:?}",
+                self.view.cell_at(x, y)
+            )
+        });
         self.view.grab_focus();
         let cell = self.view.cell_at(x, y);
-        let (pane_id, focused, reporting) = {
+        let (pane_id, focused, reporting, inner) = {
             let grid = self.grid.borrow();
             match grid.pane_at(cell.0, cell.1) {
-                Some(pane) => (pane.pane_id.clone(), pane.focused, pane.mouse_reporting),
+                Some(pane) => (
+                    pane.pane_id.clone(),
+                    pane.focused,
+                    pane.mouse_reporting,
+                    pane.inner_rect,
+                ),
                 None => return,
             }
         };
+        let bounds = (
+            (inner.x, inner.x + inner.width.saturating_sub(1)),
+            (inner.y, inner.y + inner.height.saturating_sub(1)),
+        );
         if !focused {
             self.request("pane.focus", json!({ "pane_id": pane_id }));
         }
@@ -1151,7 +1219,10 @@ impl App {
                 return;
             }
             self.view.set_selection(None);
-            self.drag.set(Some(DragState::Select { start: (x, y) }));
+            self.drag.set(Some(DragState::Select {
+                start: (x, y),
+                bounds,
+            }));
         } else if button == ClientMouseButton::Middle {
             self.paste_primary();
             self.drag.set(None);
@@ -1161,12 +1232,26 @@ impl App {
     fn mouse_drag(&self, x: f64, y: f64, state: gdk::ModifierType) {
         match self.drag.get() {
             Some(DragState::Forward { button }) => {
-                self.forward_mouse(ClientMouseKind::Drag(button), self.view.cell_at(x, y), state);
+                self.forward_mouse(
+                    ClientMouseKind::Drag(button),
+                    self.view.cell_at(x, y),
+                    state,
+                );
             }
-            Some(DragState::Select { start }) => {
-                let anchor = self.view.cell_at(start.0, start.1);
-                let head = self.view.cell_at(x, y);
-                self.view.set_selection(Some(Selection { anchor, head }));
+            Some(DragState::Select { start, bounds }) => {
+                let clamp = |(c, r): (u16, u16)| {
+                    (
+                        c.clamp(bounds.0 .0, bounds.0 .1),
+                        r.clamp(bounds.1 .0, bounds.1 .1),
+                    )
+                };
+                let anchor = clamp(self.view.cell_at(start.0, start.1));
+                let head = clamp(self.view.cell_at(x, y));
+                self.view.set_selection(Some(Selection {
+                    anchor,
+                    head,
+                    cols: bounds.0,
+                }));
             }
             None => {}
         }
@@ -1180,7 +1265,11 @@ impl App {
             Some(DragState::Select { .. }) => {
                 if let Some(selection) = self.view.selection() {
                     if selection.anchor != selection.head {
-                        let text = self.grid.borrow().text(selection.anchor, selection.head);
+                        let text = self.grid.borrow().text(
+                            selection.anchor,
+                            selection.head,
+                            selection.cols,
+                        );
                         self.view.primary_clipboard().set_text(&text);
                         self.view.clipboard().set_text(&text);
                     } else {
@@ -1226,7 +1315,10 @@ impl App {
 
     fn copy_selection(&self) {
         if let Some(selection) = self.view.selection() {
-            let text = self.grid.borrow().text(selection.anchor, selection.head);
+            let text = self
+                .grid
+                .borrow()
+                .text(selection.anchor, selection.head, selection.cols);
             self.view.clipboard().set_text(&text);
         }
     }
@@ -1238,21 +1330,31 @@ impl App {
 
     fn paste_primary(&self) {
         let clipboard = self.view.primary_clipboard();
-        let Some(pane_id) = self.focused_pane_id() else { return };
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
         let conn = self.conn.borrow().clone();
         glib::spawn_future_local(async move {
             if let (Ok(Some(text)), Some(conn)) = (clipboard.read_text_future().await, conn) {
-                conn.pane_input(&pane_id, vec![ClientPaneInputEvent::Paste(text.to_string())]);
+                conn.pane_input(
+                    &pane_id,
+                    vec![ClientPaneInputEvent::Paste(text.to_string())],
+                );
             }
         });
     }
 
     fn paste_from(&self, clipboard: gdk::Clipboard) {
-        let Some(pane_id) = self.focused_pane_id() else { return };
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
         let conn = self.conn.borrow().clone();
         glib::spawn_future_local(async move {
             if let (Ok(Some(text)), Some(conn)) = (clipboard.read_text_future().await, conn) {
-                conn.pane_input(&pane_id, vec![ClientPaneInputEvent::Paste(text.to_string())]);
+                conn.pane_input(
+                    &pane_id,
+                    vec![ClientPaneInputEvent::Paste(text.to_string())],
+                );
             }
         });
     }
@@ -1352,7 +1454,9 @@ fn step(ids: &[String], current: Option<&str>, forward: bool) -> Option<String> 
     ids.get(next).cloned()
 }
 
-fn ordered_agents(snapshot: &ClientShellSnapshot) -> Vec<&oasis_core::embed::wire::ClientShellAgent> {
+fn ordered_agents(
+    snapshot: &ClientShellSnapshot,
+) -> Vec<&oasis_core::embed::wire::ClientShellAgent> {
     let mut agents: Vec<_> = snapshot.agents.iter().collect();
     if !snapshot.agent_order.is_empty() {
         agents.sort_by_key(|agent| {

@@ -26,6 +26,8 @@ pub struct Metrics {
 pub struct Selection {
     pub anchor: (u16, u16),
     pub head: (u16, u16),
+    /// Inclusive column bounds of the pane the selection started in.
+    pub cols: (u16, u16),
 }
 
 mod imp {
@@ -90,8 +92,10 @@ impl TermView {
     }
 
     pub fn set_theme(&self, theme: Theme) {
-        let font =
-            pango::FontDescription::from_string(&format!("{} {}", theme.font_family, theme.font_size));
+        let font = pango::FontDescription::from_string(&format!(
+            "{} {}",
+            theme.font_family, theme.font_size
+        ));
         self.imp().font.replace(Some(font));
         self.imp().theme.replace(Some(theme));
         self.measure_font();
@@ -136,8 +140,12 @@ impl TermView {
     pub fn cell_at(&self, x: f64, y: f64) -> (u16, u16) {
         let m = self.metrics();
         let (cols, rows) = self.size_cells();
-        let col = ((x - PAD) / m.cell_w).floor().clamp(0.0, f64::from(cols.saturating_sub(1)));
-        let row = ((y - PAD) / m.cell_h).floor().clamp(0.0, f64::from(rows.saturating_sub(1)));
+        let col = ((x - PAD) / m.cell_w)
+            .floor()
+            .clamp(0.0, f64::from(cols.saturating_sub(1)));
+        let row = ((y - PAD) / m.cell_h)
+            .floor()
+            .clamp(0.0, f64::from(rows.saturating_sub(1)));
         (col as u16, row as u16)
     }
 
@@ -169,7 +177,9 @@ impl TermView {
             return;
         }
         let cols = ((f64::from(width) - 2.0 * PAD) / m.cell_w).floor().max(1.0) as u16;
-        let rows = ((f64::from(height) - 2.0 * PAD) / m.cell_h).floor().max(1.0) as u16;
+        let rows = ((f64::from(height) - 2.0 * PAD) / m.cell_h)
+            .floor()
+            .max(1.0) as u16;
         if self.imp().size_cells.replace((cols, rows)) != (cols, rows) {
             if let Some(callback) = self.imp().on_resize.borrow().as_ref() {
                 callback(cols, rows);
@@ -224,7 +234,15 @@ impl TermView {
         if let Some(selection) = imp.selection.get() {
             draw_selection(snapshot, &grid, selection, theme, m);
         }
-        draw_cursor(snapshot, &grid, theme, font, &ctx, m, imp.window_focused.get());
+        draw_cursor(
+            snapshot,
+            &grid,
+            theme,
+            font,
+            &ctx,
+            m,
+            imp.window_focused.get(),
+        );
     }
 }
 
@@ -258,7 +276,9 @@ fn rect(x: f64, y: f64, w: f64, h: f64) -> graphene::Rect {
 fn runs_inline(symbol: &str) -> bool {
     let mut chars = symbol.chars();
     match (chars.next(), chars.next()) {
-        (Some(c), None) => (c as u32) < 0x2500 && unicode_width::UnicodeWidthChar::width(c) == Some(1),
+        (Some(c), None) => {
+            (c as u32) < 0x2500 && unicode_width::UnicodeWidthChar::width(c) == Some(1)
+        }
         _ => false,
     }
 }
@@ -290,7 +310,12 @@ fn build_row(
                 if color != theme.background {
                     snapshot.append_color(
                         &color.rgba(1.0),
-                        &rect(f64::from(start) * m.cell_w, 0.0, f64::from(col - start) * m.cell_w, m.cell_h),
+                        &rect(
+                            f64::from(start) * m.cell_w,
+                            0.0,
+                            f64::from(col - start) * m.cell_w,
+                            m.cell_h,
+                        ),
                     );
                 }
             }
@@ -302,11 +327,17 @@ fn build_row(
     let mut runs: Vec<TextRun> = Vec::new();
     let mut current: Option<TextRun> = None;
     for col in 0..width {
-        let Some(cell) = grid.cell(col, row) else { break };
+        let Some(cell) = grid.cell(col, row) else {
+            break;
+        };
         if cell.skip {
             continue;
         }
-        let symbol = if cell.symbol.is_empty() { " " } else { cell.symbol.as_str() };
+        let symbol = if cell.symbol.is_empty() {
+            " "
+        } else {
+            cell.symbol.as_str()
+        };
         let (fg, _) = cell_colors(cell, theme);
         if cell.modifier & style::HIDDEN != 0 || symbol == " " {
             if let Some(run) = current.as_mut() {
@@ -314,7 +345,11 @@ fn build_row(
             }
             continue;
         }
-        if let Some(c) = symbol.chars().next().filter(|_| symbol.chars().count() == 1) {
+        if let Some(c) = symbol
+            .chars()
+            .next()
+            .filter(|_| symbol.chars().count() == 1)
+        {
             if draw_box(&snapshot, c, f64::from(col) * m.cell_w, m, fg) {
                 if let Some(run) = current.as_mut() {
                     run.text.push(' ');
@@ -354,7 +389,10 @@ fn build_row(
         layout.set_text(&run.text);
         layout.set_attributes(Some(&run.attrs));
         snapshot.save();
-        snapshot.translate(&graphene::Point::new((f64::from(run.col) * m.cell_w) as f32, 0.0));
+        snapshot.translate(&graphene::Point::new(
+            (f64::from(run.col) * m.cell_w) as f32,
+            0.0,
+        ));
         snapshot.append_layout(&layout, &theme.foreground.rgba(1.0));
         snapshot.restore();
     }
@@ -398,8 +436,26 @@ fn draw_box(snapshot: &gtk::Snapshot, c: char, x: f64, m: Metrics, fg: Rgb) -> b
     let color = fg.rgba(1.0);
     // Dashed lines: segments sized to the cell so they line up across cells.
     let dashes = match c {
-        '┄' | '┅' | '┈' | '┉' | '╌' | '╍' => Some((true, if matches!(c, '╌' | '╍') { 2 } else if matches!(c, '┄' | '┅') { 3 } else { 4 })),
-        '┆' | '┇' | '┊' | '┋' | '╎' | '╏' => Some((false, if matches!(c, '╎' | '╏') { 2 } else if matches!(c, '┆' | '┇') { 3 } else { 4 })),
+        '┄' | '┅' | '┈' | '┉' | '╌' | '╍' => Some((
+            true,
+            if matches!(c, '╌' | '╍') {
+                2
+            } else if matches!(c, '┄' | '┅') {
+                3
+            } else {
+                4
+            },
+        )),
+        '┆' | '┇' | '┊' | '┋' | '╎' | '╏' => Some((
+            false,
+            if matches!(c, '╎' | '╏') {
+                2
+            } else if matches!(c, '┆' | '┇') {
+                3
+            } else {
+                4
+            },
+        )),
         _ => None,
     };
     if let Some((horizontal, count)) = dashes {
@@ -455,16 +511,34 @@ fn draw_box(snapshot: &gtk::Snapshot, c: char, x: f64, m: Metrics, fg: Rgb) -> b
     true
 }
 
-fn draw_selection(snapshot: &gtk::Snapshot, grid: &Grid, selection: Selection, theme: &Theme, m: Metrics) {
-    let (start, end) = if (selection.anchor.1, selection.anchor.0) <= (selection.head.1, selection.head.0) {
-        (selection.anchor, selection.head)
-    } else {
-        (selection.head, selection.anchor)
-    };
+fn draw_selection(
+    snapshot: &gtk::Snapshot,
+    grid: &Grid,
+    selection: Selection,
+    theme: &Theme,
+    m: Metrics,
+) {
+    let (start, end) =
+        if (selection.anchor.1, selection.anchor.0) <= (selection.head.1, selection.head.0) {
+            (selection.anchor, selection.head)
+        } else {
+            (selection.head, selection.anchor)
+        };
     let color = theme.selection.rgba(0.7);
     for row in start.1..=end.1.min(grid.height.saturating_sub(1)) {
-        let first = if row == start.1 { start.0 } else { 0 };
-        let last = if row == end.1 { end.0 } else { grid.width.saturating_sub(1) };
+        let first = if row == start.1 {
+            start.0
+        } else {
+            selection.cols.0
+        };
+        let last = if row == end.1 {
+            end.0
+        } else {
+            selection.cols.1
+        };
+        if last < first {
+            continue;
+        }
         snapshot.append_color(
             &color,
             &rect(
@@ -486,7 +560,9 @@ fn draw_cursor(
     m: Metrics,
     focused: bool,
 ) {
-    let Some(cursor) = grid.cursor.as_ref().filter(|c| c.visible) else { return };
+    let Some(cursor) = grid.cursor.as_ref().filter(|c| c.visible) else {
+        return;
+    };
     let x = PAD + f64::from(cursor.x) * m.cell_w;
     let y = PAD + f64::from(cursor.y) * m.cell_h;
     let color = theme.cursor.rgba(1.0);

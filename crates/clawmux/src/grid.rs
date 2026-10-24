@@ -137,8 +137,9 @@ impl Grid {
         self.panes.iter().find(|pane| pane.focused)
     }
 
-    /// Plain text of a cell range, trimming trailing blanks on each row, for copy.
-    pub fn text(&self, from: (u16, u16), to: (u16, u16)) -> String {
+    /// Plain text of a cell range within inclusive column bounds, trimming trailing
+    /// blanks on each row, for copy.
+    pub fn text(&self, from: (u16, u16), to: (u16, u16), cols: (u16, u16)) -> String {
         let (start, end) = if (from.1, from.0) <= (to.1, to.0) {
             (from, to)
         } else {
@@ -146,17 +147,17 @@ impl Grid {
         };
         let mut out = String::new();
         for row in start.1..=end.1.min(self.height.saturating_sub(1)) {
-            let first = if row == start.1 { start.0 } else { 0 };
-            let last = if row == end.1 {
-                end.0
-            } else {
-                self.width.saturating_sub(1)
-            };
+            let first = if row == start.1 { start.0 } else { cols.0 };
+            let last = if row == end.1 { end.0 } else { cols.1 };
             let mut line = String::new();
             for col in first..=last.min(self.width.saturating_sub(1)) {
                 if let Some(cell) = self.cell(col, row) {
                     if !cell.skip {
-                        line.push_str(if cell.symbol.is_empty() { " " } else { &cell.symbol });
+                        line.push_str(if cell.symbol.is_empty() {
+                            " "
+                        } else {
+                            &cell.symbol
+                        });
                     }
                 }
             }
@@ -216,6 +217,54 @@ pub mod style {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use oasis_core::embed::wire::{FrameData, PaneSurfaceFrame, PaneSurfacePatch, PaneSurfacePatchRow};
+
+    fn cell(symbol: &str) -> CellData {
+        CellData { symbol: symbol.into(), fg: 0, bg: 0, modifier: 0, skip: false, hyperlink: None }
+    }
+
+    fn grid_with(rows: &[&str]) -> Grid {
+        let width = rows[0].chars().count() as u16;
+        let cells = rows.iter().flat_map(|r| r.chars().map(|c| cell(&c.to_string()))).collect();
+        let mut grid = Grid::new();
+        grid.set_full(PaneSurfaceFrame {
+            boot_id: "b".into(),
+            projection_revision: 1,
+            surface_revision: 1,
+            frame: FrameData { cells, width, height: rows.len() as u16, cursor: None, hyperlinks: vec![], graphics: vec![] },
+            panes: vec![],
+            splits: vec![],
+            popup: None,
+            graphics: Default::default(),
+        });
+        grid
+    }
+
+    #[test]
+    fn copy_text_stays_inside_the_pane_columns() {
+        let grid = grid_with(&["│ab  ▕", "│cd  ▕"]);
+        assert_eq!(grid.text((1, 0), (4, 1), (1, 4)), "ab\ncd");
+    }
+
+    #[test]
+    fn patches_apply_in_order_and_reject_stale_bases() {
+        let mut grid = grid_with(&["aa", "bb"]);
+        grid.take_damage();
+        let patch = |base, next| PaneSurfacePatch {
+            boot_id: "b".into(),
+            projection_revision: 1,
+            base_surface_revision: base,
+            surface_revision: next,
+            rows: vec![PaneSurfacePatchRow { x: 1, y: 1, cells: vec![cell("Z")] }],
+            panes: vec![],
+            cursor: None,
+        };
+        assert!(matches!(grid.apply_patch(patch(1, 2)), PatchOutcome::Applied));
+        assert_eq!(grid.cell(1, 1).unwrap().symbol, "Z");
+        assert!(matches!(grid.take_damage(), Damage::Rows(rows) if rows == vec![1]));
+        assert!(matches!(grid.apply_patch(patch(1, 2)), PatchOutcome::Rejected));
+    }
 
     #[test]
     fn decodes_packed_colors() {

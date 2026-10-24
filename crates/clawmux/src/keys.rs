@@ -123,9 +123,7 @@ fn function_key(key: gdk::Key) -> Option<u8> {
     use gtk::glib::translate::IntoGlib as _;
     let f1 = gdk::Key::F1.into_glib();
     let raw = key.into_glib();
-    (f1..f1 + 24)
-        .contains(&raw)
-        .then(|| (raw - f1 + 1) as u8)
+    (f1..f1 + 24).contains(&raw).then(|| (raw - f1 + 1) as u8)
 }
 
 /// Whether a keyval is a bare modifier press, which never reaches panes or bindings.

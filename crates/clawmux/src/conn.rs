@@ -135,7 +135,14 @@ fn connect_or_start(path: &Path) -> io::Result<UnixStream> {
 /// Starts the shared `oasis` server, the same one the TUI uses, detached from this process.
 fn start_server() -> io::Result<()> {
     use std::os::unix::process::CommandExt as _;
-    let exe = std::env::var_os("CLAWMUX_OASIS").unwrap_or_else(|| "oasis".into());
+    // Prefer an `oasis` installed beside this binary: launchers may not put ~/.local/bin on PATH.
+    let sibling = std::env::current_exe()
+        .ok()
+        .and_then(|exe| Some(exe.parent()?.join("oasis")))
+        .filter(|path| path.is_file());
+    let exe = std::env::var_os("CLAWMUX_OASIS")
+        .or_else(|| sibling.map(Into::into))
+        .unwrap_or_else(|| "oasis".into());
     std::process::Command::new(&exe)
         .arg("server")
         .stdin(std::process::Stdio::null())
@@ -147,7 +154,10 @@ fn start_server() -> io::Result<()> {
         .map_err(|error| {
             io::Error::new(
                 error.kind(),
-                format!("could not start `{} server`: {error}", exe.to_string_lossy()),
+                format!(
+                    "could not start `{} server`: {error}",
+                    exe.to_string_lossy()
+                ),
             )
         })
 }
@@ -192,10 +202,15 @@ fn handshake(stream: &mut UnixStream, geometry: &Geometry) -> io::Result<()> {
     }
     let welcome: EndpointServerWelcome = serde_json::from_str(&data).map_err(io::Error::other)?;
     if let Some(error) = welcome.error {
-        return Err(invalid(&format!("server refused the GUI: {}", error.message)));
+        return Err(invalid(&format!(
+            "server refused the GUI: {}",
+            error.message
+        )));
     }
     if welcome.generation != wire::ENDPOINT_PROTOCOL_GENERATION {
-        return Err(invalid("server endpoint generation is incompatible; update oasis"));
+        return Err(invalid(
+            "server endpoint generation is incompatible; update oasis",
+        ));
     }
     Ok(())
 }
