@@ -111,6 +111,9 @@ impl Theme {
         {
             theme.font_size = size;
         }
+        if let Some(size) = load_font_size() {
+            theme.font_size = size;
+        }
         theme
     }
 
@@ -193,10 +196,17 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-sidebar .meta {{ color: {dim}; font-size: 0.86em; }}
 .clawmux-sidebar .number {{ color: {dim}; font-feature-settings: "tnum"; min-width: 1.2em; }}
 .clawmux-status {{ color: {dim}; font-size: 0.82em; padding: 8px 14px; border-top: 1px solid {raised}; }}
-.clawmux-tabs {{ background: {sidebar}; padding: 4px 6px; border-bottom: 1px solid {raised}; }}
-.clawmux-tabs button {{ background: transparent; color: {dim}; border: none; box-shadow: none; border-radius: 6px; padding: 2px 12px; min-height: 0; }}
-.clawmux-tabs button:hover {{ background: alpha({raised}, 0.7); color: {fg}; }}
-.clawmux-tabs button.focused {{ background: {raised}; color: {fg}; box-shadow: inset 0 -2px 0 {accent}; }}
+.clawmux-tabs {{ background: {sidebar}; padding: 3px 6px; border-bottom: 1px solid {raised}; font-size: 0.85em; }}
+.clawmux-tabs .tab-pill {{ border-radius: 6px; color: alpha({fg}, 0.6); }}
+.clawmux-tabs .tab-pill:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
+.clawmux-tabs .tab-pill.active {{ background: alpha({fg}, 0.14); color: {fg}; }}
+.clawmux-tabs .tab-label {{ padding: 2px 1px 2px 9px; font-weight: 700; }}
+.clawmux-tabs .tab-pill > stack {{ min-width: 18px; margin-right: 3px; }}
+.clawmux-tabs .tab-pill .dot {{ min-width: 6px; min-height: 6px; border-radius: 3px; }}
+.clawmux-tabs button.tab-action {{ background: none; border: none; box-shadow: none; outline: none; min-height: 0; min-width: 16px; padding: 0; color: alpha({fg}, 0.55); }}
+.clawmux-tabs button.tab-action:hover {{ color: {fg}; }}
+.clawmux-tabs button.tab-add {{ background: none; border: none; box-shadow: none; min-height: 0; padding: 1px 8px; border-radius: 6px; color: alpha({fg}, 0.55); }}
+.clawmux-tabs button.tab-add:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
 .clawmux-banner {{ background: {raised}; color: {fg}; padding: 6px 12px; }}
 .clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
 .clawmux-sidebar row.heading-row:hover {{ background: transparent; }}
@@ -221,6 +231,46 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
             red = self.red.css(),
             green = self.green.css(),
         )
+    }
+}
+
+/// The size picked with ctrl+-/ctrl+=, kept across restarts; absent means the theme's.
+fn font_size_path() -> PathBuf {
+    std::env::var_os("XDG_STATE_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home().join(".local/state"))
+        .join("clawmux/font-size")
+}
+
+fn load_font_size() -> Option<f64> {
+    let size: f64 = std::fs::read_to_string(font_size_path())
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    (MIN_FONT_SIZE..=MAX_FONT_SIZE)
+        .contains(&size)
+        .then_some(size)
+}
+
+pub const MIN_FONT_SIZE: f64 = 5.0;
+pub const MAX_FONT_SIZE: f64 = 40.0;
+
+/// Saves the zoomed font size, or forgets it with `None` to go back to the theme's.
+pub fn save_font_size(size: Option<f64>) {
+    let path = font_size_path();
+    let result = match size {
+        Some(size) => path
+            .parent()
+            .map_or(Ok(()), std::fs::create_dir_all)
+            .and_then(|_| std::fs::write(&path, format!("{size}\n"))),
+        None => match std::fs::remove_file(&path) {
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            other => other,
+        },
+    };
+    if let Err(error) = result {
+        eprintln!("clawmux: could not save font size: {error}");
     }
 }
 

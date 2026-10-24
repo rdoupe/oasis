@@ -300,6 +300,16 @@ impl App {
         self._monitor.replace(Some(monitor));
     }
 
+    /// Steps the terminal font by `zoom` points, or with `None` returns to the theme's size.
+    fn zoom_font(&self, zoom: Option<f64>) {
+        let size = zoom.map(|step| {
+            (self.theme.borrow().font_size + step)
+                .clamp(crate::theme::MIN_FONT_SIZE, crate::theme::MAX_FONT_SIZE)
+        });
+        crate::theme::save_font_size(size);
+        self.reload_theme();
+    }
+
     fn reload_theme(&self) {
         let theme = Theme::load();
         self.css.load_from_string(&theme.css());
@@ -550,45 +560,11 @@ impl App {
                 .collect();
             tabs.sort_by_key(|t| t.number);
             for tab in tabs {
-                let content = gtk::Box::new(gtk::Orientation::Horizontal, 6);
-                if !matches!(tab.agent_status, AgentStatus::Idle | AgentStatus::Unknown) {
-                    content.append(&dot(tab.agent_status));
-                }
-                let mut label = if tab.custom_label {
-                    format!("{} {}", tab.number, tab.label)
-                } else {
-                    tab.label.clone()
-                };
-                if tab.zoomed {
-                    label.push_str(" ⤢");
-                }
-                content.append(&gtk::Label::new(Some(&label)));
-                let button = gtk::Button::new();
-                button.set_child(Some(&content));
-                if tab.focused {
-                    button.add_css_class("focused");
-                }
-                let (app, id) = (self.clone(), tab.tab_id.clone());
-                button.connect_clicked(move |_| {
-                    app.request("tab.focus", json!({ "tab_id": id }));
-                    app.view.grab_focus();
-                });
-                let middle = gtk::GestureClick::new();
-                middle.set_button(gdk::BUTTON_MIDDLE);
-                let (app, id) = (self.clone(), tab.tab_id.clone());
-                middle.connect_pressed(move |_, _, _, _| app.confirm_close_tab(&id));
-                button.add_controller(middle);
-                let double = gtk::GestureClick::new();
-                let (app, id) = (self.clone(), tab.tab_id.clone());
-                double.connect_pressed(move |_, n, _, _| {
-                    if n == 2 {
-                        app.rename_tab(&id);
-                    }
-                });
-                button.add_controller(double);
-                self.tabs.append(&button);
+                self.tabs.append(&self.tab_pill(tab));
             }
             let add = gtk::Button::with_label("+");
+            add.add_css_class("tab-add");
+            add.set_tooltip_text(Some("New tab"));
             let (app, ws) = (self.clone(), focused_workspace.to_owned());
             add.connect_clicked(move |_| {
                 app.request("tab.create", json!({ "workspace_id": ws, "focus": true }));
@@ -604,6 +580,67 @@ impl App {
             .map(|w| format!("{} — clawmux", w.label))
             .unwrap_or_else(|| "clawmux".into());
         self.window.set_title(Some(&title));
+    }
+
+    /// One tab as a gliff-style pill: the label, and a slot that shows the tab's agent
+    /// status and turns into a close button under the pointer.
+    fn tab_pill(self: &Rc<Self>, tab: &oasis_core::embed::wire::ClientShellTab) -> gtk::Box {
+        let mut text = if tab.custom_label {
+            format!("{} {}", tab.number, tab.label)
+        } else {
+            tab.label.clone()
+        };
+        if tab.zoomed {
+            text.push_str(" ⤢");
+        }
+        let label = gtk::Label::new(Some(&text));
+        label.add_css_class("tab-label");
+        let slot = gtk::Stack::new();
+        slot.set_transition_type(gtk::StackTransitionType::Crossfade);
+        slot.set_transition_duration(80);
+        let status = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        status.set_halign(gtk::Align::Center);
+        status.set_valign(gtk::Align::Center);
+        if !matches!(tab.agent_status, AgentStatus::Idle | AgentStatus::Unknown) {
+            status.append(&dot(tab.agent_status));
+        }
+        slot.add_named(&status, Some("status"));
+        let close = gtk::Button::with_label("×");
+        close.add_css_class("tab-action");
+        close.set_tooltip_text(Some("Close tab"));
+        let (app, id) = (self.clone(), tab.tab_id.clone());
+        close.connect_clicked(move |_| app.confirm_close_tab(&id));
+        slot.add_named(&close, Some("close"));
+        slot.set_visible_child_name("status");
+
+        let pill = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        pill.add_css_class("tab-pill");
+        if tab.focused {
+            pill.add_css_class("active");
+        }
+        pill.append(&label);
+        pill.append(&slot);
+        let hover = gtk::EventControllerMotion::new();
+        let s = slot.clone();
+        hover.connect_enter(move |_, _, _| s.set_visible_child_name("close"));
+        let s = slot.clone();
+        hover.connect_leave(move |_| s.set_visible_child_name("status"));
+        pill.add_controller(hover);
+
+        let click = gtk::GestureClick::new();
+        click.set_button(0);
+        let (app, id) = (self.clone(), tab.tab_id.clone());
+        click.connect_pressed(move |gesture, n, _, _| match gesture.current_button() {
+            gdk::BUTTON_MIDDLE => app.confirm_close_tab(&id),
+            gdk::BUTTON_PRIMARY if n == 2 => app.rename_tab(&id),
+            gdk::BUTTON_PRIMARY => {
+                app.request("tab.focus", json!({ "tab_id": id }));
+                app.view.grab_focus();
+            }
+            _ => {}
+        });
+        pill.add_controller(click);
+        pill
     }
 
     fn update_status(&self) {
@@ -691,6 +728,10 @@ impl App {
             self.paste();
             return glib::Propagation::Stop;
         }
+        if let Some(zoom) = font_zoom(&key) {
+            self.zoom_font(zoom);
+            return glib::Propagation::Stop;
+        }
         let terminal_key = key.terminal_key();
         let outcomes = {
             let snapshot = self.snapshot.borrow();
@@ -709,6 +750,7 @@ impl App {
             };
             self.keys.borrow_mut().key(terminal_key, &ctx)
         };
+        debug(|| format!("key {:?} {:?} -> {outcomes:?}", key.code, key.modifiers));
         for outcome in outcomes {
             match outcome {
                 KeyOutcome::ToPane(_) => self.send_key_to_pane(&key),
@@ -1317,6 +1359,20 @@ impl App {
                 );
             }
         });
+    }
+}
+
+/// Ghostty-style font zoom: ctrl+- smaller, ctrl+= or ctrl++ bigger, ctrl+0 reset.
+fn font_zoom(key: &Key) -> Option<Option<f64>> {
+    let mods = key.modifiers - KeyModifiers::SHIFT;
+    if mods != KeyModifiers::CONTROL {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char('-') => Some(Some(-1.0)),
+        KeyCode::Char('=') | KeyCode::Char('+') => Some(Some(1.0)),
+        KeyCode::Char('0') => Some(None),
+        _ => None,
     }
 }
 
