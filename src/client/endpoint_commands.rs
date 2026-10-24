@@ -34,6 +34,15 @@ pub(super) struct EndpointCommandResult {
     pub(super) result: Result<ResponseResult, ClientShellEndpointError>,
 }
 
+/// Reads issued on the person's behalf before they asked, such as resolving
+/// the link under a hovering pointer. They yield to explicit actions.
+fn is_speculative(request: &Request) -> bool {
+    matches!(
+        request.method,
+        crate::api::schema::Method::PaneLinkResolve(_)
+    )
+}
+
 #[derive(Default)]
 struct EndpointCommandLane {
     queued: VecDeque<QueuedCommand>,
@@ -69,6 +78,10 @@ pub(super) struct EndpointCommands {
 }
 
 impl EndpointCommands {
+    /// Queues a request for its endpoint's single command lane. Speculative
+    /// reads (hover link lookups) wait at the back; anything the person asked
+    /// for goes ahead of them, so an action never waits behind a lookup that
+    /// has not been sent yet. Actions keep their order among themselves.
     pub(super) fn enqueue(
         &mut self,
         endpoint_id: ClientEndpointId,
@@ -76,15 +89,21 @@ impl EndpointCommands {
         boot_id: String,
         request: Box<Request>,
     ) {
-        self.lanes
-            .entry(endpoint_id)
-            .or_default()
-            .queued
-            .push_back(QueuedCommand {
-                generation,
-                boot_id,
-                request,
-            });
+        let queued = &mut self.lanes.entry(endpoint_id).or_default().queued;
+        let command = QueuedCommand {
+            generation,
+            boot_id,
+            request,
+        };
+        if is_speculative(&command.request) {
+            queued.push_back(command);
+            return;
+        }
+        let index = queued
+            .iter()
+            .position(|queued| is_speculative(&queued.request))
+            .unwrap_or(queued.len());
+        queued.insert(index, command);
     }
 
     pub(super) fn send_next(
@@ -474,6 +493,53 @@ mod tests {
             .lanes
             .get(&completed.endpoint_id)
             .is_some_and(|lane| lane.in_flight.is_none()));
+    }
+
+    fn queued_request(id: &str, speculative: bool) -> Box<Request> {
+        let method = if speculative {
+            crate::api::schema::Method::PaneLinkResolve(
+                crate::api::schema::PaneLinkActivateParams {
+                    pane_id: "w1:p1".into(),
+                    viewport_row: 0,
+                    col: 0,
+                    content_revision: None,
+                    offset_from_bottom: None,
+                },
+            )
+        } else {
+            crate::api::schema::Method::WorkspaceList(crate::api::schema::EmptyParams::default())
+        };
+        Box::new(Request {
+            id: id.into(),
+            method,
+        })
+    }
+
+    /// Behind an in-flight lookup, actions are sent before any queued lookup,
+    /// in the order the person made them.
+    #[test]
+    fn actions_go_ahead_of_queued_hover_lookups() {
+        let mut commands = commands_with_in_flight();
+        for (id, speculative) in [
+            ("hover-1", true),
+            ("action-1", false),
+            ("hover-2", true),
+            ("action-2", false),
+        ] {
+            commands.enqueue(
+                endpoint(),
+                1,
+                "boot-a".into(),
+                queued_request(id, speculative),
+            );
+        }
+        let order = commands.lanes[&endpoint()]
+            .queued
+            .iter()
+            .map(|queued| queued.request.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(order, ["action-1", "action-2", "hover-1", "hover-2"]);
+        assert!(has_in_flight(&commands), "still one command in flight");
     }
 
     #[test]

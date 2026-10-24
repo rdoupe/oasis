@@ -562,3 +562,35 @@ fn ctrl_hover_groups_contiguous_same_destination_cells_without_server_query() {
         (0, 1, 2)
     );
 }
+
+/// Hover lookups share the server's single command lane, so while an action
+/// for that server is waiting no lookup is sent; it follows the answer.
+#[test]
+fn hover_waits_for_a_pending_action_on_the_same_server() {
+    let mut state = hover_state();
+    state.pending_requests.insert(
+        "action-1".into(),
+        PendingEndpointRequest {
+            boot_id: "boot-1".into(),
+            method_name: "tab.create".into(),
+            confirmation_workspace_id: None,
+            kind: PendingEndpointKind::Generic,
+        },
+    );
+    let mouse = hover_mouse(&state, 1, 0);
+    let outcome = state.handle_raw_events(vec![RawInputEvent::Mouse(mouse)]);
+    assert!(
+        outcome.actions.is_empty(),
+        "no lookup while the action is pending"
+    );
+    let now = std::time::Instant::now();
+    assert!(
+        state.timer_delay(now) > std::time::Duration::ZERO,
+        "the deferred lookup does not spin the loop"
+    );
+
+    state.pending_requests.remove("action-1");
+    let mut outcome = ClientShellInput::default();
+    state.tick_link_hover(&mut outcome);
+    hover_request(&outcome);
+}

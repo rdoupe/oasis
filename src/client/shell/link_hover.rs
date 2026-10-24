@@ -134,10 +134,21 @@ impl ClientShellState {
         self.link_hover
             .as_ref()
             .is_some_and(|hover| !hover.resolved)
-            && !self
-                .pending_requests
-                .values()
-                .any(|pending| matches!(pending.kind, PendingEndpointKind::PaneLinkResolve { .. }))
+            && !self.link_hover_resolve_blocked()
+    }
+
+    /// A lookup is already out, or an action for the active server is
+    /// waiting: hover lookups share its single command lane and must not
+    /// delay the action. The lookup is issued once the action is answered.
+    fn link_hover_resolve_blocked(&self) -> bool {
+        let active_boot = self
+            .snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.boot_id.as_str());
+        self.pending_requests.values().any(|pending| {
+            matches!(pending.kind, PendingEndpointKind::PaneLinkResolve { .. })
+                || Some(pending.boot_id.as_str()) == active_boot
+        })
     }
 
     /// Issues the resolve a redraw left pending. One-shot: a request is sent,
@@ -250,11 +261,7 @@ impl ClientShellState {
     }
 
     fn request_link_hover(&mut self, outcome: &mut ClientShellInput) {
-        if self
-            .pending_requests
-            .values()
-            .any(|pending| matches!(pending.kind, PendingEndpointKind::PaneLinkResolve { .. }))
-        {
+        if self.link_hover_resolve_blocked() {
             return;
         }
         let Some(hover) = self.link_hover.as_ref().filter(|hover| !hover.resolved) else {
