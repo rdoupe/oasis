@@ -880,259 +880,39 @@ impl ClientShellState {
         &mut self,
         action: crate::input::KeybindAction,
     ) -> Option<crate::api::schema::Method> {
-        use crate::api::schema::{
-            Method, PaneDirection, PaneFocusDirectionParams, PaneResizeParams, PaneSplitParams,
-            PaneSwapParams, PaneTarget, PaneZoomMode, PaneZoomParams, SplitDirection,
-            TabCreateParams, TabMoveParams, TabTarget, WorkspaceTarget,
-        };
-        use crate::input::KeybindAction;
-
         let snapshot = self.snapshot.as_deref()?;
-        let focused_workspace = snapshot.focused_workspace_id.clone()?;
-        let focused_tab = snapshot.focused_tab_id.clone();
-        let focused_pane = snapshot.focused_pane_id.clone();
-        let direction = |action| match action {
-            KeybindAction::FocusPaneLeft
-            | KeybindAction::SwapPaneLeft
-            | KeybindAction::ResizePaneLeft => Some(PaneDirection::Left),
-            KeybindAction::FocusPaneDown
-            | KeybindAction::SwapPaneDown
-            | KeybindAction::ResizePaneDown => Some(PaneDirection::Down),
-            KeybindAction::FocusPaneUp
-            | KeybindAction::SwapPaneUp
-            | KeybindAction::ResizePaneUp => Some(PaneDirection::Up),
-            KeybindAction::FocusPaneRight
-            | KeybindAction::SwapPaneRight
-            | KeybindAction::ResizePaneRight => Some(PaneDirection::Right),
-            _ => None,
-        };
-
-        match action {
-            KeybindAction::FocusAgent(index) => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
-                    snapshot,
-                    self.config.agent_panel_sort,
-                );
-                Some(Method::PaneFocus(PaneTarget {
-                    pane_id: agents.get(index)?.clone(),
-                }))
-            }
-            KeybindAction::PreviousAgent | KeybindAction::NextAgent => {
-                let agents = super::agent_sidebar::ordered_agent_pane_ids(
-                    snapshot,
-                    self.config.agent_panel_sort,
-                );
-                if agents.is_empty() {
-                    return None;
-                }
-                let current = agents.iter().position(|pane_id| {
-                    Some(pane_id.as_str()) == snapshot.focused_pane_id.as_deref()
-                });
-                let next = match (current, action) {
-                    (Some(current), KeybindAction::PreviousAgent) => {
-                        (current + agents.len() - 1) % agents.len()
-                    }
-                    (Some(current), KeybindAction::NextAgent) => (current + 1) % agents.len(),
-                    (None, KeybindAction::PreviousAgent) => agents.len() - 1,
-                    (None, KeybindAction::NextAgent) => 0,
-                    _ => unreachable!("relative agent action"),
-                };
-                let pane_id = agents[next].clone();
-                if !self
-                    .hits
-                    .agents
-                    .iter()
-                    .any(|(_, visible_pane_id)| visible_pane_id == &pane_id)
-                {
-                    self.agent_scroll = next.min(self.hits.agent_max_scroll);
-                }
-                Some(Method::PaneFocus(PaneTarget { pane_id }))
-            }
-            KeybindAction::SwitchWorkspace(index) => {
-                let entries = self.navigation_workspace_entries(snapshot);
-                let workspace_id = snapshot
-                    .workspaces
-                    .get(entries.get(index)?.index)?
-                    .workspace_id
-                    .clone();
-                self.reveal_workspace(&workspace_id);
-                Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
-            }
-            KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => {
-                let entries = self.navigation_workspace_entries(snapshot);
-                if entries.is_empty() {
-                    return None;
-                }
-                let current = entries
-                    .iter()
-                    .position(|entry| {
-                        snapshot.workspaces[entry.index].workspace_id == focused_workspace
-                    })
-                    .unwrap_or(0);
-                let delta = if action == KeybindAction::PreviousWorkspace {
-                    -1
-                } else {
-                    1
-                };
-                let next = (current as isize + delta).rem_euclid(entries.len() as isize) as usize;
-                let workspace_id = snapshot.workspaces[entries[next].index]
-                    .workspace_id
-                    .clone();
-                self.reveal_workspace(&workspace_id);
-                Some(Method::WorkspaceFocus(WorkspaceTarget { workspace_id }))
-            }
-            KeybindAction::SwitchTab(index) => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                Some(Method::TabFocus(TabTarget {
-                    tab_id: tabs.get(index)?.tab_id.clone(),
-                }))
-            }
-            KeybindAction::PreviousTab | KeybindAction::NextTab => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                let focused_tab = focused_tab?;
-                let current = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
-                let delta = if action == KeybindAction::PreviousTab {
-                    -1
-                } else {
-                    1
-                };
-                let next = (current as isize + delta).rem_euclid(tabs.len() as isize) as usize;
-                Some(Method::TabFocus(TabTarget {
-                    tab_id: tabs[next].tab_id.clone(),
-                }))
-            }
-            KeybindAction::MoveTabPrevious | KeybindAction::MoveTabNext => {
-                let tabs = snapshot
-                    .tabs
-                    .iter()
-                    .filter(|tab| tab.workspace_id == focused_workspace)
-                    .collect::<Vec<_>>();
-                if tabs.len() <= 1 {
-                    return None;
-                }
-                let focused_tab = focused_tab?;
-                let source = tabs.iter().position(|tab| tab.tab_id == focused_tab)?;
-                let insert_index = if action == KeybindAction::MoveTabNext {
-                    if source + 1 >= tabs.len() {
-                        0
-                    } else {
-                        source + 2
-                    }
-                } else if source == 0 {
-                    tabs.len()
-                } else {
-                    source - 1
-                };
-                Some(Method::TabMove(TabMoveParams {
-                    tab_id: focused_tab,
-                    insert_index,
-                }))
-            }
-            KeybindAction::NewTab if !self.config.prompt_new_tab_name => {
-                Some(Method::TabCreate(TabCreateParams {
-                    workspace_id: Some(focused_workspace),
-                    cwd: None,
-                    focus: true,
-                    label: None,
-                    env: Default::default(),
-                }))
-            }
-            KeybindAction::FocusPaneLeft
-            | KeybindAction::FocusPaneDown
-            | KeybindAction::FocusPaneUp
-            | KeybindAction::FocusPaneRight => {
-                Some(Method::PaneFocusDirection(PaneFocusDirectionParams {
-                    pane_id: focused_pane,
-                    direction: direction(action)?,
-                }))
-            }
-            KeybindAction::SwapPaneLeft
-            | KeybindAction::SwapPaneDown
-            | KeybindAction::SwapPaneUp
-            | KeybindAction::SwapPaneRight => Some(Method::PaneSwap(PaneSwapParams {
-                pane_id: focused_pane,
-                direction: Some(direction(action)?),
-                source_pane_id: None,
-                target_pane_id: None,
-            })),
-            KeybindAction::SplitVertical | KeybindAction::SplitHorizontal => {
-                Some(Method::PaneSplit(PaneSplitParams {
-                    workspace_id: Some(focused_workspace),
-                    target_pane_id: focused_pane,
-                    direction: if action == KeybindAction::SplitVertical {
-                        SplitDirection::Right
-                    } else {
-                        SplitDirection::Down
-                    },
-                    ratio: None,
-                    cwd: None,
-                    focus: true,
-                    right_click: Default::default(),
-                    env: Default::default(),
-                }))
-            }
-            KeybindAction::CyclePaneNext | KeybindAction::CyclePanePrevious => {
-                let focused_tab = focused_tab?;
-                let panes = snapshot
-                    .panes
-                    .iter()
-                    .filter(|pane| pane.tab_id == focused_tab)
-                    .collect::<Vec<_>>();
-                if panes.is_empty() {
-                    return None;
-                }
-                let focused_pane = focused_pane?;
-                let current = panes
-                    .iter()
-                    .position(|pane| pane.pane_id == focused_pane)
-                    .unwrap_or(0);
-                let next = if action == KeybindAction::CyclePanePrevious {
-                    (current + panes.len() - 1) % panes.len()
-                } else {
-                    (current + 1) % panes.len()
-                };
-                Some(Method::PaneFocus(PaneTarget {
-                    pane_id: panes[next].pane_id.clone(),
-                }))
-            }
-            KeybindAction::LastPane => {
-                let pane_id = self.previous_pane_id.as_ref()?;
-                if Some(pane_id.as_str()) == focused_pane.as_deref()
-                    || !snapshot.panes.iter().any(|pane| &pane.pane_id == pane_id)
-                {
-                    return None;
-                }
-                Some(Method::PaneFocus(PaneTarget {
-                    pane_id: pane_id.clone(),
-                }))
-            }
-            KeybindAction::Zoom => Some(Method::PaneZoom(PaneZoomParams {
-                pane_id: focused_pane,
-                mode: PaneZoomMode::Toggle,
-            })),
-            KeybindAction::ClearPane => Some(Method::PaneClear(PaneTarget {
-                pane_id: focused_pane?,
-            })),
-            KeybindAction::EditScrollback => Some(Method::PaneEditScrollback(PaneTarget {
-                pane_id: focused_pane?,
-            })),
-            KeybindAction::ResizePaneLeft
-            | KeybindAction::ResizePaneDown
-            | KeybindAction::ResizePaneUp
-            | KeybindAction::ResizePaneRight => Some(Method::PaneResize(PaneResizeParams {
-                pane_id: focused_pane,
-                direction: direction(action)?,
-                amount: None,
-            })),
-            _ => None,
+        let agent_order =
+            super::agent_sidebar::ordered_agent_pane_ids(snapshot, self.config.agent_panel_sort);
+        let workspace_order = self
+            .navigation_workspace_entries(snapshot)
+            .into_iter()
+            .map(|entry| entry.index)
+            .collect::<Vec<_>>();
+        let request = crate::client::keys::request_for_action(
+            action,
+            &crate::client::keys::ActionContext {
+                snapshot,
+                agent_order: &agent_order,
+                workspace_order: &workspace_order,
+                previous_pane_id: self.previous_pane_id.as_deref(),
+                prompt_new_tab_name: self.config.prompt_new_tab_name,
+            },
+        )?;
+        if let Some(workspace_id) = request.reveal_workspace_id.as_deref() {
+            self.reveal_workspace(workspace_id);
         }
+        if let (Some(index), crate::api::schema::Method::PaneFocus(target)) =
+            (request.agent_index, &request.method)
+        {
+            if !self
+                .hits
+                .agents
+                .iter()
+                .any(|(_, visible_pane_id)| visible_pane_id == &target.pane_id)
+            {
+                self.agent_scroll = index.min(self.hits.agent_max_scroll);
+            }
+        }
+        Some(request.method)
     }
 }

@@ -90,6 +90,31 @@ fn push_host_theme_update(
     requests.push(ClientMessage::ClientShellHostTheme { update });
 }
 
+impl From<ClientShellMode> for crate::client::keys::KeyMode {
+    fn from(mode: ClientShellMode) -> Self {
+        match mode {
+            ClientShellMode::Terminal => Self::Terminal,
+            ClientShellMode::Prefix => Self::Prefix,
+            ClientShellMode::Navigate => Self::Navigate,
+            ClientShellMode::Resize => Self::Resize,
+            ClientShellMode::Copy => Self::Copy,
+        }
+    }
+}
+
+impl From<crate::client::keys::KeyMode> for ClientShellMode {
+    fn from(mode: crate::client::keys::KeyMode) -> Self {
+        use crate::client::keys::KeyMode;
+        match mode {
+            KeyMode::Terminal => Self::Terminal,
+            KeyMode::Prefix => Self::Prefix,
+            KeyMode::Navigate => Self::Navigate,
+            KeyMode::Resize => Self::Resize,
+            KeyMode::Copy => Self::Copy,
+        }
+    }
+}
+
 impl ClientShellState {
     pub(crate) fn host_keyboard_report_all_requested(&self) -> bool {
         matches!(
@@ -682,69 +707,38 @@ impl ClientShellState {
             outcome.repaint = true;
         }
 
-        match self.mode {
-            ClientShellMode::Terminal => {
-                if let Some(binding) =
-                    crate::input::resolve_direct_binding(&self.config.keybinds.keybinds, key)
-                {
-                    self.record_binding(binding, outcome);
-                    return None;
-                }
-                if self.config.keybinds.matches_prefix(key) {
-                    self.mode = ClientShellMode::Prefix;
-                    outcome.repaint = true;
-                    return None;
-                }
+        if self.mode == ClientShellMode::Navigate {
+            self.route_navigate_key(key, outcome);
+            return None;
+        }
+        let previous = self.mode;
+        let copy_search_open = self
+            .copy_mode
+            .as_ref()
+            .is_some_and(|copy_mode| copy_mode.search_prompt.is_some());
+        let transition = crate::client::keys::route_key(
+            &self.config.keybinds,
+            previous.into(),
+            self.copy_or_terminal_mode() == ClientShellMode::Copy,
+            copy_search_open,
+            key,
+        );
+        self.mode = transition.mode.into();
+        // Leaving prefix mode always repaints its indicator, even to the same mode.
+        if self.mode != previous || previous == ClientShellMode::Prefix {
+            outcome.repaint = true;
+        }
+        match transition.step {
+            crate::client::keys::KeyStep::ToPane => {
                 self.focused_pane_id().map(ClientInputTarget::Pane)
             }
-            ClientShellMode::Prefix => {
-                let return_mode = if self.copy_mode.as_ref().is_some_and(|copy_mode| {
-                    self.focused_pane_id().as_deref() == Some(copy_mode.pane_id.as_str())
-                }) {
-                    ClientShellMode::Copy
-                } else {
-                    ClientShellMode::Terminal
-                };
-                if self.config.keybinds.matches_prefix(key) {
-                    self.mode = return_mode;
-                    outcome.repaint = true;
-                    return self.focused_pane_id().map(ClientInputTarget::Pane);
-                }
-                if key.code == KeyCode::Esc {
-                    self.mode = return_mode;
-                    outcome.repaint = true;
-                    return None;
-                }
-                if let Some(binding) =
-                    crate::input::resolve_prefix_binding(&self.config.keybinds.keybinds, key)
-                {
-                    self.mode = return_mode;
-                    outcome.repaint = true;
-                    self.record_binding(binding, outcome);
-                    return None;
-                }
-                self.mode = return_mode;
-                outcome.repaint = true;
+            crate::client::keys::KeyStep::Binding(binding) => {
+                self.record_binding(binding, outcome);
                 None
             }
-            ClientShellMode::Navigate => {
-                self.route_navigate_key(key, outcome);
-                None
-            }
-            ClientShellMode::Resize => {
-                self.route_resize_key(key, outcome);
-                None
-            }
-            ClientShellMode::Copy => {
-                if self
-                    .copy_mode
-                    .as_ref()
-                    .is_none_or(|copy_mode| copy_mode.search_prompt.is_none())
-                    && self.config.keybinds.matches_prefix(key)
-                {
-                    self.mode = ClientShellMode::Prefix;
-                    outcome.repaint = true;
-                } else {
+            crate::client::keys::KeyStep::Consumed => None,
+            crate::client::keys::KeyStep::ModeKey => {
+                if self.mode == ClientShellMode::Copy {
                     self.route_copy_mode_key(key, outcome);
                 }
                 None
@@ -1051,36 +1045,6 @@ impl ClientShellState {
             crate::api::schema::Method::PaneFocus(crate::api::schema::PaneTarget { pane_id }),
             outcome,
         );
-    }
-
-    fn route_resize_key(
-        &mut self,
-        key: &crate::input::TerminalKey,
-        outcome: &mut ClientShellInput,
-    ) {
-        let resize_bindings = &self.config.keybinds.keybinds.resize_mode;
-        if key.code == KeyCode::Esc
-            || key.code == KeyCode::Enter
-            || resize_bindings.matches_prefix_key(key)
-            || resize_bindings.matches_direct_key(key)
-        {
-            self.mode = self.copy_or_terminal_mode();
-            outcome.repaint = true;
-            return;
-        }
-
-        let action = match key.code {
-            KeyCode::Char('h') | KeyCode::Left => Some(crate::input::KeybindAction::ResizePaneLeft),
-            KeyCode::Char('j') | KeyCode::Down => Some(crate::input::KeybindAction::ResizePaneDown),
-            KeyCode::Char('k') | KeyCode::Up => Some(crate::input::KeybindAction::ResizePaneUp),
-            KeyCode::Char('l') | KeyCode::Right => {
-                Some(crate::input::KeybindAction::ResizePaneRight)
-            }
-            _ => None,
-        };
-        if let Some(action) = action {
-            self.record_binding(crate::input::KeybindMatch::Action(action), outcome);
-        }
     }
 
     fn input_context(&self) -> ClientInputContext {

@@ -309,16 +309,11 @@ impl ClientShellState {
         let Some(metrics) = self.selection_scroll_metrics(&hit) else {
             return false;
         };
-        let offset_from_bottom = match mouse.kind {
-            MouseEventKind::ScrollUp => metrics
-                .offset_from_bottom
-                .saturating_add(self.config.mouse_scroll_lines)
-                .min(metrics.max_offset_from_bottom),
-            MouseEventKind::ScrollDown => metrics
-                .offset_from_bottom
-                .saturating_sub(self.config.mouse_scroll_lines),
-            _ => unreachable!(),
-        };
+        let offset_from_bottom = crate::client::mouse_engine::wheel_scroll_offset(
+            metrics,
+            mouse.kind == MouseEventKind::ScrollUp,
+            self.config.mouse_scroll_lines,
+        );
         if offset_from_bottom != metrics.offset_from_bottom {
             let projected = crate::pane::ScrollMetrics {
                 offset_from_bottom,
@@ -392,9 +387,16 @@ impl ClientShellState {
         };
         let point = (mouse.column, mouse.row);
         if mouse.kind == MouseEventKind::Up(MouseButton::Left)
-            && super::contains(press.inner_rect, point)
-            && mouse.row.saturating_sub(press.inner_rect.y) == press.viewport_row
-            && mouse.column.saturating_sub(press.inner_rect.x) == press.col
+            && crate::client::mouse_engine::released_in_place(
+                (press.viewport_row, press.col),
+                super::contains(press.inner_rect, point).then(|| {
+                    (
+                        mouse.row.saturating_sub(press.inner_rect.y),
+                        mouse.column.saturating_sub(press.inner_rect.x),
+                    )
+                }),
+                false,
+            )
         {
             self.plain_link_pending =
                 Some((press, std::time::Instant::now() + PLAIN_LINK_CLICK_DELAY));
@@ -1875,10 +1877,16 @@ impl ClientShellState {
                 .as_mut()
                 .is_some_and(crate::selection::Selection::finish);
             if let Some(mut press) = self.plain_link_press.take() {
-                let released_in_place = !copied
-                    && super::contains(press.inner_rect, point)
-                    && mouse.row.saturating_sub(press.inner_rect.y) == press.viewport_row
-                    && mouse.column.saturating_sub(press.inner_rect.x) == press.col;
+                let released_in_place = crate::client::mouse_engine::released_in_place(
+                    (press.viewport_row, press.col),
+                    super::contains(press.inner_rect, point).then(|| {
+                        (
+                            mouse.row.saturating_sub(press.inner_rect.y),
+                            mouse.column.saturating_sub(press.inner_rect.x),
+                        )
+                    }),
+                    copied,
+                );
                 if released_in_place {
                     press.events.push(mouse);
                     self.plain_link_pending =

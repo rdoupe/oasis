@@ -831,7 +831,7 @@ pub(super) struct ClientPaneClick {
 /// How long a plain click waits before opening its link, so the first click of
 /// a double-click never opens anything.
 pub(super) const PLAIN_LINK_CLICK_DELAY: std::time::Duration =
-    std::time::Duration::from_millis(350);
+    crate::client::mouse_engine::PLAIN_LINK_CLICK_DELAY;
 
 /// A plain left press in the focused pane that may open the link under it.
 #[derive(Clone, Debug)]
@@ -846,10 +846,13 @@ pub(super) struct ClientPlainLinkClick {
 
 impl ClientPaneClick {
     pub(super) fn is_double_click_for(&self, next: &Self) -> bool {
-        self.pane_id == next.pane_id
-            && next.at.duration_since(self.at) <= std::time::Duration::from_millis(350)
-            && self.viewport_row.abs_diff(next.viewport_row) <= 1
-            && self.col.abs_diff(next.col) <= 1
+        let spot = |click: &Self| crate::client::mouse_engine::ClickSpot {
+            pane_id: click.pane_id.clone(),
+            row: click.viewport_row,
+            col: click.col,
+            at: click.at,
+        };
+        crate::client::mouse_engine::is_repeat_click(&spot(self), &spot(next))
     }
 }
 

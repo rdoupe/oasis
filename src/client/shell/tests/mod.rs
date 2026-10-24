@@ -258,6 +258,7 @@ mod herdr_import;
 mod input_conformance;
 #[path = "input.rs"]
 mod input_domain;
+mod key_engine;
 mod keybindings_settings;
 mod link_hover;
 mod mobile;
