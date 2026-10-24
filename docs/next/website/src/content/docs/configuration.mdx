@@ -401,7 +401,7 @@ Agent rows accept these built-in tokens:
 - `agent` — detected or reported agent display name.
 - `terminal_title` — latest OSC 0/2 terminal title after safety normalization.
 - `terminal_title_stripped` — the terminal title with one recognized leading activity or spinner glyph and its following whitespace removed.
-- `background` — background work the agent still has running, for example `🐚2 📺1 🤖3 ⏰19:10` (shells, monitors, subagents, next loop wakeup). Read from Claude Code's footer below its prompt box; empty when nothing is running or for other agents. For panes on a saved machine running Herdr, which does not send these counts, Oasis reads the pane through the machine's API when the agent changes, at most every 3 seconds per pane.
+- `background` — background work the agent still has running, for example `💲2 📺1 🤖3 ⏰19:10` (shells, monitors, subagents, next loop wakeup). Read from Claude Code's footer below its prompt box; empty when nothing is running or for other agents. For panes on a saved machine running Herdr, which does not send these counts, Oasis reads the pane through the machine's API when the agent changes, at most every 3 seconds per pane.
 - `shells`, `monitors`, `subagents` — one count each, for example `2 shells`.
 - `wakeup` — the next scheduled wakeup of a Claude Code loop, for example `next 19:10`.
 - `$name` — custom pane metadata named `name`.

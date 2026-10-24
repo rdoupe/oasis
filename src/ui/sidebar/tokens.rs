@@ -141,14 +141,15 @@ pub(crate) fn agent_rows(
 }
 
 // Emoji with default emoji presentation, so every terminal draws them two
-// cells wide. 🖥 would need a variation selector, so the screen is 📺.
-const SHELL_ICON: &str = "🐚";
+// cells wide. 🖥 would need a variation selector, so the screen is 📺, and a
+// shell is the `$` prompt as 💲.
+const SHELL_ICON: &str = "💲";
 const MONITOR_ICON: &str = "📺";
 const SUBAGENT_ICON: &str = "🤖";
 const MCP_TASK_ICON: &str = "🔌";
 const WAKEUP_ICON: &str = "⏰";
 
-/// `"🐚2"` from the reserved `oasis:<key>` count the server attaches.
+/// `"💲2"` from the reserved `oasis:<key>` count the server attaches.
 fn counted_activity(
     tokens: &std::collections::HashMap<String, String>,
     key: &str,
@@ -647,7 +648,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         ]);
         assert_eq!(
             background_summary(&tokens).as_deref(),
-            Some("🐚1 🤖3 ⏰19:10")
+            Some("💲1 🤖3 ⏰19:10")
         );
         assert_eq!(
             counted_activity(&tokens, "agents", SUBAGENT_ICON).as_deref(),

@@ -120,7 +120,7 @@ fn herdr_agent_change_requests_one_read_and_its_counts_reach_the_background_toke
         .rows
         .iter()
         .flatten()
-        .any(|token| token.kind == crate::ui::ResolvedTokenKind::Custom("🐚1 📺1".into())));
+        .any(|token| token.kind == crate::ui::ResolvedTokenKind::Custom("💲1 📺1".into())));
 
     // The next snapshot from the server keeps the counts the client read.
     state.set_endpoint_snapshot(
