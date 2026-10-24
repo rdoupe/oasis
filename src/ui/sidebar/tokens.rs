@@ -176,25 +176,41 @@ const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
 const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
 
 // One-cell marks for agents, so a row can name its agent without the word.
-// Claude's is the ✳ Claude Code puts in its own window title.
+// Claude's is the ✳ Claude Code puts in its own window title; the rest are
+// plain symbols in a color close to each tool's own. Agents without one get
+// their first letter in a color picked from their name, so each stays stable.
 const CLAUDE_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xd9, 0x77, 0x57);
-const CODEX_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x10, 0xa3, 0x7f);
-const GEMINI_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x42, 0x85, 0xf4);
-const AGENT_FALLBACK_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
+const AGENT_LETTER_COLORS: [SidebarTokenColor; 6] = [
+    SidebarTokenColor::from_rgb(0xe5, 0xc0, 0x7b),
+    SidebarTokenColor::from_rgb(0x61, 0xaf, 0xef),
+    SidebarTokenColor::from_rgb(0x98, 0xc3, 0x79),
+    SidebarTokenColor::from_rgb(0xc6, 0x78, 0xdd),
+    SidebarTokenColor::from_rgb(0x56, 0xb6, 0xc2),
+    SidebarTokenColor::from_rgb(0xe0, 0x6c, 0x75),
+];
 
 fn agent_icon_part(
     agent: Option<crate::detect::Agent>,
     label: Option<&str>,
 ) -> Option<ActivityPart> {
     use crate::detect::Agent;
+    let mark = |glyph: &str, r, g, b| (glyph.to_owned(), SidebarTokenColor::from_rgb(r, g, b));
     let (text, color) = match agent {
         Some(Agent::Claude) => ("✳".to_owned(), CLAUDE_COLOR),
-        Some(Agent::Codex) => ("◇".to_owned(), CODEX_COLOR),
-        Some(Agent::Gemini) => ("✦".to_owned(), GEMINI_COLOR),
-        _ => (
-            label?.chars().next()?.to_uppercase().collect::<String>(),
-            AGENT_FALLBACK_COLOR,
-        ),
+        Some(Agent::Codex) => mark("◇", 0x10, 0xa3, 0x7f),
+        Some(Agent::Gemini) => mark("✦", 0x42, 0x85, 0xf4),
+        Some(Agent::Cursor) => mark("◆", 0x9b, 0x8c, 0xff),
+        Some(Agent::OpenCode) => mark("◈", 0xf5, 0xa7, 0x42),
+        Some(Agent::GithubCopilot) => mark("◉", 0x89, 0x57, 0xe5),
+        Some(Agent::Pi) => mark("π", 0xc6, 0x78, 0xdd),
+        _ => {
+            let name = label?;
+            let letter = name.chars().next()?.to_uppercase().collect::<String>();
+            let index = name.bytes().fold(0usize, |hash, byte| {
+                hash.wrapping_mul(31).wrapping_add(usize::from(byte))
+            }) % AGENT_LETTER_COLORS.len();
+            (letter, AGENT_LETTER_COLORS[index])
+        }
     };
     Some(ActivityPart {
         kind: ActivityKind::Agent,
@@ -888,7 +904,15 @@ mod agent_icon_tests {
         );
         assert_eq!(claude.color, CLAUDE_COLOR);
         let pi = agent_icon_part(Some(crate::detect::Agent::Pi), Some("pi")).unwrap();
-        assert_eq!((pi.text.as_str(), pi.color), ("P", AGENT_FALLBACK_COLOR));
+        assert_eq!(pi.text, "π");
+        // Agents without a mark get a colored letter that is stable per name.
+        let amp = agent_icon_part(Some(crate::detect::Agent::Amp), Some("amp")).unwrap();
+        assert_eq!(amp.text, "A");
+        assert!(AGENT_LETTER_COLORS.contains(&amp.color));
+        assert_eq!(
+            agent_icon_part(Some(crate::detect::Agent::Amp), Some("amp")).unwrap(),
+            amp
+        );
         assert!(agent_icon_part(None, None).is_none());
     }
 
