@@ -907,3 +907,49 @@ contains = ["active"]
 "#;
     assert!(parse_manifest(manifest).is_err());
 }
+
+/// Claude keeps its half-circle title spinner up while only background
+/// shells, monitors or subagents run. The bundled rule reads that footer as
+/// idle, but never hides a live turn or a permission menu.
+#[test]
+fn claude_background_only_footer_is_idle_but_live_turns_and_menus_win() {
+    with_manifest_dirs("claude-background-idle", || {
+        let footer = "──────\n❯\n──────\n  ↻ loop: keep things moving · next 22:09\n  ⏵⏵ auto mode on · 8 shells, 1 monitor\n\n  ● main\n  ◯ general-purpose  Drafting results   2h 26m 4s · ↓ 268.6k tokens\n";
+        let live = format!("✢ Crafting… (1m 42s · ↓ 1.3k tokens)\n{footer}");
+        let menu = format!("Do you want to proceed?\n❯ 1. Yes\n  2. No\nEsc to cancel\n{footer}");
+        for (screen, state, rule) in [
+            (footer.to_owned(), AgentState::Idle, "background_only_idle"),
+            (live, AgentState::Working, "osc_title_working"),
+        ] {
+            let result = explain_with_input(
+                Agent::Claude,
+                DetectionInput {
+                    screen: &screen,
+                    osc_title: "◐ 298/3/3 | did i break it",
+                    osc_progress: "",
+                },
+            );
+            assert_eq!(result.state, state, "{screen}");
+            assert_eq!(
+                result
+                    .matched_rule
+                    .as_ref()
+                    .map(|matched| matched.id.as_str()),
+                Some(rule)
+            );
+        }
+        let result = explain_with_input(
+            Agent::Claude,
+            DetectionInput {
+                screen: &menu,
+                osc_title: "◐ 298/3/3 | did i break it",
+                osc_progress: "",
+            },
+        );
+        assert_ne!(
+            result.state,
+            AgentState::Idle,
+            "a permission menu is never idle"
+        );
+    });
+}

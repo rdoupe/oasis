@@ -1,8 +1,37 @@
 id = "claude"
-version = "2026.10.11.1"
+version = "2026.10.23.1"
 min_engine_version = 2
-updated_at = "2026-10-11T00:00:00Z"
+updated_at = "2026-10-23T00:00:00Z"
 aliases = ["claude-code"]
+
+[[rules]]
+id = "background_only_idle"
+state = "idle"
+priority = 1150
+region = "bottom_non_empty_lines(16)"
+visible_idle = true
+# Since 2.1.228 the half-circle title spinner stays up while only background
+# shells, monitors or subagents run. An open prompt with that footer and no
+# live-turn marker means the main agent is waiting for input.
+all = [
+  { line_regex = ['^\s*❯(?:\s*$|\s+[^\d\s])'] },
+  { any = [
+      { line_regex = ['^\s*(?:⏵⏵|⏸|\? for shortcuts).*\b[1-9]\d* (?:shells?|monitors?|MCP tasks?)\b'] },
+      { line_regex = ['^\s*◯ \S'] },
+  ] },
+]
+not = [
+  { line_regex = ['esc to interrupt'] },
+  { line_regex = ['^\s*[\x{002A}\x{00B7}\x{2722}\x{2733}\x{2736}\x{273B}\x{273D}]\s+\S.*…(?:\s+\(\d+[smh](?:\s|·)|\s*$)'] },
+  { line_regex = ['Waiting for [1-9]\d* background agents? to finish'] },
+  { contains = ["enter to select"] },
+  { contains = ["esc to cancel"] },
+  { contains = ["Esc to cancel"] },
+  { contains = ["tab/arrow keys"] },
+  { contains = ["arrow keys to navigate"] },
+  { contains = ["↑/↓ to navigate"] },
+  { contains = ["Do you want"] },
+]
 
 [[rules]]
 id = "osc_title_working"
