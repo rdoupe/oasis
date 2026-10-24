@@ -201,12 +201,20 @@ pub mod wire {
     }
 }
 
-/// Interim access to the TUI's keybinding engine, until the shared key
-/// engine (`KeyEngine`) replaces it. Matching works on [`TerminalKey`], which a
+/// Herdr's key handling: [`keys::KeyEngine`] runs the modes, the prefix and
+/// the bindings and maps actions to server requests, exactly as the TUI does.
+/// The binding types and [`keys::load`] were the interim API before the
+/// engine; prefer the engine. Matching works on [`keys::TerminalKey`], which a
 /// front end builds from a crossterm `KeyEvent` with `TerminalKey::from`.
 pub mod keys {
-    pub use crate::config::{ActionKeybinds, IndexedKeybind, Keybinds, LiveKeybindConfig};
-    pub use crate::input::TerminalKey;
+    pub use crate::client::keys::{
+        request_for_action, route_key, ActionContext, ActionRequest, KeyEngine, KeyMode,
+        KeyOutcome, KeyStep, KeyTransition,
+    };
+    pub use crate::config::{
+        ActionKeybinds, CustomCommandKeybind, IndexedKeybind, Keybinds, LiveKeybindConfig,
+    };
+    pub use crate::input::{KeybindAction, KeybindMatch, TerminalKey};
 
     /// The live keybindings from the oasis config, as the TUI loads them:
     /// invalid bindings fall back to the configured prefix and defaults.
@@ -220,6 +228,17 @@ pub mod keys {
                 keybinds: config.keybinds(),
             })
     }
+}
+
+/// Herdr's mouse rules for panes: focus, selection, double clicks, plain and
+/// Ctrl link clicks, pass-through to apps that report the mouse, and wheel
+/// scrolling. See [`mouse::MouseEngine`].
+pub mod mouse {
+    pub use crate::client::mouse_engine::{
+        is_repeat_click, released_in_place, wheel_scroll_offset, ClickSpot, MouseEngine,
+        MouseOutcome, PanePress, MULTI_CLICK_INTERVAL, PLAIN_LINK_CLICK_DELAY,
+    };
+    pub use crate::pane::ScrollMetrics;
 }
 
 #[cfg(test)]
@@ -288,6 +307,7 @@ mod tests {
         // nextest runs each test in its own process, so setting the variable is isolated.
         let dir = std::env::temp_dir().join(format!("oasis-embed-keys-{}", std::process::id()));
         let previous = std::env::var_os("XDG_CONFIG_HOME");
+        std::env::set_var("HOME", dir.join("home"));
         std::env::set_var("XDG_CONFIG_HOME", &dir);
         let config_dir = crate::config::config_dir();
         std::fs::create_dir_all(&config_dir).unwrap();

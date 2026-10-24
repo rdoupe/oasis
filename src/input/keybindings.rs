@@ -11,13 +11,13 @@ pub(crate) enum KeybindDispatch {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum KeybindMatch {
+pub enum KeybindMatch {
     Action(KeybindAction),
     Command(CustomCommandKeybind),
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum KeybindAction {
+pub enum KeybindAction {
     NewWorkspace,
     NewWorktree,
     OpenWorktree,

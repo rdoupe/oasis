@@ -10,9 +10,9 @@ pub(crate) use keybind_help::{
 };
 pub(crate) use keybindings::{
     resolve_custom_command, resolve_direct_binding, resolve_indexed_action,
-    resolve_non_indexed_action, resolve_prefix_binding, KeybindAction, KeybindDispatch,
-    KeybindMatch,
+    resolve_non_indexed_action, resolve_prefix_binding, KeybindDispatch,
 };
+pub use keybindings::{KeybindAction, KeybindMatch};
 pub(crate) use lease::{InputLease, InputLeaseKey, InputLeaseTable, RepeatPlan};
 #[cfg(not(windows))]
 pub use model::ime_compatible_keyboard_enhancement_flags;
