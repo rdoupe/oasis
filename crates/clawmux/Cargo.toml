@@ -20,4 +20,5 @@ toml = "0.8"
 unicode-width = "0.2"
 base64 = "0.22"
 glib-unix = "0.22"
+gio-unix = "0.22"
 ratatui = { version = "0.30", default-features = false }

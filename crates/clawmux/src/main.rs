@@ -4,6 +4,7 @@
 //! and puts it away instantly; the process and its connection stay alive in between.
 
 mod app;
+mod browser;
 mod conn;
 mod grid;
 mod keys;

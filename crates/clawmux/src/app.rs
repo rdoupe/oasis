@@ -41,6 +41,7 @@ pub struct App {
     model: RefCell<Option<SidebarModel>>,
     prefs: RefCell<SidebarPrefs>,
     previous_pane: RefCell<Option<String>>,
+    browser: Rc<crate::browser::Panel>,
     notification_pane: RefCell<Option<String>>,
     tabs: gtk::Box,
     banner: gtk::Revealer,
@@ -124,6 +125,7 @@ impl App {
             model: RefCell::new(None),
             prefs: RefCell::new(SidebarPrefs::load()),
             previous_pane: RefCell::new(None),
+            browser: Rc::new(crate::browser::Panel::default()),
             notification_pane: RefCell::new(None),
             tabs,
             banner,
@@ -758,6 +760,13 @@ impl App {
         // The key handler sees keys before GTK's shortcuts, so quit is handled here.
         if key.is(KeyCode::Char('Q'), ctrl_shift) || key.is(KeyCode::Char('q'), ctrl_shift) {
             self.application.quit();
+            return glib::Propagation::Stop;
+        }
+        // ctrl+shift+b shows or puts away the browser panel beside clawmux.
+        if key.is(KeyCode::Char('B'), ctrl_shift) || key.is(KeyCode::Char('b'), ctrl_shift) {
+            if !self.browser.toggle() {
+                self.show_banner("ctrl+click a link to open it in a browser window", Some(3));
+            }
             return glib::Propagation::Stop;
         }
         if let Some(zoom) = font_zoom(&key) {
@@ -1436,15 +1445,23 @@ impl App {
         }
     }
 
-    fn open_link_at(&self, cell: (u16, u16)) -> bool {
-        let uri = {
+    /// Opens the link under a cell, an OSC 8 hyperlink or a plain URL in the text, in a
+    /// new window of the user's default browser.
+    fn open_link_at(self: &Rc<Self>, cell: (u16, u16)) -> bool {
+        let url = {
             let grid = self.grid.borrow();
             grid.cell(cell.0, cell.1)
                 .and_then(|c| c.hyperlink)
                 .and_then(|index| grid.hyperlinks.get(index as usize).cloned())
+                .or_else(|| url_at(&grid, cell))
         };
-        let Some(uri) = uri else { return false };
-        gtk::UriLauncher::new(&uri).launch(Some(&self.window), gio::Cancellable::NONE, |_| {});
+        let Some(url) = url else { return false };
+        if let Err(error) = self.browser.open(&url) {
+            self.show_banner(
+                &format!("could not open a browser window: {error}"),
+                Some(5),
+            );
+        }
         true
     }
 
@@ -1507,6 +1524,49 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
         KeyCode::Char('0') => Some(None),
         _ => None,
     }
+}
+
+/// A plain `http(s)://` URL in the row text under `cell`, for links apps print without OSC 8.
+fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
+    let row: Vec<(u16, String)> = (0..grid.width)
+        .filter_map(|col| {
+            let c = grid.cell(col, cell.1)?;
+            (!c.skip).then(|| {
+                (
+                    col,
+                    if c.symbol.is_empty() {
+                        " ".into()
+                    } else {
+                        c.symbol.clone()
+                    },
+                )
+            })
+        })
+        .collect();
+    let text: String = row.iter().map(|(_, s)| s.as_str()).collect();
+    let mut offsets = Vec::new();
+    for (col, symbol) in &row {
+        offsets.extend(std::iter::repeat(*col).take(symbol.len()));
+    }
+    let mut search = 0;
+    while let Some(found) = text[search..].find("http") {
+        let start = search + found;
+        let rest = &text[start..];
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            let len = rest
+                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
+                .unwrap_or(rest.len());
+            let url = rest[..len].trim_end_matches(['.', ',', ')', ']', ';', ':']);
+            let (first, last) = (offsets[start], offsets[start + url.len().max(1) - 1]);
+            if (first..=last).contains(&cell.0) {
+                return Some(url.to_owned());
+            }
+            search = start + len.max(1);
+        } else {
+            search = start + 4;
+        }
+    }
+    None
 }
 
 /// Bindings that move between spaces or agents, which span every connected machine.
@@ -1578,6 +1638,55 @@ fn debug(message: impl FnOnce() -> String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn grid_with_row(text: &str) -> Grid {
+        use oasis_core::embed::wire::{CellData, FrameData, PaneSurfaceFrame};
+        let cells: Vec<CellData> = text
+            .chars()
+            .map(|c| CellData {
+                symbol: c.to_string(),
+                fg: 0,
+                bg: 0,
+                modifier: 0,
+                skip: false,
+                hyperlink: None,
+            })
+            .collect();
+        let mut grid = Grid::new();
+        grid.set_full(PaneSurfaceFrame {
+            boot_id: "b".into(),
+            projection_revision: 1,
+            surface_revision: 1,
+            frame: FrameData {
+                width: cells.len() as u16,
+                height: 1,
+                cells,
+                cursor: None,
+                hyperlinks: vec![],
+                graphics: vec![],
+            },
+            panes: vec![],
+            splits: vec![],
+            popup: None,
+            graphics: Default::default(),
+        });
+        grid
+    }
+
+    #[test]
+    fn plain_urls_are_found_under_the_clicked_cell() {
+        let grid = grid_with_row("see https://example.com/a?b=1. and http://x.io");
+        assert_eq!(
+            url_at(&grid, (4, 0)).as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(
+            url_at(&grid, (20, 0)).as_deref(),
+            Some("https://example.com/a?b=1")
+        );
+        assert_eq!(url_at(&grid, (2, 0)), None);
+        assert_eq!(url_at(&grid, (40, 0)).as_deref(), Some("http://x.io"));
+    }
 
     #[test]
     fn cycle_wraps_across_entries_from_every_machine() {
