@@ -34,6 +34,12 @@ impl EndpointNegotiation {
         }
     }
 
+    pub(crate) fn capabilities(&self) -> Vec<String> {
+        let mut capabilities = self.capabilities.iter().cloned().collect::<Vec<_>>();
+        capabilities.sort();
+        capabilities
+    }
+
     pub(crate) fn methods(&self) -> Vec<String> {
         self.methods.iter().cloned().collect()
     }
@@ -201,6 +207,13 @@ impl EndpointRegistry {
         {
             health.ready();
         }
+    }
+
+    /// Whether any connection has a health check that needs ticking.
+    pub(crate) fn health_tracked(&self) -> bool {
+        self.connections
+            .values()
+            .any(|connection| connection.health.is_some())
     }
 
     pub(crate) fn resume_health(&mut self, now: Instant) {

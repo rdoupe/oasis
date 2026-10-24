@@ -10,49 +10,9 @@ pub(crate) enum ClientPaneSurfacePatchOutcome {
     Applied(Option<ClientComposedSurfacePatch>),
 }
 
-fn row_fits_frame(row: &crate::protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
-    row.x
-        .saturating_add(row.cells.len().min(u16::MAX as usize) as u16)
-        <= frame.width
-        && row.y < frame.height
-}
-
-fn apply_row(row: &crate::protocol::PaneSurfacePatchRow, frame: &mut FrameData) -> bool {
-    if !row_fits_frame(row, frame) {
-        return false;
-    }
-    let start = usize::from(row.y) * usize::from(frame.width) + usize::from(row.x);
-    let end = start + row.cells.len();
-    if end > frame.cells.len() {
-        return false;
-    }
-    frame.cells[start..end].clone_from_slice(&row.cells);
-    true
-}
-
-fn apply_patch_to_surface(
-    surface: &mut crate::protocol::PaneSurfaceFrame,
-    patch: &crate::protocol::PaneSurfacePatch,
-) -> bool {
-    for row in &patch.rows {
-        if !apply_row(row, &mut surface.frame) {
-            return false;
-        }
-    }
-    for updated in &patch.panes {
-        let Some(existing) = surface
-            .panes
-            .iter_mut()
-            .find(|pane| pane.pane_id == updated.pane_id)
-        else {
-            return false;
-        };
-        *existing = updated.clone();
-    }
-    surface.frame.cursor = patch.cursor.clone();
-    surface.surface_revision = patch.surface_revision;
-    true
-}
+#[cfg(test)]
+use crate::client::connection::apply_row;
+use crate::client::connection::{apply_patch_to_surface, row_fits_frame};
 
 fn fast_path_blocker(
     state: &ClientShellState,

@@ -978,3 +978,59 @@ mod shared_ssh_tests {
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
+
+/// A wake signal another thread's event loop can watch: readable while
+/// raised, cleared by [`CoreWake::clear`]. The embeddable client core raises
+/// it when its outbox goes from empty to non-empty.
+pub(crate) struct CoreWake {
+    read: std::os::fd::OwnedFd,
+    write: std::os::fd::OwnedFd,
+}
+
+impl CoreWake {
+    pub(crate) fn new() -> std::io::Result<Self> {
+        use std::os::fd::FromRawFd as _;
+        let mut fds = [-1; 2];
+        if unsafe { libc::pipe(fds.as_mut_ptr()) } != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        for fd in fds {
+            unsafe {
+                libc::fcntl(fd, libc::F_SETFD, libc::FD_CLOEXEC);
+                libc::fcntl(fd, libc::F_SETFL, libc::O_NONBLOCK);
+            }
+        }
+        // SAFETY: pipe() returned two fresh descriptors that nothing else owns.
+        Ok(unsafe {
+            Self {
+                read: std::os::fd::OwnedFd::from_raw_fd(fds[0]),
+                write: std::os::fd::OwnedFd::from_raw_fd(fds[1]),
+            }
+        })
+    }
+
+    pub(crate) fn raise(&self) {
+        use std::os::fd::AsRawFd as _;
+        let byte = 1u8;
+        // A full pipe is already readable, so a failed write loses nothing.
+        unsafe { libc::write(self.write.as_raw_fd(), std::ptr::addr_of!(byte).cast(), 1) };
+    }
+
+    pub(crate) fn clear(&self) {
+        use std::os::fd::AsRawFd as _;
+        let mut buffer = [0u8; 64];
+        while unsafe {
+            libc::read(
+                self.read.as_raw_fd(),
+                buffer.as_mut_ptr().cast(),
+                buffer.len(),
+            )
+        } > 0
+        {}
+    }
+
+    pub(crate) fn raw_fd(&self) -> std::os::fd::RawFd {
+        use std::os::fd::AsRawFd as _;
+        self.read.as_raw_fd()
+    }
+}

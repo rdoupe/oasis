@@ -17,6 +17,8 @@ mod catalog_reload;
 mod clipboard_forwarding;
 mod clipboard_images;
 mod config_reload;
+pub(crate) mod connection;
+pub(crate) mod core;
 #[cfg(unix)]
 mod direct_graphics;
 pub(crate) mod endpoint;
@@ -162,16 +164,6 @@ use crate::protocol::{self, ClientMessage, ServerMessage, MAX_GRAPHICS_FRAME_SIZ
 #[cfg(test)]
 use crate::protocol::{AttachScrollDirection, AttachScrollSource, NotifyKind};
 use crate::server::socket_paths::client_socket_path;
-
-/// The decoder for whichever optional surface encodings this connection negotiated.
-fn negotiated_surface_decoder(
-    negotiation: &endpoint::EndpointNegotiation,
-) -> Option<protocol::surface_reuse::Decoder> {
-    let reuse = negotiation.supports_capability(protocol::surface_reuse::CAPABILITY);
-    let delta = negotiation.supports_capability(protocol::surface_delta::CAPABILITY);
-    let scroll = negotiation.supports_capability(protocol::surface_scroll::CAPABILITY);
-    (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
-}
 
 fn run_client_with_mode(
     attach_request: Option<(String, bool)>,
@@ -628,7 +620,7 @@ async fn run_client_loop(
             handshake.endpoint_methods.unwrap_or_default(),
             handshake.endpoint_capabilities.unwrap_or_default(),
         );
-        let surface_decoder = negotiated_surface_decoder(&negotiation);
+        let surface_decoder = connection::surface_decoder(&negotiation);
         let transport = start_endpoint_transport(
             stream,
             (),
@@ -1411,7 +1403,6 @@ async fn run_client_loop(
                     ) {
                         continue;
                     }
-                    let surface_decoder = negotiated_surface_decoder(&negotiation);
                     let agent_view_projection_supported = negotiation.supports_capability(
                         crate::protocol::endpoint::AGENT_VIEW_PROJECTION_CAPABILITY,
                     );
@@ -1432,6 +1423,7 @@ async fn run_client_loop(
                     let reader_quit = writer.stop_handle();
                     #[cfg(unix)]
                     state.start_endpoint_graphics_generation(&endpoint_id, generation);
+                    let reader_negotiation = negotiation.clone();
                     write_stream.insert(
                         endpoint_id.clone(),
                         writer,
@@ -1442,18 +1434,14 @@ async fn run_client_loop(
                     if let Some(frame) = frame {
                         state.present_frame(frame);
                     }
-                    let reader_tx = event_tx.clone();
-                    std::thread::spawn(move || {
-                        server_reader_thread(
-                            reader,
-                            reader_tx,
-                            &reader_quit,
-                            MAX_GRAPHICS_FRAME_SIZE,
-                            endpoint_id,
-                            generation,
-                            surface_decoder,
-                        );
-                    });
+                    connection::spawn_endpoint_reader(
+                        reader,
+                        reader_quit,
+                        event_tx.clone(),
+                        endpoint_id,
+                        generation,
+                        &reader_negotiation,
+                    );
                 }
             },
             ClientLoopEvent::ActivateEndpoint {

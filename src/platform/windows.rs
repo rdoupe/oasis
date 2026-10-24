@@ -5698,3 +5698,46 @@ mod tests {
         }
     }
 }
+
+/// A wake signal another thread's event loop can watch: a manual-reset
+/// Event, signalled while raised and reset by [`CoreWake::clear`].
+pub(crate) struct CoreWake {
+    event: windows_sys::Win32::Foundation::HANDLE,
+}
+
+// SAFETY: an Event handle may be signalled and reset from any thread.
+unsafe impl Send for CoreWake {}
+unsafe impl Sync for CoreWake {}
+
+impl CoreWake {
+    pub(crate) fn new() -> std::io::Result<Self> {
+        use windows_sys::Win32::System::Threading::CreateEventW;
+        // SAFETY: default security, manual reset, initially unsignalled, unnamed.
+        let event = unsafe { CreateEventW(std::ptr::null(), 1, 0, std::ptr::null()) };
+        if event.is_null() {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(Self { event })
+    }
+
+    pub(crate) fn raise(&self) {
+        // SAFETY: the handle stays open for the lifetime of self.
+        unsafe { windows_sys::Win32::System::Threading::SetEvent(self.event) };
+    }
+
+    pub(crate) fn clear(&self) {
+        // SAFETY: the handle stays open for the lifetime of self.
+        unsafe { windows_sys::Win32::System::Threading::ResetEvent(self.event) };
+    }
+
+    pub(crate) fn raw_handle(&self) -> std::os::windows::io::RawHandle {
+        self.event as std::os::windows::io::RawHandle
+    }
+}
+
+impl Drop for CoreWake {
+    fn drop(&mut self) {
+        // SAFETY: the handle was created by CreateEventW and is closed once.
+        unsafe { windows_sys::Win32::Foundation::CloseHandle(self.event) };
+    }
+}

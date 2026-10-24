@@ -5,6 +5,13 @@
 //! frozen generation-1 protocol surface, [`cell`] decodes the cells inside
 //! server surfaces, and [`key`] is the neutral key event the key engine takes.
 
+pub use crate::client::core::{
+    ClientCore, CoreEvent, CoreOptions, Drained, EndpointError, EndpointId, EndpointStatus,
+    EndpointUpdate, MachineSource, Negotiation, RequestId, SavedMachine, SurfaceUpdate,
+};
+/// Semantic input for a pane, sent with [`ClientCore::pane_input`].
+pub use crate::protocol::ClientPaneInputEvent as PaneInput;
+
 /// Decoders for the colors and styles packed into [`wire::CellData`].
 ///
 /// The packing is part of the generation-1 surface codec: these helpers only
@@ -153,7 +160,7 @@ pub mod key {
 /// The frozen generation-1 client-shell protocol, for front ends that speak
 /// it directly. Everything here is part of the stable endpoint contract.
 pub mod wire {
-    pub use crate::api::schema::{AgentStatus, Method, Request};
+    pub use crate::api::schema::{AgentStatus, Method, Request, ResponseResult};
     pub use crate::protocol::endpoint::{
         EndpointClientHello, EndpointServerWelcome, BLOB_CODEC_V1, ENDPOINT_HELLO_KIND,
         ENDPOINT_PROTOCOL_GENERATION, ENDPOINT_SNAPSHOT_KIND, ENDPOINT_WELCOME_KIND,
@@ -161,12 +168,14 @@ pub mod wire {
         PRESENTATION_EFFECTS_SYNC_KIND, SNAPSHOT_CODEC_V1, SURFACE_CODEC_V1,
     };
     pub use crate::protocol::{
-        read_message, write_message, CellData, ClientKeyCode, ClientKeyKind, ClientMessage,
-        ClientMouseButton, ClientMouseGeometry, ClientMouseKind, ClientMousePosition,
-        ClientPaneInputEvent, ClientShellAgent, ClientShellPane, ClientShellSnapshot,
-        ClientShellTab, ClientShellWorkspace, ClientSurfaceSize, CursorState, FrameData,
-        FramingError, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatch, PaneSurfacePatchRow,
-        PaneSurfaceSplit, SemanticNotification, ServerMessage, SurfaceRect, MAX_FRAME_SIZE,
+        read_message, write_message, CellData, ClientHostAppearance, ClientHostColor,
+        ClientHostDefaultColorKind, ClientHostThemeUpdate, ClientKeyCode, ClientKeyKind,
+        ClientMessage, ClientMouseButton, ClientMouseGeometry, ClientMouseKind,
+        ClientMousePosition, ClientPaneInputEvent, ClientShellAgent, ClientShellPane,
+        ClientShellSnapshot, ClientShellTab, ClientShellWorkspace, ClientSurfaceSize, CursorState,
+        FrameData, FramingError, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatch,
+        PaneSurfacePatchRow, PaneSurfaceSplit, SemanticNotification, ServerMessage, SurfaceRect,
+        MAX_FRAME_SIZE,
     };
 
     /// A connected local stream (a Unix socket, or a named pipe on Windows).
