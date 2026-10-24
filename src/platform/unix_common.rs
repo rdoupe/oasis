@@ -110,6 +110,18 @@ pub(crate) fn local_stream_from_unix(
     ))
 }
 
+/// The Unix socket behind a client stream, as a nonblocking std stream an
+/// async reader can register with the event loop. Shares the socket with
+/// other clones, so shutting any clone down ends reads on it.
+pub(crate) fn local_stream_into_unix(
+    stream: crate::ipc::LocalStream,
+) -> std::io::Result<std::os::unix::net::UnixStream> {
+    let crate::ipc::LocalStream::UdSocket(stream) = stream;
+    let unix = stream.inner().try_clone()?;
+    unix.set_nonblocking(true)?;
+    Ok(unix)
+}
+
 pub(crate) fn shutdown_client_stream(stream: &crate::ipc::LocalStream) -> std::io::Result<()> {
     let crate::ipc::LocalStream::UdSocket(stream) = stream;
     stream.inner().shutdown(std::net::Shutdown::Both)

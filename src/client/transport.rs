@@ -13,8 +13,49 @@ pub(super) fn start_endpoint_transport(
     let reader = stream.try_clone().map_err(ClientError::ConnectionFailed)?;
     let transport = endpoint::NativeEndpointTransport::with_lifetime(stream, lifetime)
         .map_err(ClientError::ConnectionFailed)?;
-    let stopped = transport.stop_handle();
-    let event_tx = event_tx.clone();
+    spawn_server_reader(
+        reader,
+        transport.stop_handle(),
+        event_tx.clone(),
+        max_frame_size,
+        endpoint_id,
+        generation,
+        surface_decoder,
+    )
+    .map_err(ClientError::ConnectionFailed)?;
+    Ok(transport)
+}
+
+/// Starts reading one endpoint connection. On Unix inside the client's
+/// runtime this is a task on the loop's own thread, so an update wakes only
+/// that thread; elsewhere a blocking reader thread forwards over the channel.
+pub(super) fn spawn_server_reader(
+    reader: LocalStream,
+    stopped: Arc<AtomicBool>,
+    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    max_frame_size: usize,
+    endpoint_id: endpoint::ClientEndpointId,
+    generation: u64,
+    surface_decoder: Option<protocol::surface_reuse::Decoder>,
+) -> io::Result<()> {
+    #[cfg(unix)]
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        let stream = crate::platform::local_stream_into_unix(reader)?;
+        let stream = {
+            let _entered = runtime.enter();
+            tokio::net::UnixStream::from_std(stream)?
+        };
+        runtime.spawn(server_reader_task(
+            stream,
+            event_tx,
+            stopped,
+            max_frame_size,
+            endpoint_id,
+            generation,
+            surface_decoder,
+        ));
+        return Ok(());
+    }
     std::thread::Builder::new()
         .name("endpoint-reader".into())
         .spawn(move || {
@@ -28,8 +69,96 @@ pub(super) fn start_endpoint_transport(
                 surface_decoder,
             );
         })
-        .map_err(ClientError::ConnectionFailed)?;
-    Ok(transport)
+        .map(drop)
+}
+
+/// The async reader: frames are read and decoded on the client loop's
+/// thread and handed to the loop through the same bounded channel, so a slow
+/// loop still stops reading (and the server stops sending) instead of
+/// buffering. Stopping the transport shuts the socket down, which ends the
+/// read with EOF exactly as the thread reader reports it.
+#[cfg(unix)]
+pub(super) async fn server_reader_task(
+    mut stream: tokio::net::UnixStream,
+    event_tx: tokio::sync::mpsc::Sender<ClientLoopEvent>,
+    stopped: Arc<AtomicBool>,
+    max_frame_size: usize,
+    endpoint_id: endpoint::ClientEndpointId,
+    generation: u64,
+    mut surface_decoder: Option<protocol::surface_reuse::Decoder>,
+) {
+    loop {
+        if stopped.load(Ordering::Acquire) {
+            break;
+        }
+        let message = read_frame_async(&mut stream, max_frame_size)
+            .await
+            .and_then(|message| match &mut surface_decoder {
+                Some(decoder) => decoder.decode(message).map_err(|error| {
+                    protocol::FramingError::Io(io::Error::new(io::ErrorKind::InvalidData, error))
+                }),
+                None => Ok(message),
+            });
+        match message {
+            Ok(msg) => {
+                if event_tx
+                    .send(ClientLoopEvent::ServerMessage {
+                        endpoint_id: endpoint_id.clone(),
+                        generation,
+                        message: Box::new(msg),
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            Err(error) => {
+                if !matches!(error, protocol::FramingError::UnexpectedEof) {
+                    warn!(err = %error, "server read error");
+                }
+                let _ = event_tx
+                    .send(ClientLoopEvent::ServerDisconnected {
+                        endpoint_id: endpoint_id.clone(),
+                        generation,
+                    })
+                    .await;
+                break;
+            }
+        }
+    }
+}
+
+/// Reads one length-prefixed frame and decodes it with the same
+/// [`protocol::read_message`] the blocking reader uses.
+#[cfg(unix)]
+async fn read_frame_async(
+    stream: &mut tokio::net::UnixStream,
+    max_frame_size: usize,
+) -> Result<protocol::ServerMessage, protocol::FramingError> {
+    use tokio::io::AsyncReadExt as _;
+    let eof_or_io = |error: io::Error| {
+        if error.kind() == io::ErrorKind::UnexpectedEof {
+            protocol::FramingError::UnexpectedEof
+        } else {
+            protocol::FramingError::Io(error)
+        }
+    };
+    let mut frame = vec![0u8; 4];
+    stream.read_exact(&mut frame).await.map_err(eof_or_io)?;
+    let claimed = u32::from_le_bytes([frame[0], frame[1], frame[2], frame[3]]) as usize;
+    if claimed > max_frame_size {
+        return Err(protocol::FramingError::Oversized {
+            claimed,
+            max: max_frame_size,
+        });
+    }
+    frame.resize(4 + claimed, 0);
+    stream
+        .read_exact(&mut frame[4..])
+        .await
+        .map_err(eof_or_io)?;
+    protocol::read_message(&mut frame.as_slice(), max_frame_size)
 }
 
 /// Reads complete frames while retaining partial-read progress across nonblocking polls.
@@ -249,5 +378,139 @@ mod tests {
         assert!(flushed.is_ok(), "client write failed: {flushed:?}");
         assert!(!stopped.load(Ordering::Acquire));
         assert!(writer.take_error().is_none());
+    }
+}
+
+#[cfg(all(test, unix))]
+mod async_reader_tests {
+    use super::*;
+    use std::io::Write as _;
+
+    fn shutdown(reason: &str) -> protocol::ServerMessage {
+        protocol::ServerMessage::ServerShutdown {
+            reason: Some(reason.into()),
+        }
+    }
+
+    fn frame(message: &protocol::ServerMessage) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        protocol::write_message(&mut bytes, message).unwrap();
+        bytes
+    }
+
+    fn reason(event: ClientLoopEvent) -> Option<String> {
+        match event {
+            ClientLoopEvent::ServerMessage { message, .. } => match *message {
+                protocol::ServerMessage::ServerShutdown { reason } => reason,
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    fn runtime() -> tokio::runtime::Runtime {
+        tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .unwrap()
+    }
+
+    fn start(
+        capacity: usize,
+    ) -> (
+        std::os::unix::net::UnixStream,
+        tokio::sync::mpsc::Receiver<ClientLoopEvent>,
+        Arc<AtomicBool>,
+        std::os::unix::net::UnixStream,
+    ) {
+        let (server, client) = std::os::unix::net::UnixStream::pair().unwrap();
+        let wake = client.try_clone().unwrap();
+        let (tx, rx) = tokio::sync::mpsc::channel(capacity);
+        let stopped = Arc::new(AtomicBool::new(false));
+        spawn_server_reader(
+            crate::platform::local_stream_from_unix(client),
+            Arc::clone(&stopped),
+            tx,
+            protocol::MAX_FRAME_SIZE,
+            endpoint::ClientEndpointId::Local,
+            7,
+            None,
+        )
+        .unwrap();
+        (server, rx, stopped, wake)
+    }
+
+    #[test]
+    fn frames_split_across_writes_arrive_whole_and_in_order() {
+        runtime().block_on(async {
+            let (mut server, mut rx, _stopped, _wake) = start(8);
+            let mut bytes = frame(&shutdown("first"));
+            bytes.extend(frame(&shutdown("second")));
+            let (head, tail) = bytes.split_at(3);
+            server.write_all(head).unwrap();
+            tokio::task::yield_now().await;
+            server.write_all(tail).unwrap();
+            assert_eq!(reason(rx.recv().await.unwrap()).as_deref(), Some("first"));
+            assert_eq!(reason(rx.recv().await.unwrap()).as_deref(), Some("second"));
+        });
+    }
+
+    #[test]
+    fn eof_reports_one_disconnect_for_its_generation() {
+        runtime().block_on(async {
+            let (server, mut rx, _stopped, _wake) = start(8);
+            drop(server);
+            assert!(matches!(
+                rx.recv().await,
+                Some(ClientLoopEvent::ServerDisconnected { generation: 7, .. })
+            ));
+            assert!(
+                rx.recv().await.is_none(),
+                "the reader ends after one disconnect"
+            );
+        });
+    }
+
+    #[test]
+    fn shutting_the_socket_down_wakes_a_waiting_reader() {
+        runtime().block_on(async {
+            let (_server, mut rx, stopped, wake) = start(8);
+            tokio::task::yield_now().await;
+            stopped.store(true, Ordering::Release);
+            wake.shutdown(std::net::Shutdown::Both).unwrap();
+            let event = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+                .await
+                .expect("reader woke");
+            assert!(matches!(
+                event,
+                Some(ClientLoopEvent::ServerDisconnected { .. })
+            ));
+        });
+    }
+
+    /// A full channel stops the reader instead of buffering frames: the rest
+    /// stay in the socket until the loop drains, then arrive in order.
+    #[test]
+    fn a_full_channel_holds_frames_in_the_socket() {
+        runtime().block_on(async {
+            let (mut server, mut rx, _stopped, _wake) = start(1);
+            for index in 0..4 {
+                server
+                    .write_all(&frame(&shutdown(&index.to_string())))
+                    .unwrap();
+            }
+            for _ in 0..5 {
+                tokio::task::yield_now().await;
+            }
+            assert_eq!(
+                rx.len(),
+                1,
+                "one frame buffered; the rest wait in the socket"
+            );
+            for index in 0..4 {
+                let got = reason(rx.recv().await.unwrap());
+                assert_eq!(got.as_deref(), Some(index.to_string().as_str()));
+            }
+        });
     }
 }

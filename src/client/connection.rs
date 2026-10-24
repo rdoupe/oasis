@@ -18,9 +18,9 @@ pub(crate) fn surface_decoder(
     (reuse || delta || scroll).then(|| protocol::surface_reuse::Decoder::new(delta, scroll))
 }
 
-/// Starts the reader thread for a connected endpoint. It forwards decoded
-/// messages as [`ClientLoopEvent::ServerMessage`] and blocks on the socket;
-/// the writer's stop handle shutting the socket down ends it.
+/// Starts the reader for a connected endpoint. It forwards decoded messages
+/// as [`ClientLoopEvent::ServerMessage`]; the writer's stop handle shutting
+/// the socket down ends it with [`ClientLoopEvent::ServerDisconnected`].
 pub(super) fn spawn_endpoint_reader(
     reader: LocalStream,
     stop: Arc<AtomicBool>,
@@ -30,17 +30,21 @@ pub(super) fn spawn_endpoint_reader(
     negotiation: &endpoint::EndpointNegotiation,
 ) {
     let surface_decoder = surface_decoder(negotiation);
-    std::thread::spawn(move || {
-        transport::server_reader_thread(
-            reader,
-            event_tx,
-            &stop,
-            MAX_GRAPHICS_FRAME_SIZE,
+    if let Err(error) = transport::spawn_server_reader(
+        reader,
+        stop,
+        event_tx.clone(),
+        MAX_GRAPHICS_FRAME_SIZE,
+        endpoint_id.clone(),
+        generation,
+        surface_decoder,
+    ) {
+        warn!(%error, "endpoint reader could not start");
+        let _ = event_tx.try_send(ClientLoopEvent::ServerDisconnected {
             endpoint_id,
             generation,
-            surface_decoder,
-        );
-    });
+        });
+    }
 }
 
 pub(crate) fn row_fits_frame(row: &protocol::PaneSurfacePatchRow, frame: &FrameData) -> bool {
