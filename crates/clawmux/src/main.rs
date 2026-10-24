@@ -19,6 +19,14 @@ use gtk::{gio, glib};
 
 const APP_ID: &str = "dev.oasis.Clawmux";
 
+/// The path of this program when the running image was replaced on disk by a new build.
+fn replaced_binary() -> Option<std::path::PathBuf> {
+    let link = std::fs::read_link("/proc/self/exe").ok()?;
+    let path = link.to_str()?.strip_suffix(" (deleted)")?;
+    let path = std::path::PathBuf::from(path);
+    path.is_file().then_some(path)
+}
+
 fn main() -> glib::ExitCode {
     let application = gtk::Application::builder()
         .application_id(APP_ID)
@@ -52,6 +60,15 @@ fn main() -> glib::ExitCode {
                 let app = app::App::build(application);
                 app.show();
                 *slot = Some(app);
+            }
+            // A newer build was installed over the running one: become it, so a launch
+            // after an update never brings back the old window.
+            Some(_) if replaced_binary().is_some() => {
+                if let Some(path) = replaced_binary() {
+                    use std::os::unix::process::CommandExt as _;
+                    let error = std::process::Command::new(path).arg("--show").exec();
+                    eprintln!("clawmux: could not restart onto the new build: {error}");
+                }
             }
             Some(app) if args.iter().any(|arg| arg == "--show") => app.show(),
             Some(app) => app.toggle(),
