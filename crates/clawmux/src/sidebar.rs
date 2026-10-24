@@ -7,7 +7,9 @@ use std::rc::Rc;
 
 use gtk::prelude::*;
 use gtk::{glib, pango};
-use oasis_core::embed::sidebar::{ResolvedToken, ResolvedTokenKind, SidebarModel, TokenRow};
+use oasis_core::embed::sidebar::{
+    ActivityKind, ActivityPart, ResolvedToken, ResolvedTokenKind, SidebarModel, TokenRow,
+};
 use oasis_core::embed::wire::AgentStatus;
 
 /// What a sidebar row stands for when clicked.
@@ -111,12 +113,10 @@ impl SidebarView {
         }
     }
 
-    /// `agent_kinds` maps (endpoint, pane id) to the agent identity oasis reports, for logos.
     pub fn render(
         self: &Rc<Self>,
         model: &SidebarModel,
         active_endpoint: &str,
-        agent_kinds: &std::collections::HashMap<(String, String), String>,
         fg: crate::theme::Rgb,
     ) {
         self.list.remove_all();
@@ -211,14 +211,15 @@ impl SidebarView {
         for agent in &model.agents {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&dot(agent.status));
-            let kind = agent_kinds.get(&(agent.endpoint.clone(), agent.pane_id.clone()));
-            if let Some(texture) = kind.and_then(|kind| crate::logos::texture(kind, fg)) {
-                let logo = gtk::Image::from_paintable(Some(&texture));
-                logo.set_pixel_size(14);
-                logo.set_valign(gtk::Align::Center);
-                logo.add_css_class("agent-logo");
-                logo.set_tooltip_text(kind.map(String::as_str));
-                row.append(&logo);
+            if let Some(tool) = agent.agent {
+                if let Some(texture) = crate::logos::texture(tool, fg) {
+                    let logo = gtk::Image::from_paintable(Some(&texture));
+                    logo.set_pixel_size(14);
+                    logo.set_valign(gtk::Align::Center);
+                    logo.add_css_class("agent-logo");
+                    logo.set_tooltip_text(Some(&format!("{tool:?}")));
+                    row.append(&logo);
+                }
             }
             // The logo names the tool, so the title line keeps only the space name.
             let rows: Vec<TokenRow> = agent
@@ -328,18 +329,8 @@ fn token_markup(token: &ResolvedToken) -> Option<String> {
             parts.join(" ")
         }
         ResolvedTokenKind::Activity(parts) => {
-            let markup: Vec<String> = parts
-                .iter()
-                .filter(|part| !part.text.trim().is_empty())
-                .map(|part| {
-                    let text = glib::markup_escape_text(&part.text);
-                    match activity_color(part.color) {
-                        Some(color) => format!("<span foreground=\"{color}\">{text}</span>"),
-                        None => text.to_string(),
-                    }
-                })
-                .collect();
-            return (!markup.is_empty()).then(|| markup.join(" "));
+            let markup: Vec<String> = parts.iter().filter_map(activity_markup).collect();
+            return (!markup.is_empty()).then(|| markup.join("  "));
         }
         ResolvedTokenKind::StateText(text)
         | ResolvedTokenKind::Machine(text)
@@ -372,32 +363,33 @@ fn token_markup(token: &ResolvedToken) -> Option<String> {
     ))
 }
 
-/// An activity part's color as CSS, with named ANSI colors taken from the Omarchy palette.
-fn activity_color(color: ratatui::style::Color) -> Option<String> {
-    use ratatui::style::Color;
-    let index = match color {
-        Color::Rgb(r, g, b) => return Some(format!("#{r:02x}{g:02x}{b:02x}")),
-        Color::Reset => return None,
-        Color::Black => 0,
-        Color::Red => 1,
-        Color::Green => 2,
-        Color::Yellow => 3,
-        Color::Blue => 4,
-        Color::Magenta => 5,
-        Color::Cyan => 6,
-        Color::Gray => 7,
-        Color::DarkGray => 8,
-        Color::LightRed => 9,
-        Color::LightGreen => 10,
-        Color::LightYellow => 11,
-        Color::LightBlue => 12,
-        Color::LightMagenta => 13,
-        Color::LightCyan => 14,
-        Color::White => 15,
-        Color::Indexed(index) => usize::from(index),
+/// One background-activity part as an icon in its color with its count or schedule,
+/// in the order oasis ranks them (goal, loop, shells/monitors/MCP, subagents).
+fn activity_markup(part: &ActivityPart) -> Option<String> {
+    #[allow(unreachable_patterns)]
+    let icon = match part.kind {
+        ActivityKind::Goal => "\u{f04fe}",      // target
+        ActivityKind::Loop => "\u{f0450}",      // refresh
+        ActivityKind::Shells => "\u{f018d}",    // console
+        ActivityKind::Monitors => "\u{f0379}",  // monitor
+        ActivityKind::Subagents => "\u{f06a9}", // robot
+        ActivityKind::McpTasks => "\u{f0493}",  // cog
+        _ => return Some(glib::markup_escape_text(&part.text).to_string()),
     };
-    Some(crate::theme::Theme::load().palette[index].css())
+    let (r, g, b) = part.color.rgb();
+    let detail = match (&part.label, part.kind) {
+        (Some(label), _) => format!(" {}", glib::markup_escape_text(label)),
+        (None, ActivityKind::Goal | ActivityKind::Loop) => String::new(),
+        (None, _) if part.count > 1 => format!(" {}", part.count),
+        (None, _) => String::new(),
+    };
+    Some(format!(
+        "<span foreground=\"#{r:02x}{g:02x}{b:02x}\"><span font_family=\"{ICON_FONT}\">{icon}</span>{detail}</span>"
+    ))
 }
+
+/// Nerd Font icons, the terminal font Omarchy installs.
+const ICON_FONT: &str = "JetBrainsMono Nerd Font";
 
 pub fn dot(status: AgentStatus) -> gtk::Widget {
     let dot = gtk::Box::new(gtk::Orientation::Horizontal, 0);
@@ -411,4 +403,34 @@ pub fn dot(status: AgentStatus) -> gtk::Widget {
     dot.set_valign(gtk::Align::Center);
     dot.set_halign(gtk::Align::Center);
     dot.upcast()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use oasis_core::embed::sidebar::SidebarTokenColor;
+
+    fn part(kind: ActivityKind, count: u16, label: Option<&str>) -> ActivityPart {
+        ActivityPart {
+            kind,
+            count,
+            label: label.map(str::to_owned),
+            text: String::new(),
+            color: SidebarTokenColor::from_rgb(0x12, 0x34, 0x56),
+        }
+    }
+
+    #[test]
+    fn activity_parts_draw_as_colored_icons_with_counts_and_schedules() {
+        let goal = activity_markup(&part(ActivityKind::Goal, 1, None)).unwrap();
+        assert!(goal.contains("#123456") && goal.contains('\u{f04fe}') && !goal.contains(" 1"));
+        let looped = activity_markup(&part(ActivityKind::Loop, 1, Some("22:42"))).unwrap();
+        assert!(looped.contains('\u{f0450}') && looped.ends_with(" 22:42</span>"));
+        let running = activity_markup(&part(ActivityKind::Loop, 1, None)).unwrap();
+        assert!(running.ends_with("</span></span>"));
+        let shells = activity_markup(&part(ActivityKind::Shells, 2, None)).unwrap();
+        assert!(shells.contains('\u{f018d}') && shells.ends_with(" 2</span>"));
+        let one = activity_markup(&part(ActivityKind::Subagents, 1, None)).unwrap();
+        assert!(one.contains('\u{f06a9}') && one.ends_with("</span></span>"));
+    }
 }

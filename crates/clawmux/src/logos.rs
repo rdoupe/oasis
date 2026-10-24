@@ -6,6 +6,8 @@ use std::collections::HashMap;
 
 use gtk::{gdk, glib};
 
+use oasis_core::embed::sidebar::Agent;
+
 use crate::theme::Rgb;
 
 const CLAUDE: &str = include_str!("../assets/logos/claude-color.svg");
@@ -14,22 +16,15 @@ const CURSOR: &str = include_str!("../assets/logos/cursor.svg");
 const GROK: &str = include_str!("../assets/logos/grok.svg");
 const GEMINI: &str = include_str!("../assets/logos/gemini-color.svg");
 
-/// The logo for an agent identity as oasis reports it (`claude`, `codex`, `cursor-agent`, …).
-fn source(agent: &str) -> Option<&'static str> {
-    let agent = agent.to_ascii_lowercase();
-    let has = |name: &str| agent.contains(name);
-    if has("claude") {
-        Some(CLAUDE)
-    } else if has("codex") || has("openai") || has("gpt") {
-        Some(OPENAI)
-    } else if has("cursor") {
-        Some(CURSOR)
-    } else if has("grok") {
-        Some(GROK)
-    } else if has("gemini") {
-        Some(GEMINI)
-    } else {
-        None
+/// The logo for an agent tool as oasis identifies it.
+fn source(agent: Agent) -> Option<&'static str> {
+    match agent {
+        Agent::Claude => Some(CLAUDE),
+        Agent::Codex => Some(OPENAI),
+        Agent::Cursor => Some(CURSOR),
+        Agent::Grok => Some(GROK),
+        Agent::Gemini => Some(GEMINI),
+        _ => None,
     }
 }
 
@@ -38,7 +33,7 @@ thread_local! {
 }
 
 /// A texture of the agent's logo, drawn in `fg` where the mark has no colors of its own.
-pub fn texture(agent: &str, fg: Rgb) -> Option<gdk::Texture> {
+pub fn texture(agent: Agent, fg: Rgb) -> Option<gdk::Texture> {
     let svg = source(agent)?;
     let key = (svg.as_ptr() as usize, fg);
     CACHE.with(|cache| {
@@ -74,13 +69,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn agent_identities_map_to_their_logos() {
-        assert_eq!(source("claude"), Some(CLAUDE));
-        assert_eq!(source("Claude Code"), Some(CLAUDE));
-        assert_eq!(source("codex"), Some(OPENAI));
-        assert_eq!(source("cursor-agent"), Some(CURSOR));
-        assert_eq!(source("grok"), Some(GROK));
-        assert_eq!(source("gemini"), Some(GEMINI));
-        assert_eq!(source("pi"), None);
+    fn agent_tools_map_to_their_logos() {
+        assert_eq!(source(Agent::Claude), Some(CLAUDE));
+        assert_eq!(source(Agent::Codex), Some(OPENAI));
+        assert_eq!(source(Agent::Cursor), Some(CURSOR));
+        assert_eq!(source(Agent::Grok), Some(GROK));
+        assert_eq!(source(Agent::Gemini), Some(GEMINI));
+        assert_eq!(source(Agent::Pi), None);
     }
 }
