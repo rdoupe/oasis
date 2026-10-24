@@ -8,7 +8,9 @@ use std::time::Duration;
 use crossterm::event::{KeyCode, KeyModifiers};
 use gtk::prelude::*;
 use gtk::{gdk, gio, glib};
-use oasis_core::embed::keys::{ActionContext, KeyEngine, KeyMode, KeyOutcome, KeybindAction};
+use oasis_core::embed::keys::{
+    route_key, ActionContext, KeyEngine, KeyMode, KeyOutcome, KeyStep, KeybindAction, KeybindMatch,
+};
 use oasis_core::embed::sidebar::{
     notification_delivery, NotificationToast, SidebarModel, SidebarPrefs,
 };
@@ -775,6 +777,17 @@ impl App {
             return glib::Propagation::Stop;
         }
         let terminal_key = key.terminal_key();
+        // Space and agent navigation spans every machine, as in the TUI; the key engine
+        // only sees the active machine, so those bindings are handled here.
+        let cross_machine = {
+            let keys = self.keys.borrow();
+            match route_key(keys.config(), keys.mode(), false, false, &terminal_key).step {
+                KeyStep::Binding(KeybindMatch::Action(action)) if spans_machines(action) => {
+                    Some(action)
+                }
+                _ => None,
+            }
+        };
         let outcomes = {
             let snapshot = self.snapshot.borrow();
             let Some(snapshot) = snapshot.as_deref() else {
@@ -796,6 +809,7 @@ impl App {
         for outcome in outcomes {
             match outcome {
                 KeyOutcome::ToPane(_) => self.send_key_to_pane(&key),
+                KeyOutcome::Request(_) if cross_machine.is_some() => {}
                 KeyOutcome::Request(request) => {
                     if let Some(conn) = self.conn.borrow().as_ref() {
                         conn.request_method(request.method);
@@ -817,7 +831,67 @@ impl App {
                 KeyOutcome::ModeKey(..) => {}
             }
         }
+        if let Some(action) = cross_machine {
+            self.navigate_across_machines(action);
+        }
         glib::Propagation::Stop
+    }
+
+    /// Next/previous/numbered space or agent across every machine, in sidebar order,
+    /// switching machines when the target lives on another one.
+    fn navigate_across_machines(self: &Rc<Self>, action: KeybindAction) {
+        let active = match self.conn.borrow().as_ref() {
+            Some(conn) => conn.active().as_str().to_owned(),
+            None => return,
+        };
+        let (spaces, agents) = match self.model.borrow().as_ref() {
+            Some(model) => (
+                model
+                    .machines
+                    .iter()
+                    .flat_map(|machine| {
+                        machine
+                            .spaces
+                            .iter()
+                            .map(|space| (machine.id.clone(), space.workspace_id.clone()))
+                    })
+                    .collect::<Vec<_>>(),
+                model
+                    .agents
+                    .iter()
+                    .map(|agent| (agent.endpoint.clone(), agent.pane_id.clone()))
+                    .collect::<Vec<_>>(),
+            ),
+            None => return,
+        };
+        let workspace = self.focused_workspace_id().unwrap_or_default();
+        let pane = self.focused_pane_id().unwrap_or_default();
+        let target = match action {
+            KeybindAction::PreviousWorkspace | KeybindAction::NextWorkspace => cycle(
+                &spaces,
+                &(active.clone(), workspace),
+                action == KeybindAction::NextWorkspace,
+            )
+            .map(|t| (t, true)),
+            KeybindAction::SwitchWorkspace(index) => spaces.get(index).cloned().map(|t| (t, true)),
+            KeybindAction::PreviousAgent | KeybindAction::NextAgent => cycle(
+                &agents,
+                &(active.clone(), pane),
+                action == KeybindAction::NextAgent,
+            )
+            .map(|t| (t, false)),
+            KeybindAction::FocusAgent(index) => agents.get(index).cloned().map(|t| (t, false)),
+            _ => None,
+        };
+        let Some(((endpoint, id), is_space)) = target else {
+            return;
+        };
+        self.switch_machine_str(&endpoint);
+        if is_space {
+            self.request("workspace.focus", json!({ "workspace_id": id }));
+        } else {
+            self.request("pane.focus", json!({ "pane_id": id }));
+        }
     }
 
     /// A key for the debug log. Plain typed characters are never logged, only chords and
@@ -1447,6 +1521,32 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
     }
 }
 
+/// Bindings that move between spaces or agents, which span every connected machine.
+fn spans_machines(action: KeybindAction) -> bool {
+    matches!(
+        action,
+        KeybindAction::PreviousWorkspace
+            | KeybindAction::NextWorkspace
+            | KeybindAction::SwitchWorkspace(_)
+            | KeybindAction::PreviousAgent
+            | KeybindAction::NextAgent
+            | KeybindAction::FocusAgent(_)
+    )
+}
+
+/// The entry after (or before) `current`, wrapping; the first one when `current` is absent.
+fn cycle<T: Clone + PartialEq>(items: &[T], current: &T, forward: bool) -> Option<T> {
+    if items.is_empty() {
+        return None;
+    }
+    let next = match items.iter().position(|item| item == current) {
+        Some(index) if forward => (index + 1) % items.len(),
+        Some(index) => (index + items.len() - 1) % items.len(),
+        None => 0,
+    };
+    items.get(next).cloned()
+}
+
 /// Debug logging: `CLAWMUX_DEBUG=1` prints to stderr; creating
 /// ~/.local/state/clawmux/debug turns on a log at ~/.local/state/clawmux/debug.log,
 /// so it can be enabled for an app started from a launcher.
@@ -1484,5 +1584,23 @@ fn debug(message: impl FnOnce() -> String) {
         if let Ok(mut file) = file.lock() {
             let _ = writeln!(file, "{line}");
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn cycle_wraps_across_entries_from_every_machine() {
+        let items = vec![("local", "w4"), ("ssh:a", "w1"), ("ssh:a", "w2")];
+        assert_eq!(cycle(&items, &("local", "w4"), true), Some(("ssh:a", "w1")));
+        assert_eq!(
+            cycle(&items, &("local", "w4"), false),
+            Some(("ssh:a", "w2"))
+        );
+        assert_eq!(cycle(&items, &("ssh:a", "w2"), true), Some(("local", "w4")));
+        assert_eq!(cycle(&items, &("gone", "w9"), true), Some(("local", "w4")));
+        assert_eq!(cycle::<(&str, &str)>(&[], &("local", "w4"), true), None);
     }
 }
