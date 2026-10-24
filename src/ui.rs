@@ -35,8 +35,9 @@ pub(crate) use self::scrollbar::{
 pub(crate) use self::sidebar::{
     agent_panel_entries_from, expanded_sidebar_sections, resolved_token_spans, sidebar_agent_rows,
     sidebar_section_divider_rect, sidebar_space_rows, AgentPanelEntry, AgentTokenContext,
-    ResolvedToken, ResolvedTokenKind, SpaceTokenContext,
+    SpaceTokenContext,
 };
+pub use self::sidebar::{ResolvedToken, ResolvedTokenKind};
 use self::status::copy_feedback_rect;
 pub(crate) use self::status::{render_config_diagnostic_buffer, render_copy_feedback_buffer};
 pub(crate) use self::tab_surface::{

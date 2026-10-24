@@ -1062,12 +1062,7 @@ pub(super) fn release_notes_state(
     }
 }
 
-#[derive(Clone, Copy)]
-pub(super) struct WorkspaceEntry {
-    pub(super) index: usize,
-    pub(super) indented: bool,
-    pub(super) last_child: bool,
-}
+pub(super) use crate::client::model::WorkspaceEntry;
 
 /// The overlay a client starts with: the Herdr import offer first, then
 /// onboarding.

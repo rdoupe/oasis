@@ -162,10 +162,10 @@ fn sort_aggregate_rows(
 ) {
     if sort == crate::config::AgentPanelSortConfig::Priority {
         rows.sort_by_key(|row| {
-            (
+            crate::client::model::combined_priority_key(
                 row.endpoint.stale(),
-                std::cmp::Reverse(status_priority(row.agent.agent_status)),
-                std::cmp::Reverse(row.recency),
+                row.agent.agent_status,
+                row.recency,
             )
         });
     }

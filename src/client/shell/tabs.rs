@@ -4,6 +4,8 @@ const TAB_SCROLL_BUTTON_WIDTH: u16 = 3;
 const MIN_TAB_STRIP_WIDTH: u16 =
     MIN_TAB_WIDTH + NEW_TAB_WIDTH + TAB_SCROLL_BUTTON_WIDTH.saturating_mul(2);
 
+use crate::client::model::tab_label;
+
 pub(crate) fn render_tab_bar(
     buffer: &mut Buffer,
     area: Rect,
@@ -369,14 +371,6 @@ fn max_tab_scroll(widths: &[u16], available: u16) -> usize {
         start -= 1;
     }
     start
-}
-
-fn tab_label(tab: &ClientShellTab) -> String {
-    if tab.zoomed {
-        format!("{} Z", tab.label)
-    } else {
-        tab.label.clone()
-    }
 }
 
 #[cfg(test)]

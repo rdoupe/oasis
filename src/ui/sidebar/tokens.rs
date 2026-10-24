@@ -4,13 +4,13 @@ use crate::config::{
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct ResolvedToken {
+pub struct ResolvedToken {
     pub kind: ResolvedTokenKind,
     pub style: SidebarTokenStyle,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum ResolvedTokenKind {
+pub enum ResolvedTokenKind {
     StateIcon,
     StateText(String),
     Machine(String),

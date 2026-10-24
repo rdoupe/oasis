@@ -206,6 +206,25 @@ pub mod wire {
 /// The binding types and [`keys::load`] were the interim API before the
 /// engine; prefer the engine. Matching works on [`keys::TerminalKey`], which a
 /// front end builds from a crossterm `KeyEvent` with `TerminalKey::from`.
+/// Sidebar data derived from snapshots, shared with the TUI sidebar.
+///
+/// Set [`super::CoreOptions::sidebar`] (or call
+/// [`super::ClientCore::set_sidebar_prefs`]) and `drain()` returns a fresh
+/// [`SidebarModel`] in `Drained::sidebar` only when something a sidebar
+/// shows changed. Tokens carry text and a neutral style; draw them in order.
+pub mod sidebar {
+    pub use crate::client::model::{
+        notification_delivery, AgentEntry, FooterEntry, GroupToggle, MachineEntry,
+        NotificationDelivery, NotificationToast, SidebarEndpoint, SidebarModel, SidebarPrefs,
+        SpaceEntry, TabEntry, TokenRow,
+    };
+    pub use crate::config::{
+        AgentPanelSortConfig, AgentsSidebarConfig, SidebarTokenColor, SidebarTokenStyle,
+        SpacesSidebarConfig, ToastDelivery,
+    };
+    pub use crate::ui::{ResolvedToken, ResolvedTokenKind};
+}
+
 pub mod keys {
     pub use crate::client::keys::{
         request_for_action, route_key, ActionContext, ActionRequest, KeyEngine, KeyMode,

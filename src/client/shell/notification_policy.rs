@@ -193,24 +193,26 @@ impl ClientShellState {
             }
             let target_active =
                 self.notification_target_is_active(&pending.endpoint_id, &pending.event);
-            let suppress_external = target_active && self.outer_focused != Some(false);
-            if let Some(sound) = pending.event.sound {
-                let suppress_sound =
-                    pending.event.kind == SemanticNotificationKind::Finished && suppress_external;
-                if !suppress_sound {
-                    effects.push(ClientShellNotificationEffect::Sound {
-                        sound: match sound {
-                            SemanticNotificationSound::Done => crate::sound::Sound::Done,
-                            SemanticNotificationSound::Request => crate::sound::Sound::Request,
-                        },
-                        agent: pending.event.agent.clone(),
-                    });
-                }
+            let delivery = crate::client::model::notification_delivery(
+                pending.event.kind,
+                pending.event.sound.is_some(),
+                self.config.toast_delivery,
+                target_active,
+                self.outer_focused,
+            );
+            if let Some(sound) = pending.event.sound.filter(|_| delivery.sound) {
+                effects.push(ClientShellNotificationEffect::Sound {
+                    sound: match sound {
+                        SemanticNotificationSound::Done => crate::sound::Sound::Done,
+                        SemanticNotificationSound::Request => crate::sound::Sound::Request,
+                    },
+                    agent: pending.event.agent.clone(),
+                });
             }
 
-            match self.config.toast_delivery {
-                crate::config::ToastDelivery::Off => {}
-                crate::config::ToastDelivery::Herdr if !target_active => {
+            match delivery.toast {
+                crate::client::model::NotificationToast::None => {}
+                crate::client::model::NotificationToast::InApp => {
                     self.queue_visible_notification(
                         ClientVisibleNotification {
                             endpoint_id: pending.endpoint_id,
@@ -221,14 +223,13 @@ impl ClientShellState {
                     );
                     repaint = true;
                 }
-                crate::config::ToastDelivery::Herdr => {}
-                crate::config::ToastDelivery::Terminal if !suppress_external => {
+                crate::client::model::NotificationToast::Terminal => {
                     effects.push(ClientShellNotificationEffect::Terminal {
                         title: pending.event.title,
                         body: pending.event.body,
                     });
                 }
-                crate::config::ToastDelivery::System if !suppress_external => {
+                crate::client::model::NotificationToast::System => {
                     #[cfg(windows)]
                     let target = pending.event.pane_id.as_ref().and_then(|pane_id| {
                         self.endpoint_boot_id(&pending.endpoint_id).map(|boot_id| {
@@ -246,7 +247,6 @@ impl ClientShellState {
                         target,
                     });
                 }
-                crate::config::ToastDelivery::Terminal | crate::config::ToastDelivery::System => {}
             }
         }
         (effects, repaint)

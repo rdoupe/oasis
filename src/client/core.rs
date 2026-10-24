@@ -45,6 +45,9 @@ pub struct CoreOptions {
     pub local: bool,
     /// The executable that starts a Local server. `None` runs `oasis` from PATH.
     pub server_exe: Option<PathBuf>,
+    /// Build a [`super::model::SidebarModel`] from snapshots and deliver it
+    /// through [`Drained::sidebar`] when it changes. `None` skips the work.
+    pub sidebar: Option<super::model::SidebarPrefs>,
 }
 
 impl Default for CoreOptions {
@@ -57,6 +60,7 @@ impl Default for CoreOptions {
             machines: MachineSource::SavedCatalog,
             local: true,
             server_exe: None,
+            sidebar: None,
         }
     }
 }
@@ -131,11 +135,16 @@ pub struct Drained {
     pub events: Vec<CoreEvent>,
     /// Events dropped because the outbox was full.
     pub dropped_events: u64,
+    /// The sidebar model, when sidebar prefs are set and it changed.
+    pub sidebar: Option<super::model::SidebarModel>,
 }
 
 impl Drained {
     pub fn is_empty(&self) -> bool {
-        self.endpoints.is_empty() && self.events.is_empty() && self.dropped_events == 0
+        self.endpoints.is_empty()
+            && self.events.is_empty()
+            && self.dropped_events == 0
+            && self.sidebar.is_none()
     }
 }
 
@@ -229,6 +238,7 @@ enum Command {
     Focus(bool),
     HostTheme(ClientHostThemeUpdate),
     Retry(EndpointId),
+    SidebarPrefs(Box<super::model::SidebarPrefs>),
     Shutdown,
 }
 
@@ -351,6 +361,12 @@ impl ClientCore {
         self.send(Command::Retry(endpoint.clone()));
     }
 
+    /// Replaces the sidebar settings, such as collapsed groups or sort
+    /// order, and turns the sidebar model on when it was off.
+    pub fn set_sidebar_prefs(&self, prefs: super::model::SidebarPrefs) {
+        self.send(Command::SidebarPrefs(Box::new(prefs)));
+    }
+
     fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
@@ -391,6 +407,7 @@ struct Outbox {
     endpoints: BTreeMap<EndpointId, PendingEndpoint>,
     events: VecDeque<CoreEvent>,
     dropped_events: u64,
+    sidebar: Option<super::model::SidebarModel>,
     /// Committed surfaces per endpoint, kept so coalesced patches can be
     /// expanded into full rows at drain time.
     surfaces: HashMap<EndpointId, PaneSurfaceFrame>,
@@ -415,7 +432,10 @@ enum PendingSurface {
 
 impl Outbox {
     fn is_empty(&self) -> bool {
-        self.endpoints.is_empty() && self.events.is_empty() && self.dropped_events == 0
+        self.endpoints.is_empty()
+            && self.events.is_empty()
+            && self.dropped_events == 0
+            && self.sidebar.is_none()
     }
 
     fn endpoint(&mut self, id: &EndpointId, label: &str) -> &mut PendingEndpoint {
@@ -511,6 +531,7 @@ impl Outbox {
             endpoints,
             events: std::mem::take(&mut self.events).into(),
             dropped_events: std::mem::take(&mut self.dropped_events),
+            sidebar: self.sidebar.take(),
         }
     }
 }
@@ -543,6 +564,56 @@ struct CoreLoop {
     next_internal_request: u64,
     focused: bool,
     next_health_tick: Option<Instant>,
+    /// Endpoint order for the sidebar: Local first, then saved machines.
+    order: Vec<ClientEndpointId>,
+    sidebar: Option<CoreSidebar>,
+}
+
+/// The sidebar model's inputs, kept on the core thread.
+struct CoreSidebar {
+    prefs: super::model::SidebarPrefs,
+    model: super::model::SidebarModel,
+    snapshots: HashMap<ClientEndpointId, Box<ClientShellSnapshot>>,
+    online: std::collections::HashSet<ClientEndpointId>,
+}
+
+impl CoreSidebar {
+    fn new(prefs: super::model::SidebarPrefs) -> Self {
+        Self {
+            prefs,
+            model: super::model::SidebarModel::default(),
+            snapshots: HashMap::new(),
+            online: std::collections::HashSet::new(),
+        }
+    }
+}
+
+/// Rebuilds `sidebar` from its endpoints in `order` and publishes the model
+/// only when something a sidebar shows changed.
+fn publish_sidebar(
+    shared: &Shared,
+    sidebar: &mut CoreSidebar,
+    order: &[ClientEndpointId],
+    labels: &HashMap<ClientEndpointId, String>,
+) {
+    let ids = order
+        .iter()
+        .map(|id| (id, id.storage_key()))
+        .collect::<Vec<_>>();
+    let endpoints = ids
+        .iter()
+        .map(|(id, key)| super::model::SidebarEndpoint {
+            id: key,
+            label: labels.get(*id).map_or(key.as_str(), String::as_str),
+            local: id.is_local(),
+            online: sidebar.online.contains(*id),
+            snapshot: sidebar.snapshots.get(*id).map(Box::as_ref),
+        })
+        .collect::<Vec<_>>();
+    if sidebar.model.update(&endpoints, &sidebar.prefs) {
+        let model = sidebar.model.clone();
+        shared.publish(|outbox| outbox.sidebar = Some(model));
+    }
 }
 
 impl CoreLoop {
@@ -581,6 +652,17 @@ impl CoreLoop {
             .collect();
         let mut supervisors = EndpointSupervisors::new(&profiles, now);
         let first_machine = labels.keys().next().cloned();
+        let mut order = Vec::new();
+        if options.local {
+            order.push(ClientEndpointId::Local);
+        }
+        order.extend(
+            profiles
+                .iter()
+                .filter(|profile| profile.enabled)
+                .map(|profile| ClientEndpointId::Ssh(profile.id.clone())),
+        );
+        let sidebar = options.sidebar.clone().map(CoreSidebar::new);
         if options.local {
             labels.insert(ClientEndpointId::Local, "Local".into());
             supervisors.add_local(super::client_socket_path(), None, now);
@@ -610,6 +692,29 @@ impl CoreLoop {
             next_internal_request: 1,
             focused: true,
             next_health_tick: None,
+            order,
+            sidebar,
+        }
+    }
+
+    /// Rebuilds the sidebar model and publishes it when it changed.
+    fn refresh_sidebar(&mut self) {
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            publish_sidebar(&self.shared, sidebar, &self.order, &self.labels);
+        }
+    }
+
+    fn sidebar_online(&mut self, id: &ClientEndpointId, online: bool) {
+        let Some(sidebar) = self.sidebar.as_mut() else {
+            return;
+        };
+        let changed = if online {
+            sidebar.online.insert(id.clone())
+        } else {
+            sidebar.online.remove(id)
+        };
+        if changed {
+            self.refresh_sidebar();
         }
     }
 
@@ -781,15 +886,18 @@ impl CoreLoop {
                     pending.status = Some(EndpointStatus::Online);
                     pending.negotiation = Some(published);
                 });
+                self.sidebar_online(&endpoint_id, true);
             }
         }
     }
 
-    fn publish_status(&self, id: &ClientEndpointId, status: EndpointStatus) {
+    fn publish_status(&mut self, id: &ClientEndpointId, status: EndpointStatus) {
         let label = self.label(id);
+        let online = status == EndpointStatus::Online;
         self.shared.publish(|outbox| {
             outbox.endpoint(&EndpointId::from_client(id), &label).status = Some(status);
         });
+        self.sidebar_online(id, online);
     }
 
     fn reader_event(&mut self, event: ClientLoopEvent) {
@@ -957,9 +1065,15 @@ impl CoreLoop {
             .insert(endpoint_id.clone(), snapshot.boot_id.clone());
         let id = EndpointId::from_client(endpoint_id);
         let label = self.label(endpoint_id);
+        if let Some(sidebar) = self.sidebar.as_mut() {
+            sidebar
+                .snapshots
+                .insert(endpoint_id.clone(), snapshot.clone());
+        }
         self.shared.publish(|outbox| {
             outbox.endpoint(&id, &label).snapshot = Some(snapshot);
         });
+        self.refresh_sidebar();
         self.ensure_streaming(endpoint_id);
     }
 
@@ -1153,6 +1267,24 @@ impl CoreLoop {
                 if let Some(endpoint_id) = self.client_id(&endpoint) {
                     self.supervisors.retry_now(&endpoint_id, Instant::now());
                 }
+            }
+            Command::SidebarPrefs(prefs) => {
+                match self.sidebar.as_mut() {
+                    Some(sidebar) => sidebar.prefs = *prefs,
+                    None => {
+                        let mut sidebar = CoreSidebar::new(*prefs);
+                        // Endpoints that already reported Online stay online;
+                        // later snapshots fill in the model.
+                        sidebar.online.extend(
+                            self.order
+                                .iter()
+                                .filter(|id| self.boot_ids.contains_key(id))
+                                .cloned(),
+                        );
+                        self.sidebar = Some(sidebar);
+                    }
+                }
+                self.refresh_sidebar();
             }
             Command::Shutdown => {}
         }

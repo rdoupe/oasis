@@ -7,7 +7,7 @@ pub(super) enum ClientGlobalMenuAction {
 }
 
 pub(super) fn global_menu_attention(snapshot: &ClientShellSnapshot) -> bool {
-    snapshot.update_available.is_some() || snapshot.integration_updates_available
+    crate::client::model::update_attention(snapshot)
 }
 
 pub(super) fn global_menu_item_has_badge(

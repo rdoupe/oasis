@@ -1,4 +1,8 @@
 use super::*;
+pub(crate) use crate::client::model::{
+    displayed_workspace_status, parent_group_key, workspace_close_is_group, workspace_entries,
+    workspace_rows,
+};
 use ratatui::{
     text::Line,
     widgets::{Paragraph, Widget},
@@ -521,151 +525,6 @@ pub(crate) fn render_sidebar(
     );
 }
 
-pub(crate) fn workspace_entries(
-    snapshot: &ClientShellSnapshot,
-    collapsed_groups: &HashSet<String>,
-) -> Vec<WorkspaceEntry> {
-    let mut members = HashMap::<&str, Vec<usize>>::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        if let Some(worktree) = &workspace.worktree {
-            members.entry(&worktree.key).or_default().push(index);
-        }
-    }
-    let grouped = members
-        .iter()
-        .filter(|(_, indices)| {
-            indices.iter().any(|index| {
-                snapshot.workspaces[*index]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            }) && indices.iter().any(|index| {
-                snapshot.workspaces[*index]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| !worktree.is_linked_worktree)
-            })
-        })
-        .map(|(key, _)| *key)
-        .collect::<HashSet<_>>();
-    let mut emitted = HashSet::<&str>::new();
-    let mut entries = Vec::new();
-    for (index, workspace) in snapshot.workspaces.iter().enumerate() {
-        let Some(worktree) = workspace
-            .worktree
-            .as_ref()
-            .filter(|worktree| grouped.contains(worktree.key.as_str()))
-        else {
-            entries.push(WorkspaceEntry {
-                index,
-                indented: false,
-                last_child: false,
-            });
-            continue;
-        };
-        if !emitted.insert(&worktree.key) {
-            continue;
-        }
-        let Some(group_members) = members.get(worktree.key.as_str()) else {
-            continue;
-        };
-        for parent in group_members.iter().copied().filter(|member| {
-            snapshot.workspaces[*member]
-                .worktree
-                .as_ref()
-                .is_some_and(|worktree| !worktree.is_linked_worktree)
-        }) {
-            entries.push(WorkspaceEntry {
-                index: parent,
-                indented: false,
-                last_child: false,
-            });
-        }
-        if collapsed_groups.contains(&worktree.key) {
-            if let Some(active) = group_members.iter().copied().find(|member| {
-                let workspace = &snapshot.workspaces[*member];
-                workspace.focused
-                    && workspace
-                        .worktree
-                        .as_ref()
-                        .is_some_and(|worktree| worktree.is_linked_worktree)
-            }) {
-                entries.push(WorkspaceEntry {
-                    index: active,
-                    indented: true,
-                    last_child: true,
-                });
-            }
-            continue;
-        }
-        let children = group_members
-            .iter()
-            .copied()
-            .filter(|member| {
-                snapshot.workspaces[*member]
-                    .worktree
-                    .as_ref()
-                    .is_some_and(|worktree| worktree.is_linked_worktree)
-            })
-            .collect::<Vec<_>>();
-        for (child_index, child) in children.iter().enumerate() {
-            entries.push(WorkspaceEntry {
-                index: *child,
-                indented: true,
-                last_child: child_index + 1 == children.len(),
-            });
-        }
-    }
-    entries
-}
-
-fn parent_group_key(snapshot: &ClientShellSnapshot, index: usize) -> Option<String> {
-    let workspace = snapshot.workspaces.get(index)?;
-    let worktree = workspace.worktree.as_ref()?;
-    if worktree.is_linked_worktree {
-        return None;
-    }
-    snapshot
-        .workspaces
-        .iter()
-        .any(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|candidate| {
-                candidate.key == worktree.key && candidate.is_linked_worktree
-            })
-        })
-        .then(|| worktree.key.clone())
-}
-
-pub(in crate::client::shell) fn workspace_close_is_group(
-    snapshot: &ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
-) -> bool {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
-    else {
-        return false;
-    };
-    let mut has_child = false;
-    for member in &snapshot.workspaces {
-        if member.workspace_id == workspace.workspace_id {
-            continue;
-        }
-        if let Some(candidate) = member
-            .worktree
-            .as_ref()
-            .filter(|candidate| candidate.key == worktree.key)
-        {
-            if !candidate.is_linked_worktree {
-                return false;
-            }
-            has_child = true;
-        }
-    }
-    has_child
-}
-
 pub(in crate::client::shell) fn render_parent_group_toggle(
     buffer: &mut Buffer,
     workspace_rect: Rect,
@@ -694,65 +553,6 @@ pub(in crate::client::shell) fn render_parent_group_toggle(
         Style::default().fg(palette.accent),
     );
     Some((toggle, key))
-}
-
-pub(in crate::client::shell) fn displayed_workspace_status(
-    snapshot: &ClientShellSnapshot,
-    workspace: &ClientShellWorkspace,
-    collapsed_groups: &HashSet<String>,
-) -> crate::api::schema::AgentStatus {
-    let Some(worktree) = workspace
-        .worktree
-        .as_ref()
-        .filter(|worktree| !worktree.is_linked_worktree)
-    else {
-        return workspace.agent_status;
-    };
-    if !collapsed_groups.contains(&worktree.key) {
-        return workspace.agent_status;
-    }
-    snapshot
-        .workspaces
-        .iter()
-        .filter(|candidate| {
-            candidate.worktree.as_ref().is_some_and(|member| {
-                member.key == worktree.key
-                    && (member.is_linked_worktree
-                        || candidate.workspace_id == workspace.workspace_id)
-            })
-        })
-        .map(|candidate| candidate.agent_status)
-        .max_by_key(|status| status_priority(*status))
-        .unwrap_or(workspace.agent_status)
-}
-
-pub(in crate::client::shell) fn workspace_rows(
-    workspace: &ClientShellWorkspace,
-    status: crate::api::schema::AgentStatus,
-    indented: bool,
-    config: &SpacesSidebarConfig,
-) -> Vec<Vec<crate::ui::ResolvedToken>> {
-    let label = if indented && !workspace.custom_label {
-        workspace
-            .branch
-            .as_deref()
-            .and_then(|branch| branch.strip_prefix("worktree/").or(Some(branch)))
-            .unwrap_or(&workspace.label)
-    } else {
-        &workspace.label
-    };
-    let token_values = workspace.tokens.iter().cloned().collect::<HashMap<_, _>>();
-    crate::ui::sidebar_space_rows(
-        config,
-        crate::ui::SpaceTokenContext {
-            workspace: label,
-            branch: workspace.branch.as_deref(),
-            state_text: status_text(status),
-            ahead_behind: workspace.git_ahead_behind,
-            tokens: &token_values,
-            suppress_git_details: indented,
-        },
-    )
 }
 
 pub(in crate::client::shell) fn render_workspace_rows(

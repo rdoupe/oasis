@@ -202,25 +202,11 @@ fn status_dot(status: crate::api::schema::AgentStatus) -> &'static str {
 }
 
 fn status_priority(status: crate::api::schema::AgentStatus) -> u8 {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Blocked => 4,
-        AgentStatus::Done => 3,
-        AgentStatus::Working => 2,
-        AgentStatus::Idle => 1,
-        AgentStatus::Unknown => 0,
-    }
+    crate::client::model::status_priority(status)
 }
 
 fn status_text(status: crate::api::schema::AgentStatus) -> &'static str {
-    use crate::api::schema::AgentStatus;
-    match status {
-        AgentStatus::Working => "working",
-        AgentStatus::Blocked => "blocked",
-        AgentStatus::Done => "done",
-        AgentStatus::Idle => "idle",
-        AgentStatus::Unknown => "unknown",
-    }
+    crate::client::model::status_text(status)
 }
 
 fn status_color(

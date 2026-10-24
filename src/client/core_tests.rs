@@ -216,3 +216,54 @@ fn the_wake_is_raised_once_per_empty_to_non_empty_transition() {
     shared.publish(|outbox| outbox.surface_full(&local(), "Local", surface(1)));
     assert_eq!(pipe_bytes(&shared), 1);
 }
+
+#[cfg(unix)]
+#[test]
+fn sidebar_changes_wake_once_and_drain_while_unchanged_snapshots_stay_quiet() {
+    let shared = Shared {
+        outbox: Mutex::new(Outbox::default()),
+        wake: crate::platform::CoreWake::new().unwrap(),
+    };
+    let mut sidebar = CoreSidebar::new(super::super::model::SidebarPrefs::default());
+    let order = [ClientEndpointId::Local];
+    let labels = HashMap::from([(ClientEndpointId::Local, "Local".to_owned())]);
+    sidebar.online.insert(ClientEndpointId::Local);
+    let mut snapshot = crate::client::model::tests::snapshot(
+        vec![crate::client::model::tests::workspace(
+            "ws",
+            1,
+            crate::api::schema::AgentStatus::Idle,
+        )],
+        Vec::new(),
+    );
+    sidebar
+        .snapshots
+        .insert(ClientEndpointId::Local, Box::new(snapshot.clone()));
+
+    publish_sidebar(&shared, &mut sidebar, &order, &labels);
+    assert_eq!(pipe_bytes(&shared), 1);
+    let drained = {
+        let mut outbox = shared.outbox.lock().unwrap();
+        shared.wake.clear();
+        outbox.take()
+    };
+    let model = drained.sidebar.expect("first model is delivered");
+    assert_eq!(model.machines[0].label, "Local");
+    assert_eq!(model.revision(), 1);
+
+    snapshot.revision += 1;
+    sidebar
+        .snapshots
+        .insert(ClientEndpointId::Local, Box::new(snapshot.clone()));
+    publish_sidebar(&shared, &mut sidebar, &order, &labels);
+    assert!(!wake_pending(&shared), "an unchanged sidebar does not wake");
+
+    snapshot.workspaces[0].label = "renamed".into();
+    sidebar
+        .snapshots
+        .insert(ClientEndpointId::Local, Box::new(snapshot));
+    publish_sidebar(&shared, &mut sidebar, &order, &labels);
+    assert!(wake_pending(&shared));
+    let drained = shared.outbox.lock().unwrap().take();
+    assert_eq!(drained.sidebar.map(|model| model.revision()), Some(2));
+}

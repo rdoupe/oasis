@@ -33,6 +33,7 @@ mod image_files;
 mod input;
 pub(crate) mod keys;
 mod loop_config;
+pub(crate) mod model;
 pub(crate) mod mouse_engine;
 mod notifications;
 mod remote_activity;
