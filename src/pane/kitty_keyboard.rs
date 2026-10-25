@@ -28,8 +28,10 @@ impl KittyKeyboardTracker {
         let mut index = 0;
         while index < bytes.len() {
             if bytes[index] != 0x1b {
-                index += 1;
-                continue;
+                match memchr::memchr(0x1b, &bytes[index..]) {
+                    Some(offset) => index += offset,
+                    None => break,
+                }
             }
             if index + 1 >= bytes.len() {
                 self.store_pending(&bytes[index..]);

@@ -27,7 +27,7 @@ impl DecscusrTracker {
     pub(crate) fn observe(&mut self, mut bytes: &[u8]) {
         while !bytes.is_empty() {
             if matches!(self.state, DecscusrParseState::Ground) {
-                let Some(escape) = bytes.iter().position(|&byte| byte == 0x1b) else {
+                let Some(escape) = memchr::memchr(0x1b, bytes) else {
                     return;
                 };
                 bytes = &bytes[escape..];

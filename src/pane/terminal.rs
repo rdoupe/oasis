@@ -3632,7 +3632,7 @@ fn recent_text_from_rows(rows: &[String], lines: usize) -> String {
 }
 
 fn contains_kitty_graphics_sequence(bytes: &[u8]) -> bool {
-    bytes.windows(3).any(|window| window == b"\x1b_G")
+    memchr::memmem::find(bytes, b"\x1b_G").is_some()
 }
 
 fn should_probe_host_terminal_theme_restore(core: &GhosttyPaneCore) -> bool {

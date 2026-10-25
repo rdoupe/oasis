@@ -40,14 +40,15 @@ impl C1XtgettcapQueryTracker {
     pub(super) fn observe(&mut self, bytes: &[u8]) {
         let mut index = 0;
         while index < bytes.len() {
-            if self.state == C1XtgettcapTrackerState::IgnoreString {
-                // Payload cannot affect this state. CAN/SUB still need the
+            if matches!(
+                self.state,
+                C1XtgettcapTrackerState::Ground
+                    | C1XtgettcapTrackerState::IgnoreString
+                    | C1XtgettcapTrackerState::OversizedDcs
+            ) {
+                // Payload cannot affect these states. CAN/SUB still need the
                 // global native-DCS bookkeeping when a dispatch is pending.
-                let next = bytes[index..].iter().position(|&byte| {
-                    matches!(byte, 0x1b | 0x9c)
-                        || (self.native_dcs_pending && matches!(byte, 0x18 | 0x1a))
-                });
-                match next {
+                match next_resting_candidate(&bytes[index..], self.native_dcs_pending) {
                     Some(offset) => index += offset,
                     None => break,
                 }
@@ -200,6 +201,38 @@ impl C1XtgettcapQueryTracker {
     }
 }
 
+/// Offset of the first byte a resting state (ground, ignored string, oversized
+/// DCS) can react to. It may also stop on other C1 bytes; those take an
+/// ordinary no-op step. Each block is tested without an early exit so the
+/// test vectorizes; most PTY output has no candidate at all.
+fn next_resting_candidate(bytes: &[u8], native_dcs_pending: bool) -> Option<usize> {
+    const BLOCK: usize = 32;
+    let candidate = |byte: u8| {
+        (byte == 0x1b)
+            | (byte & 0xf0 == 0x90)
+            | (native_dcs_pending & ((byte == 0x18) | (byte == 0x1a)))
+    };
+    let mut blocks = bytes.chunks_exact(BLOCK);
+    let mut base = 0;
+    for block in &mut blocks {
+        if block
+            .iter()
+            .fold(false, |found, &byte| found | candidate(byte))
+        {
+            return block
+                .iter()
+                .position(|&byte| candidate(byte))
+                .map(|offset| base + offset);
+        }
+        base += BLOCK;
+    }
+    blocks
+        .remainder()
+        .iter()
+        .position(|&byte| candidate(byte))
+        .map(|offset| base + offset)
+}
+
 fn xtgettcap_response(cap_hex: &[u8]) -> Option<Bytes> {
     if cap_hex.is_empty() || !cap_hex.len().is_multiple_of(2) {
         return None;
@@ -287,6 +320,29 @@ mod tests {
             assert_eq!(actual.body, expected.body);
             assert_eq!(actual.pending, expected.pending);
         }
+    }
+
+    #[test]
+    fn resting_skip_matches_single_bytes_across_block_edges() {
+        for position in [0, 1, 30, 31, 32, 33, 63, 64, 65, 95] {
+            for marker in [
+                b"\x90+q5463\x9c".as_slice(),
+                b"\x1bP+q524742\x1b\\",
+                b"\x9c",
+            ] {
+                let mut bytes = "plain ─ text ⠋ ".repeat(8).into_bytes();
+                bytes.truncate(position);
+                bytes.extend_from_slice(marker);
+                bytes.extend_from_slice("trailing ─ text ".repeat(6).as_bytes());
+                assert_chunk_equivalence(&bytes);
+            }
+        }
+        // CAN and SUB matter at rest only while a native dispatch is pending.
+        let mut bytes = b"\x1bP+q5463\x9c".to_vec();
+        bytes.extend_from_slice(&[b'a'; 40]);
+        bytes.push(0x18);
+        bytes.extend_from_slice(&[b'b'; 40]);
+        assert_chunk_equivalence(&bytes);
     }
 
     #[test]

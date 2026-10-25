@@ -69,7 +69,7 @@ impl DefaultColorOscTracker {
                 self.state,
                 DefaultColorOscTrackerState::Ground | DefaultColorOscTrackerState::IgnoreString
             ) {
-                let Some(offset) = bytes[cursor..].iter().position(|&byte| byte == 0x1b) else {
+                let Some(offset) = memchr::memchr(0x1b, &bytes[cursor..]) else {
                     break;
                 };
                 cursor += offset;
@@ -174,7 +174,7 @@ impl DefaultColorEventTracker {
                 self.state,
                 DefaultColorOscTrackerState::Ground | DefaultColorOscTrackerState::IgnoreString
             ) {
-                let Some(offset) = bytes[cursor..].iter().position(|&byte| byte == 0x1b) else {
+                let Some(offset) = memchr::memchr(0x1b, &bytes[cursor..]) else {
                     break;
                 };
                 cursor += offset;
@@ -377,7 +377,7 @@ impl OscStreamCollector {
                 self.state,
                 OscStreamState::Ground | OscStreamState::IgnoringString
             ) {
-                let Some(offset) = bytes[cursor..].iter().position(|&byte| byte == 0x1b) else {
+                let Some(offset) = memchr::memchr(0x1b, &bytes[cursor..]) else {
                     break;
                 };
                 cursor += offset;
