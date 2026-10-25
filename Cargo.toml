@@ -41,6 +41,7 @@ bincode = { version = "2", features = ["serde"] }
 bytes = "1"
 clap = { version = "4.5", default-features = false, features = ["std", "help", "usage", "error-context", "string"] }
 clap_complete = "4.5"
+compact_str = "0.9"
 crossterm = "0.29"
 ctrlc = { version = "3", features = ["termination"] }
 interprocess = "2.4.2"

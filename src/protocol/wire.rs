@@ -12,6 +12,8 @@ use std::io::{self, Read, Write};
 
 use serde::{Deserialize, Serialize};
 
+use super::CellSymbol;
+
 // ---------------------------------------------------------------------------
 // Protocol constants
 // ---------------------------------------------------------------------------
@@ -696,7 +698,7 @@ pub enum AttachScrollSource {
 #[derive(Debug, PartialEq, Eq, Serialize, Deserialize, bincode::Decode)]
 pub struct CellData {
     /// Grapheme cluster displayed in this cell (usually 1–2 chars).
-    pub symbol: String,
+    pub symbol: CellSymbol,
     /// Foreground color as a packed u32 (0xAARRGGBB or ratatui Color index).
     pub fg: u32,
     /// Background color as a packed u32.
@@ -727,7 +729,7 @@ impl Clone for CellData {
 impl CellData {
     pub(crate) fn from_ratatui_cell(cell: &ratatui::buffer::Cell) -> Self {
         Self {
-            symbol: cell.symbol().to_owned(),
+            symbol: CellSymbol::new(cell.symbol()),
             fg: color_to_u32(cell.fg),
             bg: color_to_u32(cell.bg),
             modifier: modifier_to_u16(cell.modifier),
@@ -852,7 +854,7 @@ impl FrameData {
                     let uri = self.hyperlinks.get(cell.hyperlink? as usize)?;
                     let x = u16::try_from(index % usize::from(width)).ok()?;
                     let y = u16::try_from(index / usize::from(width)).ok()?;
-                    Some(((x, y), cell.symbol.clone(), uri.clone()))
+                    Some(((x, y), cell.symbol.to_string(), uri.clone()))
                 })
                 .collect::<Vec<_>>()
         };
@@ -3073,9 +3075,9 @@ mod tests {
         let cells: Vec<CellData> = (0..(width as usize) * (height as usize))
             .map(|i| CellData {
                 symbol: if i % 256 < 32 {
-                    " ".to_owned()
+                    " ".into()
                 } else {
-                    format!("{:03}", i % 1000)
+                    format!("{:03}", i % 1000).into()
                 },
                 fg: color_to_u32(Color::Rgb((i % 256) as u8, ((i / 256) % 256) as u8, 128)),
                 bg: color_to_u32(Color::Indexed((i % 256) as u8)),

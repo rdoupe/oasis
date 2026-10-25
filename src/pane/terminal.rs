@@ -13,7 +13,7 @@ use tracing::{debug, error, warn};
 use unicode_width::UnicodeWidthStr;
 
 use crate::layout::PaneId;
-use crate::protocol::CellData;
+use crate::protocol::{CellData, CellSymbol};
 
 #[cfg(test)]
 mod migration_tests;
@@ -2738,8 +2738,8 @@ fn ghostty_collect_dirty_patch(
                 &mut grapheme_bytes,
                 &mut symbol_scratch,
             ) {
-                Ok(symbol) => symbol.to_owned(),
-                Err(_) => ghostty_blank_symbol_for_width(basic.wide).to_owned(),
+                Ok(symbol) => CellSymbol::new(symbol),
+                Err(_) => CellSymbol::new(ghostty_blank_symbol_for_width(basic.wide)),
             };
             patch_cells.push(cell_data_from_style(symbol, style));
             x += 1;
@@ -3255,12 +3255,12 @@ fn ghostty_reset_cell(
 
 fn blank_cell_data(default_fg: Option<Color>, default_bg: Option<Color>) -> CellData {
     cell_data_from_style(
-        " ".to_string(),
+        CellSymbol::from_static(" "),
         ghostty_default_style(default_fg, default_bg),
     )
 }
 
-fn cell_data_from_style(symbol: String, style: Style) -> CellData {
+fn cell_data_from_style(symbol: CellSymbol, style: Style) -> CellData {
     CellData {
         symbol,
         fg: crate::protocol::color_to_u32(style.fg.unwrap_or(Color::Reset)),

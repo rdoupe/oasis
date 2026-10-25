@@ -537,7 +537,10 @@ mod tests {
             .iter_mut()
             .enumerate()
         {
-            cell.symbol = text.chars().nth(x).map_or(" ".into(), String::from);
+            cell.symbol = text
+                .chars()
+                .nth(x)
+                .map_or(" ".into(), crate::protocol::CellSymbol::from);
         }
     }
 
