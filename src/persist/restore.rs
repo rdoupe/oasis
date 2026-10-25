@@ -734,6 +734,9 @@ fn restore_tab(
                 {
                     terminal.claude_transcript = handoff_claude_transcript;
                 }
+                // A handed-over pane's title (an agent's session name) only
+                // changes when the agent sets a new one; carry it now.
+                let _ = terminal.set_terminal_title(runtime.terminal_title());
                 panes.insert(*id, PaneState::new(terminal_id.clone()));
                 terminal_runtimes.insert(terminal_id, runtime);
                 terminals.push(terminal);
@@ -2001,6 +2004,7 @@ mod tests {
                 .unwrap();
             let mut state = runtime.handoff_runtime_state(pane_id.raw());
             state.agent_state = terminals.values().next().unwrap().handoff_agent_state();
+            state.terminal_title = Some("✳ Coven trial 1 build".into());
             let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
             let mut imports = HashMap::from([(
                 pane_id.raw(),
@@ -2024,6 +2028,11 @@ mod tests {
             drop(runtimes);
             let terminal = restored_terminals.values_mut().next().unwrap();
             assert_eq!(terminal.state, state_before_handoff);
+            assert_eq!(
+                terminal.terminal_title_stripped().as_deref(),
+                Some("Coven trial 1 build"),
+                "the handed-over title shows without waiting for a new one"
+            );
             terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
             assert_eq!(
                 terminal.state, state_before_handoff,
