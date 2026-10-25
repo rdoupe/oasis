@@ -2,7 +2,7 @@
 //!
 //! Oasis servers parse an agent's footer (shells, monitors, subagents) and send
 //! the counts as reserved `oasis:` agent tokens. Herdr servers have no such
-//! parser, so for their Claude panes the client reads the pane's detection text
+//! parser, so for their agent panes the client reads the pane's detection text
 //! through the server's JSON API and runs the same parser itself. Reads happen
 //! only when the pane's agent data changes, at most one per pane every
 //! [`REMOTE_ACTIVITY_MIN_INTERVAL`] and one in flight per endpoint, so an idle
@@ -39,6 +39,7 @@ impl AgentSignature {
 
 #[derive(Clone, Debug)]
 struct PaneActivity {
+    agent: crate::detect::Agent,
     signature: AgentSignature,
     dirty: bool,
     last_request: Option<std::time::Instant>,
@@ -75,7 +76,8 @@ impl EndpointRemoteActivity {
         }
     }
 
-    /// Tracks the snapshot's Claude panes, marks changed ones for a read, and
+    /// Tracks the snapshot's agent panes that have a reader, marks changed ones
+    /// for a read, and
     /// attaches the activity read so far.
     fn observe(&mut self, snapshot: &mut ClientShellSnapshot) {
         if !self.enabled {
@@ -83,14 +85,20 @@ impl EndpointRemoteActivity {
         }
         let mut seen = HashSet::new();
         for agent in &snapshot.agents {
-            if agent.agent.as_deref() != Some("claude") {
+            let Some(kind) = agent
+                .agent
+                .as_deref()
+                .and_then(crate::detect::parse_agent_label)
+                .filter(|kind| crate::detect::activity::has_reader(*kind))
+            else {
                 continue;
-            }
+            };
             seen.insert(agent.pane_id.clone());
             let signature = AgentSignature::of(agent);
             match self.panes.get_mut(&agent.pane_id) {
-                Some(pane) if pane.signature == signature => {}
+                Some(pane) if pane.signature == signature && pane.agent == kind => {}
                 Some(pane) => {
+                    pane.agent = kind;
                     pane.signature = signature;
                     pane.dirty = true;
                 }
@@ -98,6 +106,7 @@ impl EndpointRemoteActivity {
                     self.panes.insert(
                         agent.pane_id.clone(),
                         PaneActivity {
+                            agent: kind,
                             signature,
                             dirty: true,
                             last_request: None,
@@ -181,8 +190,7 @@ impl EndpointRemoteActivity {
             return false;
         };
         // No footer on screen (a dialog): the last counts stand.
-        let Some(activity) =
-            crate::detect::activity::background_activity(Some(crate::detect::Agent::Claude), text)
+        let Some(activity) = crate::detect::activity::background_activity(Some(pane.agent), text)
         else {
             return false;
         };

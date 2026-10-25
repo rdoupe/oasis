@@ -995,6 +995,7 @@ fn spawn_basic_detection_task(
         let mut pending_idle = PendingIdleConfirmation::default();
         let mut last_codex_prompt_ready = false;
         let mut last_background_activity = crate::detect::activity::BackgroundActivity::default();
+        let mut last_hook_activity_scan_seq = None;
         let mut last_self_reported_shell_check = None;
         let mut agent_job = AgentJobTracker::default();
         let mut quiet_detection = QuietDetection::default();
@@ -1178,7 +1179,29 @@ fn spawn_basic_detection_task(
 
             // The visible screen belongs to another job while the agent waits
             // in the background, so it says nothing about the agent's state.
-            if (lifecycle_authority_active || agent_job.in_background()) && !process_exited {
+            if agent_job.in_background() && !process_exited {
+                pending_idle.clear();
+                continue;
+            }
+            // The agent's hooks report its state, but its background work is
+            // only on screen; read that alone, once per screen change.
+            if lifecycle_authority_active && !process_exited {
+                if agent.is_some_and(crate::detect::activity::has_reader)
+                    && last_hook_activity_scan_seq != Some(detection_content.revision())
+                {
+                    last_hook_activity_scan_seq = Some(detection_content.revision());
+                    last_detection_text
+                        .refresh(agent, &content_seq, || terminal.detection_text_for_cache());
+                    publish_background_activity(
+                        &state_events,
+                        pane_id,
+                        agent,
+                        &last_detection_text.text,
+                        false,
+                        &mut last_background_activity,
+                    )
+                    .await;
+                }
                 pending_idle.clear();
                 continue;
             }
@@ -2973,6 +2996,7 @@ impl PaneRuntime {
                 let mut last_codex_prompt_ready = false;
                 let mut last_background_activity =
                     crate::detect::activity::BackgroundActivity::default();
+                let mut last_hook_activity_scan_seq = None;
                 let mut last_self_reported_shell_check = None;
                 let mut agent_job = AgentJobTracker::default();
                 let mut quiet_detection = QuietDetection::default();
@@ -3236,8 +3260,30 @@ impl PaneRuntime {
 
                     // The visible screen belongs to another job while the agent
                     // waits in the background, so it says nothing about its state.
-                    if (lifecycle_authority_active || agent_job.in_background()) && !process_exited
-                    {
+                    if agent_job.in_background() && !process_exited {
+                        pending_idle.clear();
+                        continue;
+                    }
+                    // The agent's hooks report its state, but its background
+                    // work is only on screen; read that alone, once per change.
+                    if lifecycle_authority_active && !process_exited {
+                        if agent.is_some_and(crate::detect::activity::has_reader)
+                            && last_hook_activity_scan_seq != Some(detection_content.revision())
+                        {
+                            last_hook_activity_scan_seq = Some(detection_content.revision());
+                            last_detection_text.refresh(agent, &text_content_seq, || {
+                                terminal.detection_text_for_cache()
+                            });
+                            publish_background_activity(
+                                &state_events,
+                                pane_id,
+                                agent,
+                                &last_detection_text.text,
+                                false,
+                                &mut last_background_activity,
+                            )
+                            .await;
+                        }
                         pending_idle.clear();
                         continue;
                     }

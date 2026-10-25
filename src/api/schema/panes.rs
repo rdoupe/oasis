@@ -548,6 +548,9 @@ pub struct BackgroundActivityInfo {
     pub agents: u16,
     #[serde(default, skip_serializing_if = "is_zero")]
     pub mcp_tasks: u16,
+    /// Background work the agent counts without saying what kind.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub tasks: u16,
     /// A loop is active: a `/loop` or a chain of scheduled wakeups.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub looping: bool,
@@ -578,6 +581,7 @@ impl BackgroundActivityInfo {
             monitors: activity.monitors,
             agents: activity.agents,
             mcp_tasks: activity.mcp_tasks,
+            tasks: activity.tasks,
             looping: transcript_loop.is_some() || activity.looping || activity.loop_next.is_some(),
             loop_next: transcript_loop
                 .filter(|label| !label.is_empty())
@@ -597,6 +601,7 @@ impl BackgroundActivityInfo {
             ("oasis:monitors", self.monitors),
             ("oasis:agents", self.agents),
             ("oasis:mcp_tasks", self.mcp_tasks),
+            ("oasis:tasks", self.tasks),
         ]
         .into_iter()
         .filter(|(_, count)| *count > 0)

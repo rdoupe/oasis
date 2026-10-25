@@ -52,6 +52,8 @@ pub enum ActivityKind {
     Monitors,
     Subagents,
     McpTasks,
+    /// Background work the agent counts without saying what kind.
+    Tasks,
     /// The agent itself, as a small mark. Front ends with their own icons can
     /// draw from `AgentEntry::agent` instead.
     Agent,
@@ -350,6 +352,13 @@ fn mcp_tasks_part(tokens: &std::collections::HashMap<String, String>) -> Option<
     })
 }
 
+/// `&`, the shell's mark for running something in the background.
+fn tasks_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
+    counted_part(tokens, "tasks", ActivityKind::Tasks, |count| {
+        format!("&{count}")
+    })
+}
+
 /// One `◯` per subagent, as Claude lists a row for each.
 fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<ActivityPart> {
     count(tokens, "agents").map(|count| ActivityPart {
@@ -373,6 +382,7 @@ fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<A
                 shells_part(tokens),
                 monitors_part(tokens),
                 mcp_tasks_part(tokens),
+                tasks_part(tokens),
             ]
         })
         .into_iter()

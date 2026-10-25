@@ -123,6 +123,13 @@
               "maximum": 65535,
               "minimum": 0,
               "type": "integer"
+            },
+            "tasks": {
+              "description": "Background work the agent counts without saying what kind.",
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
             }
           },
           "type": "object"
@@ -6884,6 +6891,13 @@
               "type": "integer"
             },
             "shells": {
+              "format": "uint16",
+              "maximum": 65535,
+              "minimum": 0,
+              "type": "integer"
+            },
+            "tasks": {
+              "description": "Background work the agent counts without saying what kind.",
               "format": "uint16",
               "maximum": 65535,
               "minimum": 0,

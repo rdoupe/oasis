@@ -14,44 +14,9 @@
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
 
-use super::Agent;
+use super::{counted, is_border, BackgroundActivity, FOOTER_LINES};
 
-/// How many footer lines below the prompt box are read.
-const FOOTER_LINES: usize = 12;
-
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct BackgroundActivity {
-    pub shells: u16,
-    pub monitors: u16,
-    pub agents: u16,
-    pub mcp_tasks: u16,
-    /// A `↻ loop:` line is showing, even one cut off before its wakeup time.
-    pub looping: bool,
-    /// The time of the next scheduled wakeup, as the agent shows it.
-    pub loop_next: Option<String>,
-    /// A `/goal` is active.
-    pub goal: bool,
-    /// The last turn met a `/goal`, and no prompt has followed it.
-    pub goal_achieved: bool,
-}
-
-impl BackgroundActivity {
-    #[cfg(test)]
-    pub fn is_empty(&self) -> bool {
-        *self == Self::default()
-    }
-}
-
-/// The agent's background work, or `None` when the screen shows no footer to
-/// read (a dialog or a full-screen view), so the last known value should stand.
-pub fn background_activity(agent: Option<Agent>, content: &str) -> Option<BackgroundActivity> {
-    match agent {
-        Some(Agent::Claude) => claude_background_activity(content),
-        _ => Some(BackgroundActivity::default()),
-    }
-}
-
-fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
+pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
     let lines = content.lines().collect::<Vec<_>>();
     let prompt = lines
         .iter()
@@ -128,21 +93,11 @@ fn is_mode_line(trimmed: &str) -> bool {
     trimmed.starts_with('⏵') || trimmed.starts_with('⏸') || trimmed.starts_with("? for shortcuts")
 }
 
-fn is_border(line: &str) -> bool {
-    let trimmed = line.trim();
-    trimmed.chars().take(3).count() == 3 && trimmed.starts_with("───")
-}
-
-/// Parses `"<n> <noun>"` or `"<n> <noun>s"` exactly.
-fn counted(segment: &str, noun: &str) -> Option<u16> {
-    let (count, rest) = segment.split_once(' ')?;
-    let rest = rest.strip_suffix('s').unwrap_or(rest);
-    (rest == noun).then(|| count.parse().ok()).flatten()
-}
-
 #[cfg(test)]
 mod tests {
+    use super::super::background_activity;
     use super::*;
+    use crate::detect::Agent;
 
     fn screen(footer: &[&str]) -> String {
         let mut lines = vec![
@@ -326,9 +281,9 @@ mod tests {
     }
 
     #[test]
-    fn other_agents_report_nothing() {
+    fn agents_without_a_reader_report_nothing() {
         let content = screen(&["  ⏵⏵ auto mode on · 2 shells"]);
-        assert!(background_activity(Some(Agent::Codex), &content)
+        assert!(background_activity(Some(Agent::Gemini), &content)
             .unwrap()
             .is_empty());
         assert!(background_activity(None, &content).unwrap().is_empty());

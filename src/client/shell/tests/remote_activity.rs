@@ -322,3 +322,26 @@ fn panes_known_before_the_capability_is_learned_are_still_read() {
         vec![(endpoint_id.clone(), "pane_1".to_owned())]
     );
 }
+
+/// Every agent with a screen reader is read, each with its own reader.
+#[test]
+fn herdr_codex_panes_are_read_with_the_codex_reader() {
+    let (mut state, endpoint_id) = herdr_machine();
+    let mut codex = claude("pane_1", 1, "work");
+    codex.agent = Some("codex".into());
+    let mut shell = claude("pane_2", 1, "zsh");
+    shell.agent = None;
+    state.set_endpoint_snapshot(&endpoint_id, remote_snapshot(1, vec![codex, shell]));
+    let now = std::time::Instant::now();
+    assert_eq!(
+        state.take_remote_activity_reads(now),
+        vec![(endpoint_id.clone(), "pane_1".to_owned())],
+        "panes without a reader are never read"
+    );
+    let screen = "  Worked for 3s • 11:14 AM\n  2 background terminals running · /ps to view\n\n› Ask Codex to do anything\n  GPT-5.6-Luna low · /var/tmp/work";
+    assert!(state.receive_remote_agent_screen(&endpoint_id, "pane_1", Some(screen)));
+    assert_eq!(
+        endpoint_agent_tokens(&state, &endpoint_id, "pane_1"),
+        vec![("oasis:shells".to_owned(), "2".to_owned())]
+    );
+}

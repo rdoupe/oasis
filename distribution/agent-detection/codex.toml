@@ -1,7 +1,7 @@
 id = "codex"
-version = "2026.10.11.1"
+version = "2026.10.25.1"
 min_engine_version = 3
-updated_at = "2026-10-11T00:00:00Z"
+updated_at = "2026-10-25T00:00:00Z"
 
 [[rules]]
 id = "osc_title_blocked"
@@ -87,6 +87,27 @@ any = [
   { contains = ["allow command?"] },
   { contains = ["All Results", "Filesystem Only", "Plugins"] },
 ]
+
+# Plan mode's closing question replaces the prompt box and waits on you; its
+# picker footer must be the last line, so a scrolled-back plan does not count.
+[[rules]]
+id = "plan_implement_prompt"
+state = "blocked"
+priority = 900
+region = "bottom_non_empty_lines(8)"
+visible_blocker = true
+contains = ["Implement this plan?"]
+regex = ['enter\s+select\s+·\s+esc\s+back\s*\z']
+
+# New or changed hooks stop the session at startup until you trust or skip them.
+[[rules]]
+id = "hooks_review"
+state = "blocked"
+priority = 900
+region = "bottom_non_empty_lines(10)"
+visible_blocker = true
+contains = ["Hooks need review"]
+regex = ['enter\s+confirm\s+·\s+esc\s+skip\s*\z']
 
 [[rules]]
 id = "weak_blocker"

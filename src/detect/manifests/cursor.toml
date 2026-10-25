@@ -1,7 +1,7 @@
 id = "cursor"
-version = "2026.08.03.1"
+version = "2026.10.25.1"
 min_engine_version = 1
-updated_at = "2026-08-03T01:08:04Z"
+updated_at = "2026-10-25T00:00:00Z"
 aliases = ["cursor-agent"]
 
 [[rules]]
@@ -31,6 +31,25 @@ any = [
   { contains = ["skip (esc or n)"] },
   { line_regex = ['(?i)^\s*(?:→\s*)?run .*\(y\)'] },
 ]
+
+# After a skipped command the input box asks what to do instead; the turn is
+# paused on you even though the stop hint stays up.
+[[rules]]
+id = "skip_instruction_prompt"
+state = "blocked"
+priority = 310
+region = "bottom_non_empty_lines(4)"
+visible_blocker = true
+contains = ["tell the agent what to do instead (enter to send"]
+
+# Plan mode's box asks whether to build; both choices must show.
+[[rules]]
+id = "plan_build_prompt"
+state = "blocked"
+priority = 310
+region = "bottom_non_empty_lines(10)"
+visible_blocker = true
+contains = ["ready to build?", "build locally (b)", "propose changes (p"]
 
 [[rules]]
 id = "stop_hint_working"
