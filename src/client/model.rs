@@ -30,6 +30,24 @@ pub(crate) fn status_priority(status: AgentStatus) -> u8 {
     }
 }
 
+/// [`status_priority`] for sorting agents: a pane a goal or loop still drives
+/// is busy between runs, so it ranks as working unless it needs you.
+pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::AgentMode>) -> u8 {
+    match (status, mode) {
+        (AgentStatus::Idle | AgentStatus::Done, Some(mode)) if mode.drives() => {
+            status_priority(AgentStatus::Working)
+        }
+        _ => status_priority(status),
+    }
+}
+
+/// The goal or loop driving a pane, from its wire tokens.
+pub(crate) fn agent_mode(
+    agent: &crate::protocol::ClientShellAgent,
+) -> Option<crate::ui::AgentMode> {
+    crate::ui::AgentMode::from_keys(|key| agent.tokens.iter().any(|(token, _)| token == key))
+}
+
 pub(crate) fn status_text(status: AgentStatus) -> &'static str {
     match status {
         AgentStatus::Working => "working",
@@ -305,7 +323,7 @@ pub(crate) fn ordered_agent_pane_ids(
     if sort == AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
             (
-                std::cmp::Reverse(status_priority(agent.agent_status)),
+                std::cmp::Reverse(agent_sort_priority(agent.agent_status, agent_mode(agent))),
                 std::cmp::Reverse(agent.state_change_seq),
             )
         });
@@ -410,11 +428,12 @@ pub(crate) fn agent_rows(
 pub(crate) fn combined_priority_key(
     stale: bool,
     status: AgentStatus,
+    mode: Option<crate::ui::AgentMode>,
     recency: u64,
 ) -> (bool, std::cmp::Reverse<u8>, std::cmp::Reverse<u64>) {
     (
         stale,
-        std::cmp::Reverse(status_priority(status)),
+        std::cmp::Reverse(agent_sort_priority(status, mode)),
         std::cmp::Reverse(recency),
     )
 }
@@ -659,7 +678,7 @@ impl SidebarModel {
             .collect::<Vec<_>>();
         if prefs.sort == AgentPanelSortConfig::Priority {
             agents.sort_by_key(|(recency, entry)| {
-                combined_priority_key(entry.stale, entry.status, *recency)
+                combined_priority_key(entry.stale, entry.status, entry.mode, *recency)
             });
         }
         let footer = FooterEntry {

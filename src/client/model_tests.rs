@@ -262,6 +262,46 @@ fn combined_agents_span_machines_and_sort_by_urgency_with_live_machines_first() 
     );
 }
 
+/// Between runs a goal or loop pane is still busy, so priority order ranks it
+/// with working agents; needing you still leads, and a met goal is done.
+#[test]
+fn priority_ranks_goal_and_loop_panes_as_working_unless_they_need_you() {
+    let with = |mut agent: ClientShellAgent, key: &str| {
+        agent.tokens = vec![(key.to_owned(), "1".to_owned())];
+        agent
+    };
+    let snap = snapshot(
+        vec![workspace("ws", 1, AgentStatus::Idle)],
+        vec![
+            with(agent("loop_done", "ws", AgentStatus::Done, 9), "oasis:loop"),
+            with(agent("goal_idle", "ws", AgentStatus::Idle, 8), "oasis:goal"),
+            agent("plain_done", "ws", AgentStatus::Done, 1),
+            agent("plain_work", "ws", AgentStatus::Working, 2),
+            with(
+                agent("goal_ask", "ws", AgentStatus::Blocked, 3),
+                "oasis:goal",
+            ),
+            with(
+                agent("goal_met", "ws", AgentStatus::Done, 0),
+                "oasis:goal_achieved",
+            ),
+            agent("plain_idle", "ws", AgentStatus::Idle, 7),
+        ],
+    );
+    assert_eq!(
+        ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
+        [
+            "goal_ask",
+            "plain_done",
+            "goal_met",
+            "loop_done",
+            "goal_idle",
+            "plain_work",
+            "plain_idle"
+        ]
+    );
+}
+
 #[test]
 fn update_reports_changes_only_when_shown_content_changes() {
     let mut snap = snapshot(

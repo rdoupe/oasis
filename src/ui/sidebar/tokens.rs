@@ -71,11 +71,16 @@ pub enum AgentMode {
 impl AgentMode {
     /// A goal leads when a pane runs both.
     pub(crate) fn from_tokens(tokens: &std::collections::HashMap<String, String>) -> Option<Self> {
-        if tokens.contains_key("oasis:goal") {
+        Self::from_keys(|key| tokens.contains_key(key))
+    }
+
+    /// [`Self::from_tokens`] over any token store, given whether it holds a key.
+    pub(crate) fn from_keys(has: impl Fn(&str) -> bool) -> Option<Self> {
+        if has("oasis:goal") {
             Some(Self::Goal)
-        } else if tokens.contains_key("oasis:loop") || tokens.contains_key("oasis:loop_next") {
+        } else if has("oasis:loop") || has("oasis:loop_next") {
             Some(Self::Loop)
-        } else if tokens.contains_key("oasis:goal_achieved") {
+        } else if has("oasis:goal_achieved") {
             Some(Self::GoalAchieved)
         } else {
             None

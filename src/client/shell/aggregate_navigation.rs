@@ -165,6 +165,7 @@ fn sort_aggregate_rows(
             crate::client::model::combined_priority_key(
                 row.endpoint.stale(),
                 row.agent.agent_status,
+                crate::client::model::agent_mode(row.agent),
                 row.recency,
             )
         });
@@ -256,7 +257,10 @@ impl crate::agent_view_eval::AgentViewEntry for ClientAgentViewEntry<'_> {
     }
 
     fn attention(&self) -> u64 {
-        u64::from(status_priority(self.agent.agent_status))
+        u64::from(crate::client::model::agent_sort_priority(
+            self.agent.agent_status,
+            crate::client::model::agent_mode(self.agent),
+        ))
     }
 }
 
