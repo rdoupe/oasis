@@ -61,6 +61,20 @@ impl EndpointRemoteActivity {
         };
     }
 
+    /// Learns again whether to read, as each (re)connect reports. Unchanged, it
+    /// keeps what was read and reads every pane again, since idle panes send
+    /// nothing that would prompt a read.
+    fn renegotiate(&mut self, enabled: bool) {
+        if self.enabled != enabled {
+            self.reset(enabled);
+            return;
+        }
+        self.in_flight = None;
+        for pane in self.panes.values_mut() {
+            pane.dirty = true;
+        }
+    }
+
     /// Tracks the snapshot's Claude panes, marks changed ones for a read, and
     /// attaches the activity read so far.
     fn observe(&mut self, snapshot: &mut ClientShellSnapshot) {
@@ -191,14 +205,25 @@ impl ClientShellState {
         endpoint_id: &ClientEndpointId,
         supported: bool,
     ) {
-        if let Some(endpoint) = self
+        let Some(endpoint) = self
             .endpoints
             .iter_mut()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
-        {
-            endpoint
-                .remote_activity
-                .reset(!supported && !endpoint_id.is_local());
+        else {
+            return;
+        };
+        endpoint
+            .remote_activity
+            .renegotiate(!supported && !endpoint_id.is_local());
+        // The snapshot may have arrived first; track its panes now.
+        if let Some(snapshot) = endpoint.snapshot.as_deref_mut() {
+            endpoint.remote_activity.observe(snapshot);
+        }
+        let activity = endpoint.remote_activity.clone();
+        if endpoint_id == &self.active_endpoint_id {
+            if let Some(snapshot) = self.snapshot.as_deref_mut() {
+                activity.apply(snapshot);
+            }
         }
     }
 

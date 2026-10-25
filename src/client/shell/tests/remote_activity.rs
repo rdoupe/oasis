@@ -297,3 +297,28 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     assert_eq!(icon(AgentStatus::Idle, None), ("○", fg(palette.overlay0)));
     assert_eq!(icon(AgentStatus::Done, None), ("✓", fg(palette.teal)));
 }
+
+/// A reconnect learns what the server supports after the client already holds
+/// its snapshot; idle panes send nothing new, so they must be read anyway.
+#[test]
+fn panes_known_before_the_capability_is_learned_are_still_read() {
+    let (mut state, endpoint_id) = herdr_machine();
+    state.set_endpoint_snapshot(
+        &endpoint_id,
+        remote_snapshot(1, vec![claude("pane_1", 1, "✳ x")]),
+    );
+    let now = std::time::Instant::now();
+    assert_eq!(state.take_remote_activity_reads(now).len(), 1);
+    assert!(state.receive_remote_agent_screen(&endpoint_id, "pane_1", Some(FOOTER)));
+
+    // The window reconnects: the server says again it lacks the capability.
+    state.set_endpoint_background_activity_supported(&endpoint_id, false);
+    assert!(
+        !endpoint_agent_tokens(&state, &endpoint_id, "pane_1").is_empty(),
+        "what was read stands until it is read again"
+    );
+    assert_eq!(
+        state.take_remote_activity_reads(now + REMOTE_ACTIVITY_MIN_INTERVAL),
+        vec![(endpoint_id.clone(), "pane_1".to_owned())]
+    );
+}
