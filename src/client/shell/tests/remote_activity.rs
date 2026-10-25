@@ -258,11 +258,12 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
 
 /// A goal or loop pane always shows the mode's glyph; working is yellow and
 /// needing you red as for any agent, otherwise it takes the mode's color. A
-/// working goal is a filled pink glyph, and done shows as idle.
+/// working goal is a filled pink glyph, and done shows as idle. A goal just
+/// met is a bold pink check until the next prompt.
 #[test]
 fn goal_and_loop_panes_always_show_their_glyph() {
     use crate::config::StatusIndicatorStyle::Symbols;
-    use crate::ui::AgentMode::{Goal, Loop};
+    use crate::ui::AgentMode::{Goal, GoalAchieved, Loop};
     use ratatui::style::{Color, Style};
     let palette = Palette::catppuccin();
     let icon = |status, mode| agent_status_icon(status, mode, Symbols, &palette);
@@ -281,6 +282,13 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     assert_eq!(icon(AgentStatus::Working, Some(Goal)), ("◉", fg(goal)));
     assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("◎", fg(goal)));
     assert_eq!(icon(AgentStatus::Done, Some(Goal)), ("◎", fg(goal)));
+    let achieved = ("✓", fg(goal).add_modifier(ratatui::style::Modifier::BOLD));
+    assert_eq!(icon(AgentStatus::Done, Some(GoalAchieved)), achieved);
+    assert_eq!(icon(AgentStatus::Idle, Some(GoalAchieved)), achieved);
+    assert_eq!(
+        icon(AgentStatus::Working, Some(GoalAchieved)),
+        ("◐", fg(palette.yellow))
+    );
     assert_eq!(
         icon(AgentStatus::Blocked, Some(Goal)),
         ("◎", fg(palette.red))

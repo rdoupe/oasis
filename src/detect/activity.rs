@@ -8,8 +8,9 @@
 //! statusline; stock Claude Code draws neither). Stock Claude marks an active
 //! goal with `◎ /goal active (5m)` on the notice row right above the prompt
 //! box, which is read too. Stock loops show nothing on screen and are read
-//! from the transcript instead (see `claude_loop`). Apart from that notice
-//! row, only text
+//! from the transcript instead (see `claude_loop`). A goal that was just met
+//! leaves `✔ Goal achieved (…)` in the last turn, read until the next prompt.
+//! Apart from that notice row and that line, only text
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
 
@@ -30,6 +31,8 @@ pub struct BackgroundActivity {
     pub loop_next: Option<String>,
     /// A `/goal` is active.
     pub goal: bool,
+    /// The last turn met a `/goal`, and no prompt has followed it.
+    pub goal_achieved: bool,
 }
 
 impl BackgroundActivity {
@@ -58,14 +61,22 @@ fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
         + lines[prompt + 1..]
             .iter()
             .position(|line| is_border(line))?;
+    let top = lines[..prompt].iter().rposition(|line| is_border(line));
     // The notice row sits right above the prompt box's top border.
-    let goal_notice = lines[..prompt]
-        .iter()
-        .rposition(|line| is_border(line))
+    let goal_notice = top
         .and_then(|top| top.checked_sub(1))
         .is_some_and(|notice| lines[notice].trim_start().starts_with("◎ /goal active"));
+    // Only the last turn counts: stop at the prompt that started it.
+    let goal_achieved = !goal_notice
+        && lines[..top.unwrap_or(0)]
+            .iter()
+            .rev()
+            .map(|line| line.trim_start())
+            .take_while(|line| !line.starts_with('❯'))
+            .any(|line| line.starts_with("✔ Goal achieved"));
     let mut activity = BackgroundActivity {
         goal: goal_notice,
+        goal_achieved,
         ..BackgroundActivity::default()
     };
     let mut agent_rows = 0u16;
@@ -235,6 +246,35 @@ mod tests {
         .join("\n");
         let activity = background_activity(Some(Agent::Claude), &content).unwrap();
         assert!(activity.goal);
+    }
+
+    #[test]
+    fn reads_a_goal_met_in_the_last_turn_only() {
+        // Captured from a live Claude Code pane right after a /goal was met.
+        let met = |turn: &[&str]| {
+            let mut lines = vec!["❯ /goal print 2+2", "  ⎿  Goal set: print 2+2"];
+            lines.extend_from_slice(turn);
+            lines.extend_from_slice(&[
+                "──────────────────────────────────────────",
+                "❯ ",
+                "──────────────────────────────────────────",
+                "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+            ]);
+            background_activity(Some(Agent::Claude), &lines.join("\n"))
+                .unwrap()
+                .goal_achieved
+        };
+        assert!(met(&[
+            "● 4",
+            "✔ Goal achieved (4s · 1 turn · 100 tokens)",
+            "✻ Sautéed for 4s · done 9:24 AM",
+        ]));
+        assert!(!met(&[
+            "✔ Goal achieved (4s · 1 turn · 100 tokens)",
+            "❯ thanks",
+            "● You're welcome.",
+        ]));
+        assert!(!met(&["● 4"]));
     }
 
     #[test]

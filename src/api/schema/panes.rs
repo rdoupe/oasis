@@ -556,6 +556,9 @@ pub struct BackgroundActivityInfo {
     pub loop_next: Option<String>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub goal: bool,
+    /// The last turn met a goal, and no prompt has followed it yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_achieved: bool,
 }
 
 fn is_zero(value: &u16) -> bool {
@@ -581,6 +584,7 @@ impl BackgroundActivityInfo {
                 .map(str::to_owned)
                 .or_else(|| activity.loop_next.clone()),
             goal: activity.goal,
+            goal_achieved: activity.goal_achieved,
         };
         (info != Self::default()).then_some(info)
     }
@@ -604,6 +608,10 @@ impl BackgroundActivityInfo {
             )
         }))
         .chain(self.goal.then(|| ("oasis:goal".to_owned(), "1".to_owned())))
+        .chain(
+            self.goal_achieved
+                .then(|| ("oasis:goal_achieved".to_owned(), "1".to_owned())),
+        )
         .collect()
     }
 }

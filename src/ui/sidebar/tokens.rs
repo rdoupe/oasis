@@ -64,6 +64,8 @@ pub enum ActivityKind {
 pub enum AgentMode {
     Goal,
     Loop,
+    /// The last turn met a goal; it lasts until the next prompt.
+    GoalAchieved,
 }
 
 impl AgentMode {
@@ -73,21 +75,29 @@ impl AgentMode {
             Some(Self::Goal)
         } else if tokens.contains_key("oasis:loop") || tokens.contains_key("oasis:loop_next") {
             Some(Self::Loop)
+        } else if tokens.contains_key("oasis:goal_achieved") {
+            Some(Self::GoalAchieved)
         } else {
             None
         }
+    }
+
+    /// A goal or loop still drives the pane.
+    pub fn drives(self) -> bool {
+        matches!(self, Self::Goal | Self::Loop)
     }
 
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Goal => "◎",
             Self::Loop => "↻",
+            Self::GoalAchieved => "✓",
         }
     }
 
     pub fn color(self) -> SidebarTokenColor {
         match self {
-            Self::Goal => GOAL_COLOR,
+            Self::Goal | Self::GoalAchieved => GOAL_COLOR,
             Self::Loop => LOOP_COLOR,
         }
     }
@@ -351,7 +361,7 @@ fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<
 /// either drives the pane, its shells, monitors and MCP tasks are the plumbing
 /// it runs on and stay hidden; subagents stay.
 fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<ActivityPart> {
-    let driven = AgentMode::from_tokens(tokens).is_some();
+    let driven = AgentMode::from_tokens(tokens).is_some_and(AgentMode::drives);
     let plumbing = (!driven)
         .then(|| {
             [
