@@ -1606,6 +1606,21 @@ impl Terminal {
         )
     }
 
+    /// Plain text of whole screen rows `start_row..=end_row`, one line per
+    /// row (soft wraps kept as separate lines) with trailing blanks trimmed.
+    /// Formats inside libghostty, far cheaper than visiting cells one by one.
+    pub fn read_text_screen_rows(&self, start_row: u32, end_row: u32) -> Result<String, Error> {
+        let last_col = self.cols()?.saturating_sub(1);
+        self.read_formatted_selection(
+            ghostty_screen_point(0, start_row),
+            ghostty_screen_point(last_col, end_row),
+            false,
+            FormatterFormat::Plain,
+            false,
+            true,
+        )
+    }
+
     pub fn read_ansi_screen(
         &self,
         start: (u16, u32),

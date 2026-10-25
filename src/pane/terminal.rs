@@ -2998,10 +2998,7 @@ fn ghostty_recent_text_for_terminal(
     let Some((start, end, _)) = ghostty_recent_read_range(terminal, lines)? else {
         return Ok(String::new());
     };
-    let mut rows = Vec::with_capacity(end.saturating_sub(start).saturating_add(1));
-    for y in start..=end {
-        rows.push(ghostty_screen_row(terminal, y as u32)?);
-    }
+    let mut rows = ghostty_screen_rows(terminal, start, end)?;
     trim_trailing_blank_rows(&mut rows);
     Ok(recent_text_from_rows(&rows, lines))
 }
@@ -3060,13 +3057,11 @@ fn ghostty_recent_read_range(
     let cursor_row = viewport_start
         .saturating_add(usize::from(terminal.cursor_y()?))
         .min(total_rows.saturating_sub(1));
-    let mut last_content_row = None;
-    for row in (viewport_start..total_rows).rev() {
-        if !ghostty_screen_row(terminal, row as u32)?.trim().is_empty() {
-            last_content_row = Some(row);
-            break;
-        }
-    }
+    let viewport_rows = ghostty_screen_rows(terminal, viewport_start, total_rows - 1)?;
+    let last_content_row = viewport_rows
+        .iter()
+        .rposition(|row| !row.trim().is_empty())
+        .map(|offset| viewport_start + offset);
     let end = last_content_row
         .map(|row| row.max(cursor_row))
         .unwrap_or_else(|| total_rows.saturating_sub(1));
@@ -3098,6 +3093,37 @@ fn ghostty_extract_selection(
     let ((start_row, start_col), (end_row, end_col)) = selection.ordered_cells();
     core.terminal
         .read_text_screen((start_col, start_row), (end_col, end_row), false)
+}
+
+/// Text of screen rows `start..=end`, each as `ghostty_screen_row` returns it.
+/// libghostty formats the range in one call; kitty placeholders (which rows
+/// blank, diacritics included) or any surprise take the per-cell path.
+fn ghostty_screen_rows(
+    terminal: &crate::ghostty::Terminal,
+    start: usize,
+    end: usize,
+) -> Result<Vec<String>, crate::ghostty::Error> {
+    let expected = end.saturating_add(1).saturating_sub(start);
+    if let (Ok(start_row), Ok(end_row)) = (u32::try_from(start), u32::try_from(end)) {
+        if let Ok(text) = terminal.read_text_screen_rows(start_row, end_row) {
+            let placeholder = char::from_u32(crate::ghostty::KITTY_UNICODE_PLACEHOLDER);
+            if placeholder.is_none_or(|placeholder| !text.contains(placeholder)) {
+                // The formatter drops trailing blank rows; they read as empty.
+                let mut rows = text
+                    .trim_end_matches('\n')
+                    .split('\n')
+                    .map(|row| row.trim_end().to_owned())
+                    .collect::<Vec<_>>();
+                if rows.len() <= expected {
+                    rows.resize(expected, String::new());
+                    return Ok(rows);
+                }
+            }
+        }
+    }
+    (start..=end)
+        .map(|y| ghostty_screen_row(terminal, y as u32))
+        .collect()
 }
 
 fn ghostty_screen_row(
@@ -7613,6 +7639,54 @@ mod tests {
         // fg must NOT be Color::Reset (which would be the same hue as bg).
         assert_eq!(cell.style().fg, Some(Color::Rgb(0x11, 0x22, 0x33)));
         assert_eq!(cell.style().bg, Some(Color::Rgb(0xaa, 0xbb, 0xcc)));
+    }
+
+    #[test]
+    fn formatted_screen_rows_match_cell_by_cell_rows() {
+        let cases: &[&str] = &[
+            "plain line\r\nsecond\r\n",
+            "wide 漢字 here\r\n👨‍👩‍👧‍👦 family\r\nhalf ｶﾞ katakana\r\n",
+            "tab\there\r\n  leading spaces\r\ntrailing   \r\n",
+            "\r\n\r\nafter blanks\r\n",
+            "\x1b[41m   \x1b[0m colored blank start\r\n\x1b[44m      \x1b[0m\r\n",
+            "e\u{301} combining\r\nzero\u{200b}width\u{200d}joiner\r\n",
+            "nbsp\u{a0}between\u{a0}\r\n\u{2003}em space end\u{2003}\r\n",
+            "x\x1b[10Cgap\r\n\x1b[2J\x1b[5;10Hpositioned\x1b[8;1Hlater\r\n",
+            "a very long line that will soft wrap around the narrow terminal width\r\n",
+            "box ─────── │ ╭─╮ ❯ prompt\r\nvs16 ❤\u{fe0f} flag 🇺🇸 bom \u{feff}\r\n",
+            "kitty \u{10EEEE}\u{10EEEE} placeholder\r\nend \u{10EEEE}\r\n",
+            "\x1b[?1049hALT SCREEN\r\n  indented alt\r\n",
+        ];
+        for case in cases {
+            let mut terminal = crate::ghostty::Terminal::new(40, 10, 1_000).unwrap();
+            // Scrollback above the viewport exercises ranges that start in history.
+            for i in 0..15 {
+                terminal.write(format!("history {i}\r\n").as_bytes());
+            }
+            terminal.write(case.as_bytes());
+            let total = terminal.total_rows().unwrap();
+            for (start, end) in [
+                (total.saturating_sub(10), total - 1),
+                (total.saturating_sub(14), total - 3),
+                (0, total - 1),
+            ] {
+                let expected = (start..=end)
+                    .map(|y| ghostty_screen_row(&terminal, y as u32).unwrap())
+                    .collect::<Vec<_>>();
+                assert_eq!(
+                    ghostty_screen_rows(&terminal, start, end).unwrap(),
+                    expected,
+                    "{case:?} rows {start}..={end}"
+                );
+                // Every case but the placeholder one must take the formatter path.
+                if !case.contains('\u{10EEEE}') {
+                    let formatted = terminal
+                        .read_text_screen_rows(start as u32, end as u32)
+                        .unwrap();
+                    assert!(formatted.split('\n').count() <= end + 1 - start);
+                }
+            }
+        }
     }
 
     #[test]
