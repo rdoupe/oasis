@@ -1953,8 +1953,9 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
     };
     let text = frame_text(&mut state);
     assert!(
-        text.find("Local · local agent").expect("local agent")
-            < text.find("Build · remote agent").expect("remote agent")
+        text.find("Build · remote agent").expect("remote agent")
+            < text.find("Local · local agent").expect("local agent"),
+        "the pane idle longest leads the idle panes"
     );
 
     remote.agents = vec![agent("remote agent", AgentStatus::Blocked, 2)];
@@ -1965,13 +1966,6 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             < text.find("Local · local agent").expect("local agent")
     );
 
-    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
-    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
-    let text = frame_text(&mut state);
-    assert!(
-        text.find("Build · remote agent").expect("remote agent")
-            < text.find("Local · local agent").expect("local agent")
-    );
     let mut outcome = ClientShellInput::default();
     assert!(
         state.handle_endpoint_navigation(crate::input::KeybindAction::FocusAgent(0), &mut outcome,)
@@ -1983,6 +1977,15 @@ fn aggregate_priority_uses_client_observed_recency_across_machines() {
             target: Some(ClientEndpointFocusTarget::Pane(pane_id)),
         }] if activated == &endpoint_id && pane_id == "pane_1"
     ));
+
+    remote.agents = vec![agent("remote agent", AgentStatus::Idle, 3)];
+    state.set_endpoint_snapshot(&endpoint_id, Box::new(remote));
+    let text = frame_text(&mut state);
+    assert!(
+        text.find("Local · local agent").expect("local agent")
+            < text.find("Build · remote agent").expect("remote agent"),
+        "a pane that just went idle joins the end of the idle panes"
+    );
 }
 
 #[test]

@@ -80,6 +80,21 @@ pub(crate) fn idle_background_load(
     (total, monitors)
 }
 
+/// The last sort key in priority order: the most recent change first, except
+/// among idle panes, where the one idle longest comes first, so going back to
+/// the top idle pane picks up the oldest.
+pub(crate) fn recency_rank(
+    status: AgentStatus,
+    mode: Option<crate::ui::AgentMode>,
+    recency: u64,
+) -> u64 {
+    if agent_sort_priority(status, mode) == IDLE_RANK {
+        recency
+    } else {
+        u64::MAX - recency
+    }
+}
+
 /// The goal, loop or subagents driving a pane, from its wire tokens.
 pub(crate) fn agent_mode(
     agent: &crate::protocol::ClientShellAgent,
@@ -365,7 +380,7 @@ pub(crate) fn ordered_agent_pane_ids(
             (
                 std::cmp::Reverse(agent_sort_priority(agent.agent_status, mode)),
                 idle_background_load(agent.agent_status, mode, agent),
-                std::cmp::Reverse(agent.state_change_seq),
+                recency_rank(agent.agent_status, mode, agent.state_change_seq),
             )
         });
     }
@@ -466,24 +481,19 @@ pub(crate) fn agent_rows(
 
 /// The priority order of a combined, multi-machine agent list: live
 /// machines first, then most urgent status, idle panes with less background
-/// work first ([`idle_background_load`]), then most recent change.
+/// work first ([`idle_background_load`]), then [`recency_rank`].
 pub(crate) fn combined_priority_key(
     stale: bool,
     status: AgentStatus,
     mode: Option<crate::ui::AgentMode>,
     load: (u32, u16),
     recency: u64,
-) -> (
-    bool,
-    std::cmp::Reverse<u8>,
-    (u32, u16),
-    std::cmp::Reverse<u64>,
-) {
+) -> (bool, std::cmp::Reverse<u8>, (u32, u16), u64) {
     (
         stale,
         std::cmp::Reverse(agent_sort_priority(status, mode)),
         load,
-        std::cmp::Reverse(recency),
+        recency_rank(status, mode, recency),
     )
 }
 

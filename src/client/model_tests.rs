@@ -311,8 +311,8 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
 }
 
 /// Idle panes still running background work go below plain idle ones, more
-/// work lower and, at the same total, more monitors lower. Other tiers keep
-/// recency order.
+/// work lower and, at the same total, more monitors lower; then the one idle
+/// longest first. Other tiers put the most recent change first.
 #[test]
 fn priority_sinks_idle_panes_by_their_background_work() {
     let with = |mut agent: ClientShellAgent, tokens: &[(&str, &str)]| {
@@ -337,6 +337,7 @@ fn priority_sinks_idle_panes_by_their_background_work() {
                 agent("one_task", "ws", AgentStatus::Idle, 7),
                 &[("oasis:tasks", "1")],
             ),
+            agent("plain_new", "ws", AgentStatus::Idle, 4),
             agent("plain", "ws", AgentStatus::Idle, 1),
             with(
                 agent("work_shells", "ws", AgentStatus::Working, 6),
@@ -347,6 +348,7 @@ fn priority_sinks_idle_panes_by_their_background_work() {
     );
     let expected = [
         "plain",
+        "plain_new",
         "one_task",
         "two_shells",
         "mixed",
