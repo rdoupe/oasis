@@ -2406,6 +2406,7 @@ impl PaneRuntime {
             initial_history_ansi: None,
             agent_state: None,
             claude_transcript: None,
+            codex_subagents: None,
         }
     }
 
@@ -2618,6 +2619,7 @@ impl PaneRuntime {
             initial_history_ansi,
             agent_state: _,
             claude_transcript: _,
+            codex_subagents: _,
         } = state;
         let pane_id = PaneId::from_raw(pane_id);
         use std::os::fd::FromRawFd;

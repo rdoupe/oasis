@@ -363,6 +363,7 @@ impl App {
             background_activity: crate::api::schema::BackgroundActivityInfo::from_activity(
                 &terminal.background_activity,
                 terminal.claude_transcript.as_ref(),
+                terminal.codex_subagents.as_ref(),
             ),
             scroll: None,
             revision: terminal.revision,

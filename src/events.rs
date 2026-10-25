@@ -104,6 +104,11 @@ pub enum AppEvent {
         /// Subagents not yet finished, from their records; `None` if unread.
         unfinished_subagents: Option<u16>,
     },
+    /// A read of a pane's Codex transcripts finished.
+    CodexSubagentsScanned {
+        pane_id: PaneId,
+        watch: crate::detect::codex_subagents::CodexSubagentWatch,
+    },
     /// Fallback detector state changed in a pane.
     StateChanged {
         pane_id: PaneId,

@@ -588,6 +588,10 @@ fn restore_tab(
         let handoff_claude_transcript = imported_runtime
             .as_ref()
             .and_then(|imported| imported.state.claude_transcript.clone());
+        #[cfg(unix)]
+        let handoff_codex_subagents = imported_runtime
+            .as_ref()
+            .and_then(|imported| imported.state.codex_subagents.clone());
         let pending_native_agent_restore = if was_imported {
             None
         } else {
@@ -733,6 +737,7 @@ fn restore_tab(
                 #[cfg(unix)]
                 {
                     terminal.claude_transcript = handoff_claude_transcript;
+                    terminal.codex_subagents = handoff_codex_subagents;
                 }
                 // A handed-over pane's title (an agent's session name) only
                 // changes when the agent sets a new one; carry it now.

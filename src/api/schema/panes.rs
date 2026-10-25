@@ -574,10 +574,12 @@ impl BackgroundActivityInfo {
     /// one a custom statusline shows.
     /// The screen's activity, with what a Claude transcript records winning
     /// where it knows: its loop, its goal, and a cap on subagent rows, since a
-    /// finished subagent keeps its row on screen.
+    /// finished subagent keeps its row on screen. Codex draws no subagent
+    /// count at all, so its transcripts' count stands alone.
     pub(crate) fn from_activity(
         activity: &crate::detect::activity::BackgroundActivity,
         transcript: Option<&crate::detect::claude_loop::ClaudeTranscriptWatch>,
+        codex: Option<&crate::detect::codex_subagents::CodexSubagentWatch>,
     ) -> Option<Self> {
         use crate::detect::claude_loop::TranscriptGoal;
         let transcript_loop = transcript.and_then(|watch| watch.loop_label.as_deref());
@@ -588,9 +590,13 @@ impl BackgroundActivityInfo {
             ),
             None => (activity.goal, activity.goal_achieved),
         };
-        let agents = match transcript.and_then(|watch| watch.unfinished_subagents) {
-            Some(unfinished) => activity.agents.min(unfinished),
-            None => activity.agents,
+        let agents = match (
+            transcript.and_then(|watch| watch.unfinished_subagents),
+            codex.and_then(|watch| watch.running),
+        ) {
+            (_, Some(running)) => running,
+            (Some(unfinished), None) => activity.agents.min(unfinished),
+            (None, None) => activity.agents,
         };
         let info = Self {
             shells: activity.shells,

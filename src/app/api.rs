@@ -167,6 +167,11 @@ impl App {
             return Vec::new();
         }
 
+        if let AppEvent::CodexSubagentsScanned { pane_id, watch } = ev {
+            self.handle_codex_subagents_scanned(pane_id, watch);
+            return Vec::new();
+        }
+
         if let AppEvent::RestoredWorktreeSpaceChecked {
             workspace_id,
             expected,
@@ -764,6 +769,7 @@ impl App {
 
         if previous_agent_status != agent_status || update.agent_released {
             self.claude_agent_status_changed(update.pane_id, update.agent_released);
+            self.codex_agent_status_changed(update.pane_id, update.agent_released);
         }
 
         if previous_agent_status != agent_status

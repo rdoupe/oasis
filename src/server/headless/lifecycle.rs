@@ -95,6 +95,12 @@ impl HeadlessServer {
                 .terminals
                 .get(terminal_id)
                 .and_then(|terminal| terminal.claude_transcript.clone());
+            handoff_runtime.codex_subagents = self
+                .app
+                .state
+                .terminals
+                .get(terminal_id)
+                .and_then(|terminal| terminal.codex_subagents.clone());
             let has_agent_session = self
                 .app
                 .state

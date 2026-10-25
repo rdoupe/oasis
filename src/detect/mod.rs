@@ -5,6 +5,7 @@
 
 pub mod activity;
 pub mod claude_loop;
+pub mod codex_subagents;
 pub mod manifest;
 pub mod manifest_update;
 

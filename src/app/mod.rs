@@ -16,6 +16,7 @@ pub(crate) use api::test_support::exiting_test_command;
 mod api_helpers;
 pub(crate) use api_helpers::limit_snapshot_lines;
 mod claude_transcript;
+mod codex_transcript;
 mod creation;
 mod custom_commands;
 mod git_refresh;

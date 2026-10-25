@@ -32,6 +32,9 @@ pub(crate) struct HandoffRuntimeState {
     /// A Claude pane's transcript watch, so a live loop survives the handoff.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claude_transcript: Option<crate::detect::claude_loop::ClaudeTranscriptWatch>,
+    /// A Codex pane's subagent watch, so running subagents stay counted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_subagents: Option<crate::detect::codex_subagents::CodexSubagentWatch>,
 }
 
 #[cfg(unix)]
