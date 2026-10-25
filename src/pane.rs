@@ -2671,7 +2671,11 @@ impl PaneRuntime {
                 if title_requested || render_requested {
                     render_notify.notify_one();
                 }
-                if let Some(delay) = result.render_delay {
+                // A hidden pane's deferred repaint would only be discarded.
+                if let Some(delay) = result
+                    .render_delay
+                    .filter(|_| !render_dirty.is_pty_source_hidden(pane_id))
+                {
                     let render_notify = render_notify.clone();
                     let render_dirty = render_dirty.clone();
                     delay_rt.spawn(async move {
@@ -2876,7 +2880,11 @@ impl PaneRuntime {
                 if title_requested || render_requested {
                     render_notify.notify_one();
                 }
-                if let Some(delay) = result.render_delay {
+                // A hidden pane's deferred repaint would only be discarded.
+                if let Some(delay) = result
+                    .render_delay
+                    .filter(|_| !render_dirty.is_pty_source_hidden(pane_id))
+                {
                     let render_notify = render_notify.clone();
                     let render_dirty = render_dirty.clone();
                     rt.spawn(async move {
