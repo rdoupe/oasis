@@ -575,7 +575,7 @@ impl BackgroundActivityInfo {
             monitors: activity.monitors,
             agents: activity.agents,
             mcp_tasks: activity.mcp_tasks,
-            looping: transcript_loop.is_some() || activity.loop_next.is_some(),
+            looping: transcript_loop.is_some() || activity.looping || activity.loop_next.is_some(),
             loop_next: transcript_loop
                 .filter(|label| !label.is_empty())
                 .map(str::to_owned)

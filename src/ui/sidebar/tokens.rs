@@ -202,13 +202,13 @@ pub(crate) fn agent_rows(
 
 // Claude Code's colors, read from live panes: its mode line draws the
 // `1 shell, 1 monitor` counts in cyan and a grey `◯` row per subagent, and its
-// goal notice is `◎`. Goal pink (256-color 213) follows the statusline these
-// were first read from; stock Claude draws no loop at all, so loops get a
-// violet (141) that no agent state uses.
+// goal notice is `◎`. Goal pink (256-color 213) and loop green (114) follow the
+// statusline these were first read from, as stock Claude draws no loop at all.
+// Idle agents are grey, so loop green stands alone.
 // Claude has no glyph for shells, monitors or MCP tasks, so those are short
 // counts in its cyan.
 const GOAL_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x87, 0xff);
-const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xaf, 0x87, 0xff);
+const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x87, 0xd7, 0x87);
 const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
 const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);
 

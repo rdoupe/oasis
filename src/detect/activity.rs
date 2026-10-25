@@ -24,6 +24,8 @@ pub struct BackgroundActivity {
     pub monitors: u16,
     pub agents: u16,
     pub mcp_tasks: u16,
+    /// A `↻ loop:` line is showing, even one cut off before its wakeup time.
+    pub looping: bool,
     /// The time of the next scheduled wakeup, as the agent shows it.
     pub loop_next: Option<String>,
     /// A `/goal` is active.
@@ -80,6 +82,7 @@ fn claude_background_activity(content: &str) -> Option<BackgroundActivity> {
             continue;
         }
         if let Some(rest) = trimmed.strip_prefix("↻ loop:") {
+            activity.looping = true;
             activity.loop_next = rest
                 .rsplit_once("· next ")
                 .map(|(_, next)| next.trim().to_owned())
@@ -189,6 +192,19 @@ mod tests {
         assert_eq!(activity.monitors, 1);
         assert_eq!(activity.agents, 2);
         assert_eq!(activity.loop_next.as_deref(), Some("19:10"));
+        assert!(activity.looping);
+    }
+
+    #[test]
+    fn a_loop_line_cut_off_before_its_wakeup_still_counts() {
+        // Captured from a live Claude Code pane whose loop line ran off the edge.
+        let content = screen(&[
+            "  ↻ loop: keep our PRs moving, keep our issues moving, fi…",
+            "  ⏵⏵ bypass permissions on · 2 shells, 1 monitor",
+        ]);
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.looping);
+        assert_eq!(activity.loop_next, None);
     }
 
     #[test]
