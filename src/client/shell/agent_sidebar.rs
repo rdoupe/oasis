@@ -224,15 +224,13 @@ pub(super) fn render_agent_row(
     } else {
         Style::default()
     };
-    let name_style = if row.focused {
-        Style::default()
-            .fg(palette.text)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(palette.subtext0)
-            .add_modifier(Modifier::BOLD)
+    // A goal or loop pane's project name takes the mode's color too.
+    let name_color = match row.mode {
+        Some(mode) => mode.color().ratatui(),
+        None if row.focused => palette.text,
+        None => palette.subtext0,
     };
+    let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
     let status_style = Style::default().fg(status_color(row.status, palette));
     let secondary = Style::default().fg(palette.overlay0);
     let icon = agent_status_icon(row.status, row.mode, config.status_indicators, palette);
