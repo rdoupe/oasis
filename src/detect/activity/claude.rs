@@ -1,8 +1,8 @@
 //! Background work an agent reports in its footer, below the prompt box.
 //!
 //! Claude Code lists what keeps running after a turn ends on the line under its
-//! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor · ← 3 agents`), shows a
-//! row per running subagent (`◯ general-purpose  Writing tests  2m 3s`), and a
+//! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor`), shows a row per
+//! running subagent (`◯ general-purpose  Writing tests  2m 3s`), and a
 //! `↻ loop: … · next 19:10` line while a scheduled wakeup is armed, and a
 //! `◎ goal: …` line while a `/goal` is active (those two come from a custom
 //! statusline; stock Claude Code draws neither). Stock Claude marks an active
@@ -13,6 +13,10 @@
 //! Apart from that notice row and that line, only text
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
+//!
+//! The mode line's `← 1 agent` is not read: it counts what Claude's agent list
+//! shows, which can be up while the session has no subagent of its own. The
+//! subagent rows are the session's own.
 
 use super::{counted, is_border, BackgroundActivity, FOOTER_LINES};
 
@@ -77,15 +81,12 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
                 activity.shells = count;
             } else if let Some(count) = counted(segment, "monitor") {
                 activity.monitors = count;
-            } else if let Some(count) = segment.strip_prefix("← ").and_then(|s| counted(s, "agent"))
-            {
-                activity.agents = count;
             } else if let Some(count) = counted(segment, "MCP task") {
                 activity.mcp_tasks = count;
             }
         }
     }
-    activity.agents = activity.agents.max(agent_rows);
+    activity.agents = agent_rows;
     Some(activity)
 }
 
@@ -122,10 +123,18 @@ mod tests {
             BackgroundActivity {
                 shells: 2,
                 monitors: 1,
-                agents: 1,
                 ..Default::default()
             }
         );
+    }
+
+    /// Captured from a live Claude Code 2.1.310 pane whose session ran no
+    /// subagent while its agent list showed one.
+    #[test]
+    fn the_agent_list_count_is_not_a_subagent() {
+        let content = screen(&["  ⏵⏵ accept edits on (shift+tab to cycle) · ← 1 agent"]);
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.is_empty());
     }
 
     #[test]
