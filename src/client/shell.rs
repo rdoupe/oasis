@@ -230,7 +230,8 @@ fn status_color(
 /// stands out. A working goal stays pink
 /// and fills its glyph instead. Done only means a turn ended unseen, which says
 /// nothing about the goal or loop itself, so it shows as idle. Plain idle is
-/// grey, which leaves loop green unambiguous.
+/// grey, which leaves loop green unambiguous. A pane between turns that waits
+/// on its subagents is busy: a yellow robot.
 fn agent_status_icon(
     status: crate::api::schema::AgentStatus,
     mode: Option<crate::ui::AgentMode>,
@@ -257,6 +258,11 @@ fn agent_status_icon(
         (Some(mode), AgentStatus::Idle | AgentStatus::Done) if mode.drives() => {
             (mode.glyph(), Style::default().fg(mode.color().ratatui()))
         }
+        // Between turns while subagents run: busy, waiting on them.
+        (Some(AgentMode::Subagents), AgentStatus::Idle | AgentStatus::Done) => (
+            AgentMode::Subagents.glyph(),
+            Style::default().fg(status_color(AgentStatus::Working, palette)),
+        ),
         _ => (
             status_icon(status, style),
             Style::default().fg(status_color(status, palette)),

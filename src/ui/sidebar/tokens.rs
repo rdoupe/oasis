@@ -68,6 +68,9 @@ pub enum AgentMode {
     Loop,
     /// The last turn met a goal; it lasts until the next prompt.
     GoalAchieved,
+    /// Subagents still run, so a pane between turns is waiting on them and
+    /// will pick up again when they finish.
+    Subagents,
 }
 
 impl AgentMode {
@@ -84,6 +87,8 @@ impl AgentMode {
             Some(Self::Loop)
         } else if has("oasis:goal_achieved") {
             Some(Self::GoalAchieved)
+        } else if has("oasis:agents") {
+            Some(Self::Subagents)
         } else {
             None
         }
@@ -99,6 +104,8 @@ impl AgentMode {
             Self::Goal => "◎",
             Self::Loop => "↻",
             Self::GoalAchieved => "✓",
+            // Nerd Font's single-color robot (nf-md-robot).
+            Self::Subagents => "\u{f06a9}",
         }
     }
 
@@ -106,7 +113,13 @@ impl AgentMode {
         match self {
             Self::Goal | Self::GoalAchieved => GOAL_COLOR,
             Self::Loop => LOOP_COLOR,
+            Self::Subagents => SUBAGENT_COLOR,
         }
+    }
+
+    /// The pane's project name takes the mode's color.
+    pub fn colors_name(self) -> bool {
+        !matches!(self, Self::Subagents)
     }
 }
 
@@ -950,11 +963,13 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         tokens.remove("oasis:loop");
         assert_eq!(activity_texts(&background_parts(&tokens)), ["◯◯"]);
         tokens.remove("oasis:goal");
-        assert_eq!(AgentMode::from_tokens(&tokens), None);
+        assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Subagents));
         assert_eq!(
             activity_texts(&background_parts(&tokens)),
             ["$3", "∿1", "◯◯"]
         );
+        tokens.remove("oasis:agents");
+        assert_eq!(AgentMode::from_tokens(&tokens), None);
     }
 }
 

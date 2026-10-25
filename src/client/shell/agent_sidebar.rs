@@ -226,9 +226,9 @@ pub(super) fn render_agent_row(
     };
     // A goal or loop pane's project name takes the mode's color too.
     let name_color = match row.mode {
-        Some(mode) => mode.color().ratatui(),
-        None if row.focused => palette.text,
-        None => palette.subtext0,
+        Some(mode) if mode.colors_name() => mode.color().ratatui(),
+        _ if row.focused => palette.text,
+        _ => palette.subtext0,
     };
     let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
     let status_style = Style::default().fg(status_color(row.status, palette));

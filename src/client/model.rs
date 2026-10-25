@@ -30,18 +30,26 @@ pub(crate) fn status_priority(status: AgentStatus) -> u8 {
     }
 }
 
-/// [`status_priority`] for sorting agents: a pane a goal or loop still drives
-/// is busy between runs, so it ranks as working unless it needs you.
+/// The sort rank in priority order, highest first: turns that ended unseen
+/// (done, or a goal just met), needing you, idle, busy (working, or waiting on
+/// subagents), goals, and loops last. A goal or loop pane keeps its place
+/// whether it is working, done or between runs, unless it needs you; a done
+/// pane waiting on subagents is busy. Each matches the pane's state icon.
 pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::AgentMode>) -> u8 {
+    use crate::ui::AgentMode;
     match (status, mode) {
-        (AgentStatus::Idle | AgentStatus::Done, Some(mode)) if mode.drives() => {
-            status_priority(AgentStatus::Working)
-        }
-        _ => status_priority(status),
+        (AgentStatus::Blocked, _) => 6,
+        (AgentStatus::Unknown, _) => 0,
+        (AgentStatus::Idle | AgentStatus::Done, Some(AgentMode::GoalAchieved)) => 7,
+        (_, Some(AgentMode::Loop)) => 1,
+        (_, Some(AgentMode::Goal)) => 2,
+        (AgentStatus::Working, _) | (_, Some(AgentMode::Subagents)) => 3,
+        (AgentStatus::Done, _) => 7,
+        (AgentStatus::Idle, _) => 4,
     }
 }
 
-/// The goal or loop driving a pane, from its wire tokens.
+/// The goal, loop or subagents driving a pane, from its wire tokens.
 pub(crate) fn agent_mode(
     agent: &crate::protocol::ClientShellAgent,
 ) -> Option<crate::ui::AgentMode> {

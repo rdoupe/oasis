@@ -257,15 +257,16 @@ fn combined_agents_span_machines_and_sort_by_urgency_with_live_machines_first() 
             .iter()
             .map(|agent| agent.pane_id.as_str())
             .collect::<Vec<_>>(),
-        ["r_block", "l_work", "l_idle", "o_block"],
+        ["r_block", "l_idle", "l_work", "o_block"],
         "offline machines sort last even when blocked"
     );
 }
 
-/// Between runs a goal or loop pane is still busy, so priority order ranks it
-/// with working agents; needing you still leads, and a met goal is done.
+/// Priority order: ended turns (done or a goal just met), needing you, idle,
+/// busy (working or waiting on subagents), goals, then loops. A goal or loop
+/// pane keeps its place whether it works or not, unless it needs you.
 #[test]
-fn priority_ranks_goal_and_loop_panes_as_working_unless_they_need_you() {
+fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
     let with = |mut agent: ClientShellAgent, key: &str| {
         agent.tokens = vec![(key.to_owned(), "1".to_owned())];
         agent
@@ -274,6 +275,10 @@ fn priority_ranks_goal_and_loop_panes_as_working_unless_they_need_you() {
         vec![workspace("ws", 1, AgentStatus::Idle)],
         vec![
             with(agent("loop_done", "ws", AgentStatus::Done, 9), "oasis:loop"),
+            with(
+                agent("loop_work", "ws", AgentStatus::Working, 10),
+                "oasis:loop",
+            ),
             with(agent("goal_idle", "ws", AgentStatus::Idle, 8), "oasis:goal"),
             agent("plain_done", "ws", AgentStatus::Done, 1),
             agent("plain_work", "ws", AgentStatus::Working, 2),
@@ -285,19 +290,22 @@ fn priority_ranks_goal_and_loop_panes_as_working_unless_they_need_you() {
                 agent("goal_met", "ws", AgentStatus::Done, 0),
                 "oasis:goal_achieved",
             ),
+            with(agent("waiting", "ws", AgentStatus::Idle, 6), "oasis:agents"),
             agent("plain_idle", "ws", AgentStatus::Idle, 7),
         ],
     );
     assert_eq!(
         ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
         [
-            "goal_ask",
             "plain_done",
             "goal_met",
-            "loop_done",
-            "goal_idle",
+            "goal_ask",
+            "plain_idle",
+            "waiting",
             "plain_work",
-            "plain_idle"
+            "goal_idle",
+            "loop_work",
+            "loop_done",
         ]
     );
 }
