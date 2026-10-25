@@ -256,23 +256,42 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
     assert!(endpoint_agent_tokens(&state, &endpoint_id, "pane_1").is_empty());
 }
 
-/// A goal or loop pane's state icon takes the mode's color, and the mode's
-/// glyph while working; a done loop shows idle, needing you stays red, and
-/// plain idle is grey.
+/// A goal or loop pane always shows the mode's glyph; working is yellow and
+/// needing you red as for any agent, otherwise it takes the mode's color. A
+/// done goal is a bold pink check; a loop is never done.
 #[test]
-fn goal_and_loop_panes_draw_their_state_icon_in_the_mode_color() {
+fn goal_and_loop_panes_always_show_their_glyph() {
     use crate::config::StatusIndicatorStyle::Symbols;
     use crate::ui::AgentMode::{Goal, Loop};
+    use ratatui::style::{Color, Modifier, Style};
     let palette = Palette::catppuccin();
     let icon = |status, mode| agent_status_icon(status, mode, Symbols, &palette);
+    let fg = |color: Color| Style::default().fg(color);
     let (goal, wakeup) = (Goal.color().ratatui(), Loop.color().ratatui());
-    assert_eq!(icon(AgentStatus::Working, Some(Loop)), ("↻", wakeup));
-    assert_eq!(icon(AgentStatus::Idle, Some(Loop)), ("○", wakeup));
-    assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("○", wakeup));
-    assert_eq!(icon(AgentStatus::Done, Some(Goal)), ("✓", goal));
-    assert_eq!(icon(AgentStatus::Working, Some(Goal)), ("◎", goal));
-    assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("○", goal));
-    assert_eq!(icon(AgentStatus::Blocked, Some(Goal)), ("×", palette.red));
-    assert_eq!(icon(AgentStatus::Working, None), ("◐", palette.yellow));
-    assert_eq!(icon(AgentStatus::Idle, None), ("○", palette.overlay0));
+    assert_eq!(
+        icon(AgentStatus::Working, Some(Loop)),
+        ("↻", fg(palette.yellow))
+    );
+    assert_eq!(icon(AgentStatus::Idle, Some(Loop)), ("↻", fg(wakeup)));
+    assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("↻", fg(wakeup)));
+    assert_eq!(
+        icon(AgentStatus::Blocked, Some(Loop)),
+        ("↻", fg(palette.red))
+    );
+    assert_eq!(
+        icon(AgentStatus::Working, Some(Goal)),
+        ("◎", fg(palette.yellow))
+    );
+    assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("◎", fg(goal)));
+    assert_eq!(
+        icon(AgentStatus::Done, Some(Goal)),
+        ("✓", fg(goal).add_modifier(Modifier::BOLD))
+    );
+    assert_eq!(
+        icon(AgentStatus::Blocked, Some(Goal)),
+        ("◎", fg(palette.red))
+    );
+    assert_eq!(icon(AgentStatus::Working, None), ("◐", fg(palette.yellow)));
+    assert_eq!(icon(AgentStatus::Idle, None), ("○", fg(palette.overlay0)));
+    assert_eq!(icon(AgentStatus::Done, None), ("✓", fg(palette.teal)));
 }

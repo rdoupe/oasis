@@ -392,7 +392,7 @@ rows = [
 
 Agent rows accept these built-in tokens:
 
-- `state_icon` — colored icon for the agent's semantic state. While a Claude Code `/goal` or loop drives the pane, the icon is drawn in goal pink or loop green instead, and shows `◎` or `↻` while the agent works; a loop between runs shows idle rather than done, and an agent that needs you stays red. Idle agents are otherwise grey. A goal wins when a pane runs both.
+- `state_icon` — colored icon for the agent's semantic state. While a Claude Code `/goal` or loop drives the pane, the icon is `◎` or `↻` in every state: yellow while the agent works, red when it needs you, and goal pink or loop green otherwise. A finished goal shows a bold pink `✓`; a loop is never done. Idle agents are otherwise grey. A goal wins when a pane runs both.
 - `state_text` — `idle`, `working`, `blocked`, `done`, or `unknown`, including a reported display label when present.
 - `machine` — machine label when the client has multiple machines; omitted for a single local machine.
 - `workspace` — workspace name.

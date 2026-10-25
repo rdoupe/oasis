@@ -224,29 +224,38 @@ fn status_color(
     }
 }
 
-/// A goal or loop pane's icon is drawn in the mode's color, with the mode's
-/// own glyph while it works. A loop is never done, only waiting for its next
-/// wakeup, so it shows idle. Needing you stays red. Plain idle is grey, which
-/// leaves loop green unambiguous.
+/// A goal or loop pane always shows the mode's glyph, so it never passes for a
+/// plain pane; the color carries the state: working yellow and needing you red
+/// as for any agent, otherwise the mode's own color. A done goal is finished
+/// for good, so it takes a bold check; a loop is never done. Plain idle is
+/// grey, which leaves loop green unambiguous.
 fn agent_status_icon(
     status: crate::api::schema::AgentStatus,
     mode: Option<crate::ui::AgentMode>,
     style: crate::config::StatusIndicatorStyle,
     palette: &Palette,
-) -> (&'static str, ratatui::style::Color) {
+) -> (&'static str, ratatui::style::Style) {
     use crate::api::schema::AgentStatus;
-    match mode {
-        Some(mode) if status != AgentStatus::Blocked => (
-            match (mode, status) {
-                (_, AgentStatus::Working) => mode.glyph(),
-                (crate::ui::AgentMode::Loop, AgentStatus::Done) => {
-                    status_icon(AgentStatus::Idle, style)
-                }
-                _ => status_icon(status, style),
-            },
-            mode.color().ratatui(),
+    use crate::ui::AgentMode;
+    use ratatui::style::{Modifier, Style};
+    match (mode, status) {
+        (Some(AgentMode::Goal), AgentStatus::Done) => (
+            status_icon(status, style),
+            Style::default()
+                .fg(AgentMode::Goal.color().ratatui())
+                .add_modifier(Modifier::BOLD),
         ),
-        _ => (status_icon(status, style), status_color(status, palette)),
+        (Some(mode), AgentStatus::Working | AgentStatus::Blocked) => (
+            mode.glyph(),
+            Style::default().fg(status_color(status, palette)),
+        ),
+        (Some(mode), AgentStatus::Idle | AgentStatus::Done) => {
+            (mode.glyph(), Style::default().fg(mode.color().ratatui()))
+        }
+        _ => (
+            status_icon(status, style),
+            Style::default().fg(status_color(status, palette)),
+        ),
     }
 }
 
