@@ -160,9 +160,10 @@ impl App {
             pane_id,
             path,
             tracker,
+            unfinished_subagents,
         } = ev
         {
-            self.handle_claude_transcript_scanned(pane_id, path, tracker);
+            self.handle_claude_transcript_scanned(pane_id, path, tracker, unfinished_subagents);
             return Vec::new();
         }
 

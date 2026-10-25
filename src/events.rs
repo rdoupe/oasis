@@ -101,6 +101,8 @@ pub enum AppEvent {
         pane_id: PaneId,
         path: std::path::PathBuf,
         tracker: crate::detect::claude_loop::ClaudeLoopTracker,
+        /// Subagents not yet finished, from their records; `None` if unread.
+        unfinished_subagents: Option<u16>,
     },
     /// Fallback detector state changed in a pane.
     StateChanged {

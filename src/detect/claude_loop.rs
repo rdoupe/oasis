@@ -1,4 +1,4 @@
-//! Claude Code's loops, read from its session transcript.
+//! Claude Code's loops and goals, read from its session transcript.
 //!
 //! Stock Claude Code draws nothing on screen for a `/loop`, so the transcript
 //! is the only place to see one. A self-paced loop is a chain of
@@ -8,6 +8,11 @@
 //! interval loop is a recurring `CronCreate` job that runs until a
 //! `CronDelete` names its id. Wakeups and session-only jobs live in the Claude
 //! process, so a watch starts at the end of a resumed transcript.
+//!
+//! A `/goal` writes `goal_status` attachments: `met: false` while it runs,
+//! `met: true` with a reason once achieved, and `met: true` marked
+//! `sentinel` when it is cleared without being met. An achieved goal lasts
+//! until the next prompt, as the screen shows it.
 //!
 //! The tracker only parses bytes it is fed; the caller reads the file.
 
@@ -22,6 +27,19 @@ pub struct ClaudeLoopTracker {
     pub offset: Option<u64>,
     wakeup: Option<Wakeup>,
     jobs: Vec<CronJob>,
+    /// `None` until a goal record is read; earlier goals are unknown.
+    #[serde(default)]
+    goal: Option<TranscriptGoal>,
+}
+
+/// A goal as the transcript last recorded it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum TranscriptGoal {
+    Active,
+    /// Met in the last turn; lasts until the next prompt.
+    Achieved,
+    /// Cleared, or achieved before the current prompt.
+    None,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -48,6 +66,13 @@ pub struct ClaudeTranscriptWatch {
     /// `None` without a loop; otherwise its next wakeup (`22:42`) or interval
     /// (`2m`), empty while a loop turn runs or the schedule is unknown.
     pub loop_label: Option<String>,
+    /// The goal the transcript records; `None` while unknown.
+    #[serde(default)]
+    pub goal: Option<TranscriptGoal>,
+    /// Subagents of this session not yet finished, from their records beside
+    /// the transcript; `None` while unread.
+    #[serde(default)]
+    pub unfinished_subagents: Option<u16>,
     /// A read is in flight on another thread.
     #[serde(skip)]
     pub scanning: bool,
@@ -62,6 +87,8 @@ impl ClaudeTranscriptWatch {
             path,
             tracker: ClaudeLoopTracker::default(),
             loop_label: None,
+            goal: None,
+            unfinished_subagents: None,
             scanning: false,
             rescan: false,
         }
@@ -117,8 +144,15 @@ impl ClaudeLoopTracker {
         )
     }
 
+    pub fn goal(&self) -> Option<TranscriptGoal> {
+        self.goal
+    }
+
     fn feed_line(&mut self, line: &[u8]) {
-        if !RELEVANT.iter().any(|needle| contains(line, needle)) {
+        // Only an achieved goal needs every prompt: the next one ends it.
+        let prompt_ends_goal = self.goal == Some(TranscriptGoal::Achieved)
+            && contains(&line[..line.len().min(160)], b"\"type\":\"user\"");
+        if !prompt_ends_goal && !RELEVANT.iter().any(|needle| contains(line, needle)) {
             return;
         }
         // Request blobs copy the whole system prompt, tool docs included.
@@ -134,8 +168,43 @@ impl ClaudeLoopTracker {
             .and_then(unix_seconds);
         match entry.get("type").and_then(Value::as_str) {
             Some("system") => self.system_entry(&entry),
-            Some("user" | "assistant") => self.message_entry(&entry, timestamp),
+            Some("attachment") => self.attachment_entry(&entry),
+            Some(kind @ ("user" | "assistant")) => {
+                if kind == "user" {
+                    self.prompt_entry(&entry);
+                }
+                self.message_entry(&entry, timestamp);
+            }
             _ => {}
+        }
+    }
+
+    fn attachment_entry(&mut self, entry: &Value) {
+        let Some(attachment) = entry.get("attachment").filter(|attachment| {
+            attachment.get("type").and_then(Value::as_str) == Some("goal_status")
+        }) else {
+            return;
+        };
+        let flag = |name: &str| attachment.get(name).and_then(Value::as_bool) == Some(true);
+        self.goal = Some(match (flag("met"), flag("sentinel")) {
+            (false, _) => TranscriptGoal::Active,
+            (true, false) => TranscriptGoal::Achieved,
+            (true, true) => TranscriptGoal::None,
+        });
+    }
+
+    /// A prompt typed after a goal was achieved ends the achieved notice.
+    fn prompt_entry(&mut self, entry: &Value) {
+        if self.goal != Some(TranscriptGoal::Achieved)
+            || entry.get("isMeta").and_then(Value::as_bool) == Some(true)
+        {
+            return;
+        }
+        if entry
+            .pointer("/message/content")
+            .is_some_and(Value::is_string)
+        {
+            self.goal = Some(TranscriptGoal::None);
         }
     }
 
@@ -145,6 +214,14 @@ impl ClaudeLoopTracker {
                 if self.wakeup.as_ref().is_some_and(|wakeup| wakeup.ticking) {
                     self.wakeup = None;
                 }
+            }
+            Some("informational")
+                if entry
+                    .get("content")
+                    .and_then(Value::as_str)
+                    .is_some_and(|content| content.starts_with("Goal cleared")) =>
+            {
+                self.goal = Some(TranscriptGoal::None);
             }
             Some("scheduled_task_fire") => {
                 let is_wakeup = entry.get("taskKind").and_then(Value::as_str) == Some("loop");
@@ -249,13 +326,15 @@ impl ClaudeLoopTracker {
     }
 }
 
-const RELEVANT: [&[u8]; 6] = [
+const RELEVANT: [&[u8]; 8] = [
     b"/loop",
     b"ScheduleWakeup",
     b"turn_duration",
     b"scheduled_task_fire",
     b"Cron",
     b"job ",
+    b"goal_status",
+    b"Goal cleared",
 ];
 
 fn contains(haystack: &[u8], needle: &[u8]) -> bool {
@@ -413,6 +492,41 @@ mod tests {
             ],
         );
         assert_eq!(tracker.status(), None);
+    }
+
+    // Shapes captured from a stock Claude Code 2.1.310 transcript.
+    const GOAL_SET: &str = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"sentinel":true,"condition":"deploy it"}}"#;
+    const GOAL_CHECK: &str = r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"condition":"deploy it","reason":"not yet"}}"#;
+    const GOAL_MET: &str = r#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"condition":"deploy it","reason":"deployed"}}"#;
+    const GOAL_ENDED: &str = r#"{"type":"attachment","attachment":{"type":"goal_status","met":true,"sentinel":true,"condition":"deploy it"}}"#;
+    const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"thanks"}}"#;
+    const TOOL_RESULT: &str = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t","content":"ok"}]}}"#;
+
+    #[test]
+    fn a_goal_runs_is_achieved_and_ends_at_the_next_prompt() {
+        let mut tracker = ClaudeLoopTracker::default();
+        assert_eq!(tracker.goal(), None, "unknown until a goal record");
+        feed(&mut tracker, &[GOAL_SET, GOAL_CHECK]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::Active));
+        feed(&mut tracker, &[GOAL_MET, TURN_END, TOOL_RESULT]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
+        feed(&mut tracker, &[PROMPT]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
+    }
+
+    #[test]
+    fn a_cleared_goal_is_no_goal() {
+        let mut tracker = ClaudeLoopTracker::default();
+        feed(&mut tracker, &[GOAL_SET, GOAL_ENDED]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
+        feed(
+            &mut tracker,
+            &[
+                GOAL_CHECK,
+                r#"{"type":"system","subtype":"informational","content":"Goal cleared after an unrecoverable error (authentication failed)"}"#,
+            ],
+        );
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
     }
 
     #[test]

@@ -1,16 +1,18 @@
 //! Background work an agent reports in its footer, below the prompt box.
 //!
 //! Claude Code lists what keeps running after a turn ends on the line under its
-//! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor`), shows a row per
-//! running subagent (`◯ general-purpose  Writing tests  2m 3s`), and a
-//! `↻ loop: … · next 19:10` line while a scheduled wakeup is armed, and a
-//! `◎ goal: …` line while a `/goal` is active (those two come from a custom
-//! statusline; stock Claude Code draws neither). Stock Claude marks an active
-//! goal with `◎ /goal active (5m)` on the notice row right above the prompt
-//! box, which is read too. Stock loops show nothing on screen and are read
-//! from the transcript instead (see `claude_loop`). A goal that was just met
-//! leaves `✔ Goal achieved (…)` in the last turn, read until the next prompt.
-//! Apart from that notice row and that line, only text
+//! prompt box (`⏵⏵ auto mode on · 2 shells · 1 monitor`) and shows a row per
+//! subagent (`◯ general-purpose  Writing tests  2m 3s`). Claude marks an
+//! active goal with `◎ /goal active (5m)` on the notice row right above the
+//! prompt box, and a goal that was just met leaves `✔ Goal achieved (…)` in
+//! the last turn, read until the next prompt. Loops show nothing on screen.
+//! Where a server watches the session's transcript, it knows better: its
+//! loop and goal win, and it caps the rows by the subagents not yet finished,
+//! since a finished subagent keeps its row (see `claude_loop`).
+//!
+//! Only stock Claude Code is read: lines a custom statusline prints (a goal
+//! or loop line of its own) can lag behind, so they are ignored. Apart from
+//! that notice row and that line, only text
 //! below the prompt box's bottom border is read, so prompt input and transcript
 //! text can never impersonate these counts.
 //!
@@ -57,18 +59,6 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
             }
             continue;
         }
-        if trimmed.starts_with("◎ goal:") {
-            activity.goal = true;
-            continue;
-        }
-        if let Some(rest) = trimmed.strip_prefix("↻ loop:") {
-            activity.looping = true;
-            activity.loop_next = rest
-                .rsplit_once("· next ")
-                .map(|(_, next)| next.trim().to_owned())
-                .filter(|next| !next.is_empty());
-            continue;
-        }
         // Only the mode line carries counts; the line above it can be a
         // user-configured statusline that prints anything.
         if !is_mode_line(trimmed) {
@@ -87,11 +77,6 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
         }
     }
     activity.agents = agent_rows;
-    // The statusline's goal line can outlive the goal it names; a goal met in
-    // the last turn is the later news.
-    if activity.goal_achieved {
-        activity.goal = false;
-    }
     Some(activity)
 }
 
@@ -160,45 +145,20 @@ mod tests {
     }
 
     #[test]
-    fn counts_subagent_rows_and_the_loop_wakeup() {
+    fn counts_subagent_rows_and_ignores_statusline_goal_and_loop_lines() {
+        // Captured from a live Claude Code pane with a custom statusline.
         let content = screen(&[
             "  ↻ loop: keep our PRs moving, fix things that are broken… · next 19:10",
+            "  ◎ goal: finish the plan with clawmux, validate that oasis still performs…",
             "  ⏵⏵ auto mode on · 1 monitor",
             "  ● main",
             "  ◯ general-purpose  Writing obs-source-audio-input.h header   7m 20s · ↓ 157.3",
             "  ◯ fork  Research sidebar status   21s · ↓ 230.6",
         ]);
         let activity = background_activity(Some(Agent::Claude), &content).unwrap();
-        assert_eq!(activity.monitors, 1);
-        assert_eq!(activity.agents, 2);
-        assert_eq!(activity.loop_next.as_deref(), Some("19:10"));
-        assert!(activity.looping);
-    }
-
-    #[test]
-    fn a_loop_line_cut_off_before_its_wakeup_still_counts() {
-        // Captured from a live Claude Code pane whose loop line ran off the edge.
-        let content = screen(&[
-            "  ↻ loop: keep our PRs moving, keep our issues moving, fi…",
-            "  ⏵⏵ bypass permissions on · 2 shells, 1 monitor",
-        ]);
-        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
-        assert!(activity.looping);
+        assert_eq!((activity.monitors, activity.agents), (1, 2));
+        assert!(!activity.looping && !activity.goal);
         assert_eq!(activity.loop_next, None);
-    }
-
-    #[test]
-    fn reads_an_active_goal() {
-        // Captured from a live Claude Code pane with a /goal running.
-        let content = screen(&[
-            "  ◎ goal: finish the plan with clawmux, validate that oasis still performs…",
-            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
-            "  ● main",
-            "  ◯ fork  Pointing justfile bench recipes at lib   5m 9s · ↓ 513.5k tokens",
-        ]);
-        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
-        assert!(activity.goal);
-        assert_eq!(activity.agents, 1);
     }
 
     #[test]
@@ -244,25 +204,6 @@ mod tests {
             "● You're welcome.",
         ]));
         assert!(!met(&["● 4"]));
-    }
-
-    /// Captured from a live Claude Code 2.1.310 pane: the statusline still
-    /// named the goal after the last turn met it.
-    #[test]
-    fn a_goal_met_in_the_last_turn_outranks_a_stale_statusline_goal() {
-        let content = [
-            "❯ keep going",
-            "✔ Goal achieved (8m · 1 turn · 29.8k tokens)",
-            "✻ Cooked for 8m 34s · done 4:01 PM",
-            "──────────────────────────────────────────",
-            "❯ ",
-            "──────────────────────────────────────────",
-            "  ◎ goal: when it is done, deploy the new trained version",
-            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
-        ]
-        .join("\n");
-        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
-        assert!(activity.goal_achieved && !activity.goal);
     }
 
     #[test]

@@ -1,4 +1,5 @@
-//! Keeps each Claude pane's loop state current from its session transcript.
+//! Keeps each Claude pane's loop and goal state, and how many of its
+//! subagents are unfinished, current from its session transcript.
 //!
 //! The transcript is read off the app thread, and only when the hook reports
 //! a session or the agent's status changes: a loop arms, fires and ends at
@@ -49,18 +50,37 @@ impl App {
             let Some(terminal) = self.pane_terminal_state_mut(pane_id) else {
                 return;
             };
-            if terminal
-                .claude_transcript
-                .take()
-                .and_then(|watch| watch.loop_label)
-                .is_some()
-            {
+            // What the transcript added (a loop, a goal, a subagent cap) goes.
+            if terminal.claude_transcript.take().is_some() {
                 terminal.revision = terminal.revision.saturating_add(1);
                 self.emit_pane_updated_for(pane_id);
             }
             return;
         }
+        self.find_claude_transcript(pane_id);
         self.scan_claude_transcript(pane_id);
+    }
+
+    /// A Claude pane known only by its session id, as one handed over from a
+    /// Herdr server or restored, has no transcript watch until its session
+    /// hook fires again; find the transcript by that id instead.
+    fn find_claude_transcript(&mut self, pane_id: PaneId) {
+        let Some(terminal) = self.pane_terminal_state_mut(pane_id) else {
+            return;
+        };
+        if terminal.claude_transcript.is_some()
+            || terminal.effective_agent_label() != Some("claude")
+        {
+            return;
+        }
+        let Some(session) = super::creation::terminal_agent_session_info(terminal)
+            .filter(|session| session.kind == crate::agent_resume::AgentSessionRefKind::Id)
+        else {
+            return;
+        };
+        if let Some(path) = transcript_for_session(&session.value) {
+            self.watch_claude_transcript(pane_id, path.to_string_lossy().into_owned());
+        }
     }
 
     fn scan_claude_transcript(&mut self, pane_id: PaneId) {
@@ -86,10 +106,12 @@ impl App {
             move |(path, tracker, event_tx)| {
                 std::thread::sleep(SETTLE);
                 let tracker = advance(&path, tracker);
+                let unfinished_subagents = unfinished_subagents(&path);
                 let _ = event_tx.blocking_send(AppEvent::ClaudeTranscriptScanned {
                     pane_id,
                     path,
                     tracker,
+                    unfinished_subagents,
                 });
             },
         );
@@ -109,6 +131,7 @@ impl App {
         pane_id: PaneId,
         path: PathBuf,
         tracker: ClaudeLoopTracker,
+        unfinished_subagents: Option<u16>,
     ) {
         let Some(terminal) = self.pane_terminal_state_mut(pane_id) else {
             return;
@@ -122,11 +145,16 @@ impl App {
             return;
         };
         let label = tracker.status().map(loop_label);
+        let goal = tracker.goal();
         watch.tracker = tracker;
         watch.scanning = false;
         let rescan = std::mem::take(&mut watch.rescan);
-        if watch.loop_label != label {
+        if (&watch.loop_label, watch.goal, watch.unfinished_subagents)
+            != (&label, goal, unfinished_subagents)
+        {
             watch.loop_label = label;
+            watch.goal = goal;
+            watch.unfinished_subagents = unfinished_subagents;
             terminal.revision = terminal.revision.saturating_add(1);
             self.emit_pane_updated_for(pane_id);
         }
@@ -203,6 +231,60 @@ fn advance(path: &Path, mut tracker: ClaudeLoopTracker) -> ClaudeLoopTracker {
     tracker
 }
 
+/// `<claude config>/projects/<project>/<session id>.jsonl`, the project
+/// folder unknown.
+fn transcript_for_session(session_id: &str) -> Option<PathBuf> {
+    if session_id.is_empty()
+        || !session_id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return None;
+    }
+    let config = std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".claude")))?;
+    let file = format!("{session_id}.jsonl");
+    std::fs::read_dir(config.join("projects"))
+        .ok()?
+        .flatten()
+        .map(|project| project.path().join(&file))
+        .find(|path| path.is_file())
+}
+
+/// Subagents whose records beside the transcript (`<session>/subagents/
+/// *.meta.json`) are not marked finished. Claude keeps a finished one's row on
+/// screen with its timer stopped; one that died with an earlier process never
+/// finishes, but its row is gone, so callers cap the screen's row count.
+fn unfinished_subagents(transcript: &Path) -> Option<u16> {
+    let dir = transcript.with_extension("").join("subagents");
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(0),
+        Err(_) => return None,
+    };
+    let mut count = 0u16;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".meta.json"))
+        {
+            continue;
+        }
+        let finished = std::fs::read(&path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|meta| meta.get("finished").and_then(serde_json::Value::as_bool))
+            == Some(true);
+        if !finished {
+            count = count.saturating_add(1);
+        }
+    }
+    Some(count)
+}
+
 fn loop_label(status: LoopStatus) -> String {
     match status {
         LoopStatus::NextWakeup(at) => local_clock(at).unwrap_or_default(),
@@ -259,6 +341,34 @@ mod tests {
         std::fs::write(&path, format!("{LOOP_COMMAND}\n")).unwrap();
         let tracker = advance(&path, tracker);
         assert_eq!(tracker.status(), Some(LoopStatus::Active));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn only_a_plain_session_id_names_a_transcript() {
+        assert_eq!(transcript_for_session(""), None);
+        assert_eq!(transcript_for_session("../../etc/passwd"), None);
+    }
+
+    #[test]
+    fn counts_subagents_not_marked_finished() {
+        let path = temp_transcript("subagents");
+        assert_eq!(unfinished_subagents(&path), Some(0));
+        let dir = path.with_extension("").join("subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        // Shapes captured from a stock Claude Code 2.1.310 session.
+        std::fs::write(
+            dir.join("agent-a1.meta.json"),
+            r#"{"agentType":"general-purpose","requestShape":"background"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            dir.join("agent-a2.meta.json"),
+            r#"{"agentType":"general-purpose","requestShape":"background","finished":true}"#,
+        )
+        .unwrap();
+        std::fs::write(dir.join("agent-a1.jsonl"), "{}\n").unwrap();
+        assert_eq!(unfinished_subagents(&path), Some(1));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

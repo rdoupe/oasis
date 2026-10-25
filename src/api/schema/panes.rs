@@ -572,14 +572,30 @@ impl BackgroundActivityInfo {
     /// The screen's activity, with a loop read from the transcript
     /// (`transcript_loop`: the loop label, empty when unknown) taking over the
     /// one a custom statusline shows.
+    /// The screen's activity, with what a Claude transcript records winning
+    /// where it knows: its loop, its goal, and a cap on subagent rows, since a
+    /// finished subagent keeps its row on screen.
     pub(crate) fn from_activity(
         activity: &crate::detect::activity::BackgroundActivity,
-        transcript_loop: Option<&str>,
+        transcript: Option<&crate::detect::claude_loop::ClaudeTranscriptWatch>,
     ) -> Option<Self> {
+        use crate::detect::claude_loop::TranscriptGoal;
+        let transcript_loop = transcript.and_then(|watch| watch.loop_label.as_deref());
+        let (goal, goal_achieved) = match transcript.and_then(|watch| watch.goal) {
+            Some(goal) => (
+                goal == TranscriptGoal::Active,
+                goal == TranscriptGoal::Achieved,
+            ),
+            None => (activity.goal, activity.goal_achieved),
+        };
+        let agents = match transcript.and_then(|watch| watch.unfinished_subagents) {
+            Some(unfinished) => activity.agents.min(unfinished),
+            None => activity.agents,
+        };
         let info = Self {
             shells: activity.shells,
             monitors: activity.monitors,
-            agents: activity.agents,
+            agents,
             mcp_tasks: activity.mcp_tasks,
             tasks: activity.tasks,
             looping: transcript_loop.is_some() || activity.looping || activity.loop_next.is_some(),
@@ -587,8 +603,8 @@ impl BackgroundActivityInfo {
                 .filter(|label| !label.is_empty())
                 .map(str::to_owned)
                 .or_else(|| activity.loop_next.clone()),
-            goal: activity.goal,
-            goal_achieved: activity.goal_achieved,
+            goal,
+            goal_achieved,
         };
         (info != Self::default()).then_some(info)
     }
