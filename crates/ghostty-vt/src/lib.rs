@@ -3675,36 +3675,6 @@ impl<'a> RowCellIter<'a> {
         }
     }
 
-    fn raw_cell_text_into(&self, text: &mut String) -> Result<(), Error> {
-        let raw = self.raw_cell()?;
-        let mut has_text = false;
-        unsafe {
-            ffi::ghostty_cell_get(
-                raw,
-                ffi::GhosttyCellData_GHOSTTY_CELL_DATA_HAS_TEXT,
-                (&mut has_text as *mut bool).cast(),
-            )
-            .into_result()?;
-        }
-        if !has_text {
-            return Ok(());
-        }
-
-        let mut codepoint = 0u32;
-        unsafe {
-            ffi::ghostty_cell_get(
-                raw,
-                ffi::GhosttyCellData_GHOSTTY_CELL_DATA_CODEPOINT,
-                (&mut codepoint as *mut u32).cast(),
-            )
-            .into_result()?;
-        }
-        if let Some(ch) = char::from_u32(codepoint) {
-            text.push(ch);
-        }
-        Ok(())
-    }
-
     pub fn grapheme_text(&self) -> Result<String, Error> {
         let mut bytes = Vec::new();
         let mut text = String::new();
@@ -3712,59 +3682,48 @@ impl<'a> RowCellIter<'a> {
         Ok(text)
     }
 
+    /// Appends the cell's full grapheme cluster to `text` (after clearing it).
+    /// `bytes` is scratch storage; reusing it across cells lets almost every
+    /// cell be read with a single call, since clusters rarely exceed its size.
     pub fn grapheme_text_into(&self, bytes: &mut Vec<u8>, text: &mut String) -> Result<(), Error> {
+        const INITIAL_SCRATCH: usize = 32;
         text.clear();
-        bytes.clear();
-
-        let mut buffer = ffi::GhosttyBuffer {
-            ptr: ptr::null_mut(),
-            cap: 0,
-            len: 0,
-        };
-        let result = unsafe {
-            ffi::ghostty_render_state_row_cells_get(
-                self.cells.raw,
-                ffi::GhosttyRenderStateRowCellsData_GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
-                (&mut buffer as *mut ffi::GhosttyBuffer).cast(),
-            )
-        };
-        match result {
-            ffi::GhosttyResult_GHOSTTY_SUCCESS if buffer.len == 0 => {
-                return self.raw_cell_text_into(text);
-            }
-            ffi::GhosttyResult_GHOSTTY_SUCCESS => {
-                return Err(Error(ffi::GhosttyResult_GHOSTTY_INVALID_VALUE));
-            }
-            ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE => {}
-            other => return Err(Error(other)),
+        if bytes.len() < INITIAL_SCRATCH {
+            bytes.resize(INITIAL_SCRATCH, 0);
         }
 
-        if buffer.len == 0 {
-            return self.raw_cell_text_into(text);
+        loop {
+            let mut buffer = ffi::GhosttyBuffer {
+                ptr: bytes.as_mut_ptr(),
+                cap: bytes.len(),
+                len: 0,
+            };
+            let result = unsafe {
+                ffi::ghostty_render_state_row_cells_get(
+                    self.cells.raw,
+                    ffi::GhosttyRenderStateRowCellsData_GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
+                    (&mut buffer as *mut ffi::GhosttyBuffer).cast(),
+                )
+            };
+            match result {
+                // Zero length means the cell has no text.
+                ffi::GhosttyResult_GHOSTTY_SUCCESS if buffer.len <= bytes.len() => {
+                    let encoded = &bytes[..buffer.len];
+                    match std::str::from_utf8(encoded) {
+                        Ok(value) => text.push_str(value),
+                        Err(_) => text.push_str(&String::from_utf8_lossy(encoded)),
+                    }
+                    return Ok(());
+                }
+                ffi::GhosttyResult_GHOSTTY_SUCCESS => {
+                    return Err(Error(ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE));
+                }
+                ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE if buffer.len > bytes.len() => {
+                    bytes.resize(buffer.len, 0);
+                }
+                other => return Err(Error(other)),
+            }
         }
-        bytes.resize(buffer.len, 0);
-        let mut buffer = ffi::GhosttyBuffer {
-            ptr: bytes.as_mut_ptr(),
-            cap: bytes.len(),
-            len: 0,
-        };
-        unsafe {
-            ffi::ghostty_render_state_row_cells_get(
-                self.cells.raw,
-                ffi::GhosttyRenderStateRowCellsData_GHOSTTY_RENDER_STATE_ROW_CELLS_DATA_GRAPHEMES_UTF8,
-                (&mut buffer as *mut ffi::GhosttyBuffer).cast(),
-            )
-            .into_result()?;
-        }
-        if buffer.len > bytes.len() {
-            return Err(Error(ffi::GhosttyResult_GHOSTTY_OUT_OF_SPACE));
-        }
-        bytes.truncate(buffer.len);
-        match std::str::from_utf8(bytes) {
-            Ok(value) => text.push_str(value),
-            Err(_) => text.push_str(&String::from_utf8_lossy(bytes)),
-        }
-        Ok(())
     }
 }
 
@@ -4761,6 +4720,31 @@ mod tests {
         terminal.write(format!("{PAYLOAD}\r\n").as_bytes());
 
         assert_eq!(first_rendered_row_text(&terminal), PAYLOAD);
+    }
+
+    #[test]
+    fn render_cells_read_clusters_longer_than_the_scratch_buffer() {
+        // 1 + 20 * 2 UTF-8 bytes, past the 32-byte first attempt.
+        let long_cluster = format!("e{}", "\u{301}".repeat(20));
+        let payload = format!("a {long_cluster} b 👨‍👩‍👧‍👦 c");
+        let mut terminal = Terminal::new(80, 3, 100).unwrap();
+        terminal.write(format!("{payload}\r\n").as_bytes());
+
+        assert_eq!(first_rendered_row_text(&terminal), payload);
+        let mut render_state = RenderState::new().unwrap();
+        render_state.update(&terminal).unwrap();
+        let mut row_iterator = RowIterator::new().unwrap();
+        let mut rows = render_state
+            .populate_row_iterator(&mut row_iterator)
+            .unwrap();
+        let mut row_cells = RowCells::new().unwrap();
+        assert!(rows.next());
+        let mut cells = rows.populate_cells(&mut row_cells).unwrap();
+        let mut longest = 0;
+        while cells.next() {
+            longest = longest.max(cells.grapheme_text().unwrap().len());
+        }
+        assert_eq!(longest, long_cluster.len());
     }
 
     #[test]
