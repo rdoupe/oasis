@@ -224,8 +224,9 @@ fn status_color(
     }
 }
 
-/// A goal or loop pane's icon is drawn in the mode's color, with the mode's
-/// own glyph while it works. Needing you stays red.
+/// A goal or loop pane takes the mode's glyph and color only while it works;
+/// between runs it is grey, since color means something is happening. Needing
+/// you stays red.
 fn agent_status_icon(
     status: crate::api::schema::AgentStatus,
     mode: Option<crate::ui::AgentMode>,
@@ -234,14 +235,8 @@ fn agent_status_icon(
 ) -> (&'static str, ratatui::style::Color) {
     use crate::api::schema::AgentStatus;
     match mode {
-        Some(mode) if status != AgentStatus::Blocked => (
-            if status == AgentStatus::Working {
-                mode.glyph()
-            } else {
-                status_icon(status, style)
-            },
-            mode.color().ratatui(),
-        ),
+        Some(mode) if status == AgentStatus::Working => (mode.glyph(), mode.color().ratatui()),
+        Some(_) if status != AgentStatus::Blocked => (status_icon(status, style), palette.overlay0),
         _ => (status_icon(status, style), status_color(status, palette)),
     }
 }
