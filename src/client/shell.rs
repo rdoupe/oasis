@@ -225,8 +225,9 @@ fn status_color(
 }
 
 /// A goal or loop pane always shows the mode's glyph, so it never passes for a
-/// plain pane; the color carries the state: working yellow and needing you red
-/// as for any agent, otherwise the mode's own color. A working goal stays pink
+/// plain pane; the color carries the state: working yellow, otherwise the
+/// mode's own color. Needing you is the plain red mark for every pane, so it
+/// stands out. A working goal stays pink
 /// and fills its glyph instead. Done only means a turn ended unseen, which says
 /// nothing about the goal or loop itself, so it shows as idle. Plain idle is
 /// grey, which leaves loop green unambiguous.
@@ -246,18 +247,14 @@ fn agent_status_icon(
                 .fg(AgentMode::GoalAchieved.color().ratatui())
                 .add_modifier(Modifier::BOLD),
         ),
-        (Some(AgentMode::GoalAchieved), _) => (
-            status_icon(status, style),
-            Style::default().fg(status_color(status, palette)),
-        ),
         (Some(AgentMode::Goal), AgentStatus::Working) => {
             ("◉", Style::default().fg(AgentMode::Goal.color().ratatui()))
         }
-        (Some(mode), AgentStatus::Working | AgentStatus::Blocked) => (
+        (Some(mode), AgentStatus::Working) if mode.drives() => (
             mode.glyph(),
             Style::default().fg(status_color(status, palette)),
         ),
-        (Some(mode), AgentStatus::Idle | AgentStatus::Done) => {
+        (Some(mode), AgentStatus::Idle | AgentStatus::Done) if mode.drives() => {
             (mode.glyph(), Style::default().fg(mode.color().ratatui()))
         }
         _ => (

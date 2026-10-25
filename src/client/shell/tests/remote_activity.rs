@@ -256,8 +256,8 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
     assert!(endpoint_agent_tokens(&state, &endpoint_id, "pane_1").is_empty());
 }
 
-/// A goal or loop pane always shows the mode's glyph; working is yellow and
-/// needing you red as for any agent, otherwise it takes the mode's color. A
+/// A goal or loop pane always shows the mode's glyph; working is yellow,
+/// needing you the plain red mark, otherwise it takes the mode's color. A
 /// working goal is a filled pink glyph, and done shows as idle. A goal just
 /// met is a bold pink check until the next prompt.
 #[test]
@@ -277,7 +277,7 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("↻", fg(wakeup)));
     assert_eq!(
         icon(AgentStatus::Blocked, Some(Loop)),
-        ("↻", fg(palette.red))
+        ("×", fg(palette.red))
     );
     assert_eq!(icon(AgentStatus::Working, Some(Goal)), ("◉", fg(goal)));
     assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("◎", fg(goal)));
@@ -291,7 +291,7 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     );
     assert_eq!(
         icon(AgentStatus::Blocked, Some(Goal)),
-        ("◎", fg(palette.red))
+        ("×", fg(palette.red))
     );
     assert_eq!(icon(AgentStatus::Working, None), ("◐", fg(palette.yellow)));
     assert_eq!(icon(AgentStatus::Idle, None), ("○", fg(palette.overlay0)));
