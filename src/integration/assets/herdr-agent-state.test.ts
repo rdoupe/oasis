@@ -370,6 +370,60 @@ test("Pi settlement preserves explicit blocked-state precedence", async () => {
   expect(requestStates(requests)).toEqual(["idle", "working", "blocked", "idle"]);
 });
 
+test("Pi reports a dialog waiting on the user as blocked", async () => {
+  const requests = await startRecordingServer("pi-ui-prompt");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  install(pi);
+
+  let idle = true;
+  const context = piContext(() => idle);
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+  idle = false;
+  handlers.get("agent_start")?.({}, context);
+  await waitFor(() => requestStates(requests).length === 2);
+
+  handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start", kind: "select", title: "Allow?" }, context);
+  await waitFor(() => requestStates(requests).length === 3);
+  handlers.get("ui_prompt_end")?.({ type: "ui_prompt_end", kind: "select" }, context);
+  await waitFor(() => requestStates(requests).length === 4);
+  expect(requestStates(requests)).toEqual(["idle", "working", "blocked", "working"]);
+
+  handlers.get("ui_prompt_start")?.({ type: "ui_prompt_start", kind: "custom" }, context);
+  handlers.get("ui_prompt_end")?.({ type: "ui_prompt_end", kind: "custom" }, context);
+  await Bun.sleep(25);
+  expect(requestStates(requests)).toEqual(["idle", "working", "blocked", "working"]);
+});
+
+test("Pi reports a user shell command as working until its result is recorded", async () => {
+  const requests = await startRecordingServer("pi-user-bash");
+  const { handlers, pi } = createExtensionHarness();
+  const { default: install } = await importFresh("./pi/herdr-agent-state.ts");
+  install(pi);
+
+  const entries: unknown[] = [{ type: "message", message: { role: "user" } }];
+  const context = {
+    ...piContext(() => true),
+    sessionManager: {
+      getSessionFile: () => undefined,
+      getSessionId: () => undefined,
+      getEntries: () => entries,
+    },
+  };
+  await handlers.get("session_start")?.({ reason: "startup" }, context);
+  await waitFor(() => requestStates(requests).length === 1);
+
+  const result = handlers.get("user_bash")?.({ type: "user_bash", command: "sleep 1" }, context);
+  expect(result).toBeUndefined();
+  await waitFor(() => requestStates(requests).length === 2);
+  expect(requestStates(requests)).toEqual(["idle", "working"]);
+
+  entries.push({ type: "message", message: { role: "bashExecution", command: "sleep 1" } });
+  await waitFor(() => requestStates(requests).length === 3, 2_000);
+  expect(requestStates(requests)).toEqual(["idle", "working", "idle"]);
+});
+
 test("Pi reports the session replacement source", async () => {
   const requests = await startRecordingServer("pi-session-source");
   const { handlers, pi } = createExtensionHarness();

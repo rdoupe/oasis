@@ -2,7 +2,7 @@
 // managed by herdr; reinstalling or updating the integration overwrites this file.
 // add custom hooks/plugins beside this file instead of editing it.
 // HERDR_INTEGRATION_ID=pi
-// HERDR_INTEGRATION_VERSION=9
+// HERDR_INTEGRATION_VERSION=10
 // @ts-nocheck
 
 import net from "node:net";
@@ -14,6 +14,11 @@ const socketEndpoint =
   process.platform === "win32" && socketPath ? `\\\\.\\pipe\\${socketPath}` : socketPath;
 const paneId = process.env.HERDR_PANE_ID;
 const source = "herdr:pi";
+// How often to look for the result of a `!command`, which has no end event.
+const USER_BASH_POLL_MS = 500;
+// Extension dialogs that wait on the user's answer; `custom` components can be
+// anything, such as an embedded shell, so they do not count.
+const QUESTION_PROMPTS = new Set(["select", "confirm", "input", "editor"]);
 
 function enabled() {
   return HERDR_ENV === "1" && !!socketPath && !!paneId;
@@ -182,6 +187,9 @@ export default function (pi) {
   }
 
   let agentActive = false;
+  let questionOpen = false;
+  let userBashCount = 0;
+  let userBashTimer: ReturnType<typeof setInterval> | undefined;
   let blockedCount = 0;
   let blockedMessage: string | undefined;
   let lastState: AgentState | undefined;
@@ -192,7 +200,10 @@ export default function (pi) {
     if (blockedCount > 0) {
       return { state: "blocked" as const, message: blockedMessage };
     }
-    if (agentActive) {
+    if (questionOpen) {
+      return { state: "blocked" as const, message: undefined };
+    }
+    if (agentActive || userBashCount > 0) {
       return { state: "working" as const, message: undefined };
     }
     return { state: "idle" as const, message: undefined };
@@ -224,6 +235,79 @@ export default function (pi) {
     blockedCount += 1;
     blockedMessage = data.label;
     publishState();
+  });
+
+  function stopUserBash() {
+    userBashCount = 0;
+    if (userBashTimer) {
+      clearInterval(userBashTimer);
+      userBashTimer = undefined;
+    }
+  }
+
+  // Pi wraps every extension dialog (an approval, a plan picker) in these
+  // events; older Pi versions never emit them.
+  pi.on("ui_prompt_start", (event) => {
+    if (!rootSession || !QUESTION_PROMPTS.has(event?.kind)) {
+      return;
+    }
+    questionOpen = true;
+    publishState();
+  });
+
+  pi.on("ui_prompt_end", () => {
+    if (!rootSession || !questionOpen) {
+      return;
+    }
+    questionOpen = false;
+    publishState();
+  });
+
+  // A `!command` runs without an agent turn and Pi emits nothing when it ends,
+  // so it counts as work until its result lands in the session.
+  pi.on("user_bash", (_event, ctx) => {
+    if (!rootSession) {
+      return undefined;
+    }
+    let seen: number;
+    try {
+      seen = ctx.sessionManager.getEntries().length;
+    } catch {
+      return undefined;
+    }
+    userBashCount += 1;
+    publishState();
+    if (!userBashTimer) {
+      userBashTimer = setInterval(() => {
+        let entries;
+        try {
+          entries = ctx.sessionManager.getEntries();
+        } catch {
+          stopUserBash();
+          publishState();
+          return;
+        }
+        const finished = entries
+          .slice(seen)
+          .filter((entry) => entry?.message?.role === "bashExecution").length;
+        seen = entries.length;
+        if (finished === 0) {
+          return;
+        }
+        userBashCount = Math.max(0, userBashCount - finished);
+        if (userBashCount === 0) {
+          stopUserBash();
+        }
+        publishState();
+      }, USER_BASH_POLL_MS);
+      userBashTimer.unref?.();
+    }
+    // Leave the command to later handlers and Pi's own shell.
+    return undefined;
+  });
+
+  pi.on("session_shutdown", () => {
+    stopUserBash();
   });
 
   pi.on("session_start", async (event, ctx) => {
