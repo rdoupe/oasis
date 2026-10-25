@@ -260,7 +260,8 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
 /// needing you the plain red mark, otherwise it takes the mode's color. A
 /// working goal is a filled pink glyph, and done shows as idle. A goal just
 /// met is a bold pink check until the next prompt. Between turns while
-/// subagents run, the pane is busy: a yellow robot.
+/// subagents run, the chat itself is idle: a grey robot; while it works, a
+/// filled yellow one.
 #[test]
 fn goal_and_loop_panes_always_show_their_glyph() {
     use crate::config::StatusIndicatorStyle::Symbols;
@@ -294,12 +295,12 @@ fn goal_and_loop_panes_always_show_their_glyph() {
         icon(AgentStatus::Blocked, Some(Goal)),
         ("×", fg(palette.red))
     );
-    let robot = (Subagents.glyph(), fg(palette.yellow));
+    let robot = (Subagents.glyph(), fg(palette.overlay0));
     assert_eq!(icon(AgentStatus::Idle, Some(Subagents)), robot);
     assert_eq!(icon(AgentStatus::Done, Some(Subagents)), robot);
     assert_eq!(
         icon(AgentStatus::Working, Some(Subagents)),
-        ("◐", fg(palette.yellow))
+        ("\u{f06a9}", fg(palette.yellow))
     );
     assert_eq!(
         icon(AgentStatus::Blocked, Some(Subagents)),

@@ -31,10 +31,11 @@ pub(crate) fn status_priority(status: AgentStatus) -> u8 {
 }
 
 /// The sort rank in priority order, highest first: turns that ended unseen
-/// (done, or a goal just met), needing you, idle, busy (working, or waiting on
-/// subagents), goals, and loops last. A goal or loop pane keeps its place
-/// whether it is working, done or between runs, unless it needs you; a done
-/// pane waiting on subagents is busy. Each matches the pane's state icon.
+/// (done, or a goal just met), needing you, idle, idle while subagents run,
+/// busy, goals, and loops last. A goal or loop pane keeps its place whether it
+/// is working, done or between runs, unless it needs you; a pane between
+/// turns whose subagents run shows the robot, done or not. Each matches the
+/// pane's state icon.
 pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::AgentMode>) -> u8 {
     use crate::ui::AgentMode;
     match (status, mode) {
@@ -43,14 +44,17 @@ pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::A
         (AgentStatus::Idle | AgentStatus::Done, Some(AgentMode::GoalAchieved)) => 7,
         (_, Some(AgentMode::Loop)) => 1,
         (_, Some(AgentMode::Goal)) => 2,
-        (AgentStatus::Working, _) | (_, Some(AgentMode::Subagents)) => 3,
+        (AgentStatus::Working, _) => 3,
+        (_, Some(AgentMode::Subagents)) => SUBAGENTS_RANK,
         (AgentStatus::Done, _) => 7,
         (AgentStatus::Idle, _) => IDLE_RANK,
     }
 }
 
 /// The rank of the idle tier in [`agent_sort_priority`].
-const IDLE_RANK: u8 = 4;
+const IDLE_RANK: u8 = 5;
+/// Idle while subagents run, just below plain idle.
+const SUBAGENTS_RANK: u8 = 4;
 
 /// The sub-sort within idle panes: ones still running shells, monitors or
 /// other background work go below plain idle ones, more work lower, and at the
@@ -81,14 +85,17 @@ pub(crate) fn idle_background_load(
 }
 
 /// The last sort key in priority order: the most recent change first, except
-/// among idle panes, where the one idle longest comes first, so going back to
-/// the top idle pane picks up the oldest.
+/// among idle panes (robot ones too), where the one idle longest comes first,
+/// so going back to the top idle pane picks up the oldest.
 pub(crate) fn recency_rank(
     status: AgentStatus,
     mode: Option<crate::ui::AgentMode>,
     recency: u64,
 ) -> u64 {
-    if agent_sort_priority(status, mode) == IDLE_RANK {
+    if matches!(
+        agent_sort_priority(status, mode),
+        IDLE_RANK | SUBAGENTS_RANK
+    ) {
         recency
     } else {
         u64::MAX - recency

@@ -387,10 +387,11 @@ fn subagents_part(tokens: &std::collections::HashMap<String, String>) -> Option<
 /// The goal or loop itself shows in the state icon and the row's colors, so it
 /// adds nothing here; the `wakeup` token still shows a loop's next run. While
 /// either drives the pane, its shells, monitors and MCP tasks are the plumbing
-/// it runs on and stay hidden; subagents stay.
+/// it runs on and stay hidden. Subagents show as the state icon's robot, so
+/// they add nothing here either; the `subagents` token still draws them.
 fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<ActivityPart> {
     let driven = AgentMode::from_tokens(tokens).is_some_and(AgentMode::drives);
-    let plumbing = (!driven)
+    (!driven)
         .then(|| {
             [
                 shells_part(tokens),
@@ -400,8 +401,9 @@ fn background_parts(tokens: &std::collections::HashMap<String, String>) -> Vec<A
             ]
         })
         .into_iter()
-        .flatten();
-    plumbing.chain([subagents_part(tokens)]).flatten().collect()
+        .flatten()
+        .flatten()
+        .collect()
 }
 
 pub(crate) struct SpaceTokenContext<'a> {
@@ -880,9 +882,12 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ("oasis:agents".to_owned(), "4".to_owned()),
         ]);
         let parts = background_parts(&tokens);
-        assert_eq!(activity_texts(&parts), ["$1", "∿2", "◯◯◯◯"]);
+        assert_eq!(
+            activity_texts(&parts),
+            ["$1", "∿2"],
+            "subagents are the robot"
+        );
         assert_eq!(parts[0].color, COUNT_COLOR);
-        assert_eq!(parts[2].color, SUBAGENT_COLOR);
         assert!(background_parts(&std::collections::HashMap::new()).is_empty());
     }
 
@@ -893,7 +898,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
         let mut entry = entry();
         entry.tokens = std::collections::HashMap::from([
             ("oasis:shells".to_owned(), "3".to_owned()),
-            ("oasis:agents".to_owned(), "2".to_owned()),
+            ("oasis:monitors".to_owned(), "2".to_owned()),
         ]);
         let rows = agent_rows(&config, context(&entry), "working");
         let draw = |width| {
@@ -917,7 +922,7 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             drawn,
             [
                 ("$3", Some(COUNT_COLOR.ratatui())),
-                (" ◯◯", Some(SUBAGENT_COLOR.ratatui()))
+                (" ∿2", Some(COUNT_COLOR.ratatui()))
             ]
         );
         let narrow = draw(2);
@@ -957,18 +962,15 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
             ("oasis:agents".to_owned(), "2".to_owned()),
             ("oasis:loop".to_owned(), "22:42".to_owned()),
         ]);
-        assert_eq!(activity_texts(&background_parts(&tokens)), ["◯◯"]);
+        assert!(background_parts(&tokens).is_empty());
         assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Loop));
         tokens.insert("oasis:goal".to_owned(), "1".to_owned());
         assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Goal));
         tokens.remove("oasis:loop");
-        assert_eq!(activity_texts(&background_parts(&tokens)), ["◯◯"]);
+        assert!(background_parts(&tokens).is_empty());
         tokens.remove("oasis:goal");
         assert_eq!(AgentMode::from_tokens(&tokens), Some(AgentMode::Subagents));
-        assert_eq!(
-            activity_texts(&background_parts(&tokens)),
-            ["$3", "∿1", "◯◯"]
-        );
+        assert_eq!(activity_texts(&background_parts(&tokens)), ["$3", "∿1"]);
         tokens.remove("oasis:agents");
         assert_eq!(AgentMode::from_tokens(&tokens), None);
     }

@@ -263,8 +263,8 @@ fn combined_agents_span_machines_and_sort_by_urgency_with_live_machines_first() 
 }
 
 /// Priority order: ended turns (done or a goal just met), needing you, idle,
-/// busy (working or waiting on subagents), goals, then loops. A goal or loop
-/// pane keeps its place whether it works or not, unless it needs you.
+/// idle while subagents run, busy, goals, then loops. A goal or loop pane
+/// keeps its place whether it works or not, unless it needs you.
 #[test]
 fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
     let with = |mut agent: ClientShellAgent, key: &str| {
