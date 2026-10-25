@@ -1,7 +1,7 @@
 id = "grok"
-version = "2026.10.05.1"
+version = "2026.10.25.1"
 min_engine_version = 3
-updated_at = "2026-10-05T00:00:00Z"
+updated_at = "2026-10-25T00:00:00Z"
 aliases = ["grok-build"]
 
 # Evidence: Grok Build 0.2.101 source and 1.0.34 live pane reads.
@@ -73,6 +73,17 @@ any = [
   { contains = ["use ← → to choose permission whitelist scope"] },
   { contains = ["←/→:scope"] },
 ]
+
+# The folder-trust question at startup replaces the whole screen and waits on
+# you; its two choices sit at the bottom above the version line.
+[[rules]]
+id = "trust_folder_prompt"
+state = "blocked"
+priority = 1170
+region = "bottom_non_empty_lines(8)"
+visible_blocker = true
+contains = ["Do you trust the contents of this directory?"]
+line_regex = ['^\s*No, quit\s+n\s*$']
 
 # Background commands, monitors, and subagents left running after Grok returns
 # to its prompt do not count as working, matching Claude and agy (#1217, #4735).

@@ -1,6 +1,11 @@
-//! Grok CLI's background work, read from its panel and header.
+//! Grok CLI's background work, read from right above its input box and from
+//! its header.
 //!
-//! Right above the input box Grok lists what still runs in collapsible groups:
+//! Between turns Grok counts what still runs on the line right above the
+//! input box: `◎ 1 command · 2 monitors · 1 loop · 1 subagent still running`.
+//! While a turn works that line gives way to the activity line
+//! (`⠹ Responding… 3.8s   4.0s ⇣119 [stop]`), so the last counts stand. Some
+//! setups list the work in collapsible groups there instead:
 //! `▾ Tasks 1` (background shells), `▾ Subagents 2`, and `▾ Watchers 1`, whose
 //! rows are monitors (`⸬ Monitor ticks  25s`) and loops
 //! (`◆ Loop <prompt> every 1 minute (next in 22s)`). A `/goal` shows in the
@@ -16,13 +21,20 @@ use super::BackgroundActivity;
 
 /// How many lines at the top can hold the header.
 const HEADER_LINES: usize = 3;
-/// The panel is indented less than transcript lines, which sit at five.
+/// The panel is indented less than transcript lines.
 const PANEL_INDENT: usize = 3;
+/// How many lines above the input box can hold the still-running line.
+const STATUS_LINES: usize = 3;
+/// Conversation text is indented this far; Grok's own lines sit less.
+const TRANSCRIPT_INDENT: usize = 5;
 /// How far above the bottom the input box sits (its border, prompt, border
 /// and the hint line under it).
 const INPUT_BOX_LINES: usize = 6;
 
-pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
+pub(super) fn background_activity(
+    content: &str,
+    before: &BackgroundActivity,
+) -> Option<BackgroundActivity> {
     let lines = content
         .lines()
         .map(|line| line.trim_end_matches([' ', '█']))
@@ -38,6 +50,7 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
                 .is_some_and(|line| line.trim_start().starts_with("│ ❯"))
         })?;
     let mut activity = BackgroundActivity::default();
+    let mut panel = false;
     let mut watchers = 0;
     let mut loops = 0;
     for line in lines[..input].iter().rev() {
@@ -55,6 +68,7 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
             let Ok(count) = count.parse::<u16>() else {
                 break;
             };
+            panel = true;
             match name {
                 "Tasks" => activity.shells = count,
                 "Subagents" => activity.agents = count,
@@ -76,6 +90,36 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
     }
     activity.looping = loops > 0;
     activity.monitors = watchers.saturating_sub(loops);
+    // A notice (`Run /doctor for details and fixes.`) can sit between that
+    // line and the input box; conversation text sits further in.
+    let mut above = lines[..input]
+        .iter()
+        .rev()
+        .filter(|line| !line.trim().is_empty())
+        .take(STATUS_LINES)
+        .filter(|line| line.len() - line.trim_start().len() < TRANSCRIPT_INDENT)
+        .map(|line| line.trim());
+    let status = above.find(|line| still_running(line).is_some() || line.ends_with("[stop]"));
+    if let (false, Some(status)) = (panel, status) {
+        if let Some(counts) = still_running(status) {
+            for segment in counts.split('·').map(str::trim) {
+                if let Some(count) = super::counted(segment, "command") {
+                    activity.shells = count;
+                } else if let Some(count) = super::counted(segment, "monitor") {
+                    activity.monitors = count;
+                } else if let Some(count) = super::counted(segment, "loop") {
+                    activity.looping = count > 0;
+                } else if let Some(count) = super::counted(segment, "subagent") {
+                    activity.agents = count;
+                }
+            }
+        } else {
+            activity.shells = before.shells;
+            activity.monitors = before.monitors;
+            activity.agents = before.agents;
+            activity.looping = before.looping;
+        }
+    }
     match header_goal(&lines) {
         Some(phase) if phase.starts_with("Done") => {
             activity.goal_achieved = last_turn_met_the_goal(&lines[..input]);
@@ -84,6 +128,16 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
         None => {}
     }
     Some(activity)
+}
+
+/// The counts in `◎ 1 command · 1 loop still running`, after its one-cell
+/// glyph, which animates. A wait adds `· send a message to interrupt`.
+fn still_running(line: &str) -> Option<&str> {
+    let (glyph, rest) = line.split_once(' ')?;
+    if glyph.chars().count() != 1 || glyph.starts_with(|c: char| c.is_alphanumeric()) {
+        return None;
+    }
+    rest.split_once(" still running").map(|(counts, _)| counts)
 }
 
 /// The phase in the header's `[⁙ Goal: Executing]` or `[Goal: Done]`.
@@ -124,6 +178,55 @@ mod tests {
         lines.extend_from_slice(body);
         lines.extend_from_slice(&INPUT);
         background_activity(Some(Agent::Grok), &lines.join("\n"))
+    }
+
+    #[test]
+    fn reads_the_still_running_line_and_keeps_it_while_a_turn_works() {
+        // Captured from a live grok 1.0.70 pane.
+        let idle = read(
+            HEADER,
+            &[
+                "     Worked for 0.4s",
+                "    ○ 2 commands · 1 monitor · 1 loop · 1 subagent still running",
+                "   Run /doctor for details and fixes.",
+            ],
+        )
+        .unwrap();
+        assert_eq!((idle.shells, idle.monitors, idle.agents), (2, 1, 1));
+        assert!(idle.looping);
+        let waiting = read(
+            HEADER,
+            &["    ◎ 1 command still running · send a message to interrupt"],
+        )
+        .unwrap();
+        assert_eq!(waiting.shells, 1);
+
+        let working = [
+            HEADER,
+            "     word0 word1 word2                                                    1:40 PM",
+            "    ⠹ Responding… 3.8s                                      4.0s ⇣119 [stop]",
+        ]
+        .into_iter()
+        .chain(INPUT)
+        .collect::<Vec<_>>()
+        .join("\n");
+        let kept =
+            super::super::background_activity_after(Some(Agent::Grok), &working, &idle).unwrap();
+        assert_eq!(kept, idle);
+        assert!(read(HEADER, &["     Worked for 0.4s"]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn transcript_text_cannot_impersonate_the_still_running_line() {
+        let activity = read(
+            HEADER,
+            &[
+                "     I said 3 commands still running",
+                "     Worked for 0.4s",
+            ],
+        )
+        .unwrap();
+        assert!(activity.is_empty());
     }
 
     #[test]

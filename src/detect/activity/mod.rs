@@ -51,12 +51,23 @@ pub fn has_reader(agent: Agent) -> bool {
 
 /// The agent's background work, or `None` when the screen shows no footer to
 /// read (a dialog or a full-screen view), so the last known value should stand.
+#[cfg(test)]
 pub fn background_activity(agent: Option<Agent>, content: &str) -> Option<BackgroundActivity> {
+    background_activity_after(agent, content, &BackgroundActivity::default())
+}
+
+/// [`background_activity`], given the value read before: an agent that hides
+/// its counts while a turn works keeps `last`'s.
+pub fn background_activity_after(
+    agent: Option<Agent>,
+    content: &str,
+    last: &BackgroundActivity,
+) -> Option<BackgroundActivity> {
     match agent {
         Some(Agent::Claude) => claude::background_activity(content),
         Some(Agent::Codex) => codex::background_activity(content),
         Some(Agent::Cursor) => cursor::background_activity(content),
-        Some(Agent::Grok) => grok::background_activity(content),
+        Some(Agent::Grok) => grok::background_activity(content, last),
         Some(Agent::OpenCode) => opencode::background_activity(content),
         _ => Some(BackgroundActivity::default()),
     }

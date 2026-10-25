@@ -43,6 +43,7 @@ struct PaneActivity {
     signature: AgentSignature,
     dirty: bool,
     last_request: Option<std::time::Instant>,
+    activity: crate::detect::activity::BackgroundActivity,
     tokens: Vec<(String, String)>,
 }
 
@@ -110,6 +111,7 @@ impl EndpointRemoteActivity {
                             signature,
                             dirty: true,
                             last_request: None,
+                            activity: Default::default(),
                             tokens: Vec::new(),
                         },
                     );
@@ -190,10 +192,14 @@ impl EndpointRemoteActivity {
             return false;
         };
         // No footer on screen (a dialog): the last counts stand.
-        let Some(activity) = crate::detect::activity::background_activity(Some(pane.agent), text)
-        else {
+        let Some(activity) = crate::detect::activity::background_activity_after(
+            Some(pane.agent),
+            text,
+            &pane.activity,
+        ) else {
             return false;
         };
+        pane.activity = activity.clone();
         let tokens = crate::api::schema::BackgroundActivityInfo::from_activity(&activity, None)
             .map(|info| info.sidebar_tokens())
             .unwrap_or_default();

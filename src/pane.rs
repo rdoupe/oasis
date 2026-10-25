@@ -348,7 +348,7 @@ async fn publish_background_activity(
     let activity = if process_exited {
         Some(crate::detect::activity::BackgroundActivity::default())
     } else {
-        crate::detect::activity::background_activity(agent, content)
+        crate::detect::activity::background_activity_after(agent, content, last)
     };
     let Some(activity) = activity.filter(|activity| activity != last) else {
         return;
