@@ -87,6 +87,11 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
         }
     }
     activity.agents = agent_rows;
+    // The statusline's goal line can outlive the goal it names; a goal met in
+    // the last turn is the later news.
+    if activity.goal_achieved {
+        activity.goal = false;
+    }
     Some(activity)
 }
 
@@ -239,6 +244,25 @@ mod tests {
             "● You're welcome.",
         ]));
         assert!(!met(&["● 4"]));
+    }
+
+    /// Captured from a live Claude Code 2.1.310 pane: the statusline still
+    /// named the goal after the last turn met it.
+    #[test]
+    fn a_goal_met_in_the_last_turn_outranks_a_stale_statusline_goal() {
+        let content = [
+            "❯ keep going",
+            "✔ Goal achieved (8m · 1 turn · 29.8k tokens)",
+            "✻ Cooked for 8m 34s · done 4:01 PM",
+            "──────────────────────────────────────────",
+            "❯ ",
+            "──────────────────────────────────────────",
+            "  ◎ goal: when it is done, deploy the new trained version",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ]
+        .join("\n");
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.goal_achieved && !activity.goal);
     }
 
     #[test]
