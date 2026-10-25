@@ -310,6 +310,68 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
     );
 }
 
+/// Idle panes still running background work go below plain idle ones, more
+/// work lower and, at the same total, more monitors lower. Other tiers keep
+/// recency order.
+#[test]
+fn priority_sinks_idle_panes_by_their_background_work() {
+    let with = |mut agent: ClientShellAgent, tokens: &[(&str, &str)]| {
+        agent.tokens = tokens
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        agent
+    };
+    let snap = snapshot(
+        vec![workspace("ws", 1, AgentStatus::Idle)],
+        vec![
+            with(
+                agent("mixed", "ws", AgentStatus::Idle, 9),
+                &[("oasis:shells", "1"), ("oasis:monitors", "1")],
+            ),
+            with(
+                agent("two_shells", "ws", AgentStatus::Idle, 8),
+                &[("oasis:shells", "2")],
+            ),
+            with(
+                agent("one_task", "ws", AgentStatus::Idle, 7),
+                &[("oasis:tasks", "1")],
+            ),
+            agent("plain", "ws", AgentStatus::Idle, 1),
+            with(
+                agent("work_shells", "ws", AgentStatus::Working, 6),
+                &[("oasis:shells", "3")],
+            ),
+            agent("work", "ws", AgentStatus::Working, 5),
+        ],
+    );
+    let expected = [
+        "plain",
+        "one_task",
+        "two_shells",
+        "mixed",
+        "work_shells",
+        "work",
+    ];
+    assert_eq!(
+        ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
+        expected
+    );
+    let prefs = SidebarPrefs {
+        sort: AgentPanelSortConfig::Priority,
+        ..SidebarPrefs::default()
+    };
+    let combined = SidebarModel::build(&[endpoint("local", &snap)], &prefs);
+    assert_eq!(
+        combined
+            .agents
+            .iter()
+            .map(|agent| agent.pane_id.as_str())
+            .collect::<Vec<_>>(),
+        expected
+    );
+}
+
 #[test]
 fn update_reports_changes_only_when_shown_content_changes() {
     let mut snap = snapshot(

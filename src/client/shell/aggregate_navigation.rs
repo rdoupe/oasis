@@ -162,10 +162,12 @@ fn sort_aggregate_rows(
 ) {
     if sort == crate::config::AgentPanelSortConfig::Priority {
         rows.sort_by_key(|row| {
+            let mode = crate::client::model::agent_mode(row.agent);
             crate::client::model::combined_priority_key(
                 row.endpoint.stale(),
                 row.agent.agent_status,
-                crate::client::model::agent_mode(row.agent),
+                mode,
+                crate::client::model::idle_background_load(row.agent.agent_status, mode, row.agent),
                 row.recency,
             )
         });

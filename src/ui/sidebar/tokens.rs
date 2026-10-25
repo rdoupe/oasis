@@ -104,8 +104,9 @@ impl AgentMode {
             Self::Goal => "◎",
             Self::Loop => "↻",
             Self::GoalAchieved => "✓",
-            // Nerd Font's single-color robot (nf-md-robot).
-            Self::Subagents => "\u{f06a9}",
+            // Nerd Font's outlined robot (nf-md-robot_outline): the chat
+            // itself is idle while its subagents work.
+            Self::Subagents => "\u{f167a}",
         }
     }
 

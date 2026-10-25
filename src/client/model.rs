@@ -45,8 +45,39 @@ pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::A
         (_, Some(AgentMode::Goal)) => 2,
         (AgentStatus::Working, _) | (_, Some(AgentMode::Subagents)) => 3,
         (AgentStatus::Done, _) => 7,
-        (AgentStatus::Idle, _) => 4,
+        (AgentStatus::Idle, _) => IDLE_RANK,
     }
+}
+
+/// The rank of the idle tier in [`agent_sort_priority`].
+const IDLE_RANK: u8 = 4;
+
+/// The sub-sort within idle panes: ones still running shells, monitors or
+/// other background work go below plain idle ones, more work lower, and at the
+/// same total more monitors lower. Other tiers don't sub-sort.
+pub(crate) fn idle_background_load(
+    status: AgentStatus,
+    mode: Option<crate::ui::AgentMode>,
+    agent: &crate::protocol::ClientShellAgent,
+) -> (u32, u16) {
+    if agent_sort_priority(status, mode) != IDLE_RANK {
+        return (0, 0);
+    }
+    let count = |key: &str| {
+        agent
+            .tokens
+            .iter()
+            .find(|(token, _)| token == key)
+            .and_then(|(_, value)| value.parse::<u16>().ok())
+            .unwrap_or(0)
+    };
+    let monitors = count("oasis:monitors");
+    let total = ["oasis:shells", "oasis:mcp_tasks", "oasis:tasks"]
+        .into_iter()
+        .map(|key| u32::from(count(key)))
+        .sum::<u32>()
+        + u32::from(monitors);
+    (total, monitors)
 }
 
 /// The goal, loop or subagents driving a pane, from its wire tokens.
@@ -330,8 +361,10 @@ pub(crate) fn ordered_agent_pane_ids(
     let mut agents = snapshot.agents.iter().collect::<Vec<_>>();
     if sort == AgentPanelSortConfig::Priority {
         agents.sort_by_key(|agent| {
+            let mode = agent_mode(agent);
             (
-                std::cmp::Reverse(agent_sort_priority(agent.agent_status, agent_mode(agent))),
+                std::cmp::Reverse(agent_sort_priority(agent.agent_status, mode)),
+                idle_background_load(agent.agent_status, mode, agent),
                 std::cmp::Reverse(agent.state_change_seq),
             )
         });
@@ -432,16 +465,24 @@ pub(crate) fn agent_rows(
 }
 
 /// The priority order of a combined, multi-machine agent list: live
-/// machines first, then most urgent status, then most recent change.
+/// machines first, then most urgent status, idle panes with less background
+/// work first ([`idle_background_load`]), then most recent change.
 pub(crate) fn combined_priority_key(
     stale: bool,
     status: AgentStatus,
     mode: Option<crate::ui::AgentMode>,
+    load: (u32, u16),
     recency: u64,
-) -> (bool, std::cmp::Reverse<u8>, std::cmp::Reverse<u64>) {
+) -> (
+    bool,
+    std::cmp::Reverse<u8>,
+    (u32, u16),
+    std::cmp::Reverse<u64>,
+) {
     (
         stale,
         std::cmp::Reverse(agent_sort_priority(status, mode)),
+        load,
         std::cmp::Reverse(recency),
     )
 }
@@ -664,7 +705,10 @@ impl SidebarModel {
                             .iter()
                             .find(|agent| agent.pane_id == row.pane_id)?;
                         Some((
-                            agent.state_change_seq,
+                            (
+                                agent.state_change_seq,
+                                idle_background_load(row.status, row.mode, agent),
+                            ),
                             AgentEntry {
                                 endpoint: endpoint.id.to_owned(),
                                 machine_label: endpoint.label.to_owned(),
@@ -685,8 +729,8 @@ impl SidebarModel {
             })
             .collect::<Vec<_>>();
         if prefs.sort == AgentPanelSortConfig::Priority {
-            agents.sort_by_key(|(recency, entry)| {
-                combined_priority_key(entry.stale, entry.status, entry.mode, *recency)
+            agents.sort_by_key(|((recency, load), entry)| {
+                combined_priority_key(entry.stale, entry.status, entry.mode, *load, *recency)
             });
         }
         let footer = FooterEntry {
