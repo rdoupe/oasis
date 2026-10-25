@@ -257,7 +257,8 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
 }
 
 /// A goal or loop pane's state icon takes the mode's color, and the mode's
-/// glyph while working; needing you stays red, and plain idle is grey.
+/// glyph while working; a done loop shows idle, needing you stays red, and
+/// plain idle is grey.
 #[test]
 fn goal_and_loop_panes_draw_their_state_icon_in_the_mode_color() {
     use crate::config::StatusIndicatorStyle::Symbols;
@@ -267,7 +268,8 @@ fn goal_and_loop_panes_draw_their_state_icon_in_the_mode_color() {
     let (goal, wakeup) = (Goal.color().ratatui(), Loop.color().ratatui());
     assert_eq!(icon(AgentStatus::Working, Some(Loop)), ("↻", wakeup));
     assert_eq!(icon(AgentStatus::Idle, Some(Loop)), ("○", wakeup));
-    assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("✓", wakeup));
+    assert_eq!(icon(AgentStatus::Done, Some(Loop)), ("○", wakeup));
+    assert_eq!(icon(AgentStatus::Done, Some(Goal)), ("✓", goal));
     assert_eq!(icon(AgentStatus::Working, Some(Goal)), ("◎", goal));
     assert_eq!(icon(AgentStatus::Idle, Some(Goal)), ("○", goal));
     assert_eq!(icon(AgentStatus::Blocked, Some(Goal)), ("×", palette.red));

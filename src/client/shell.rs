@@ -225,7 +225,8 @@ fn status_color(
 }
 
 /// A goal or loop pane's icon is drawn in the mode's color, with the mode's
-/// own glyph while it works. Needing you stays red. Plain idle is grey, which
+/// own glyph while it works. A loop is never done, only waiting for its next
+/// wakeup, so it shows idle. Needing you stays red. Plain idle is grey, which
 /// leaves loop green unambiguous.
 fn agent_status_icon(
     status: crate::api::schema::AgentStatus,
@@ -236,10 +237,12 @@ fn agent_status_icon(
     use crate::api::schema::AgentStatus;
     match mode {
         Some(mode) if status != AgentStatus::Blocked => (
-            if status == AgentStatus::Working {
-                mode.glyph()
-            } else {
-                status_icon(status, style)
+            match (mode, status) {
+                (_, AgentStatus::Working) => mode.glyph(),
+                (crate::ui::AgentMode::Loop, AgentStatus::Done) => {
+                    status_icon(AgentStatus::Idle, style)
+                }
+                _ => status_icon(status, style),
             },
             mode.color().ratatui(),
         ),
