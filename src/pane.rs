@@ -337,7 +337,7 @@ async fn publish_codex_prompt_observation(
 
 /// Publishes the agent's background work when it changes. Rides on the
 /// detection pass that already read the screen, so it adds no wakeups.
-async fn publish_background_activity(
+pub(crate) async fn publish_background_activity(
     state_events: &mpsc::Sender<AppEvent>,
     pane_id: PaneId,
     agent: Option<Agent>,

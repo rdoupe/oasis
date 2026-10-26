@@ -29,6 +29,8 @@ mod tab_bar_status;
 mod terminal_targets;
 mod terminal_titles;
 mod theme_sync;
+#[cfg(test)]
+mod transcript_watch_tests;
 mod window_title;
 mod worktrees;
 
