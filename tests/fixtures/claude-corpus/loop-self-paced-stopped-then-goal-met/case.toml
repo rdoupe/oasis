@@ -1,0 +1,59 @@
+claude = "2.1.300"
+about = """A self-paced /loop: it arms 30-minute wakeups, one fires and rearms, other
+messages come and go, then the loop stops itself, the goal is met in that turn,
+and the user types a new prompt."""
+
+[[read]]
+after_line = 10
+goal = "unknown"
+loop = "none"
+
+[[read]] # /loop
+after_line = 11
+goal = "unknown"
+loop = "running"
+
+[[read]] # first wakeup armed
+after_line = 25
+goal = "unknown"
+loop = "wakeup"
+
+[[read]] # its turn ended
+after_line = 40
+goal = "unknown"
+loop = "wakeup"
+
+[[read]] # unrelated turns later
+after_line = 306
+goal = "unknown"
+loop = "wakeup"
+
+[[read]] # the wakeup fired
+after_line = 307
+goal = "unknown"
+loop = "running"
+
+[[read]] # rearmed and the turn ended
+after_line = 344
+goal = "unknown"
+loop = "wakeup"
+
+[[read]]
+after_line = 415
+goal = "unknown"
+loop = "wakeup"
+
+[[read]] # the loop stopped itself
+after_line = 416
+goal = "unknown"
+loop = "none"
+
+[[read]] # the goal met in that turn
+after_line = 429
+goal = "achieved"
+loop = "none"
+
+[[read]] # the user's next prompt
+after_line = 433
+goal = "none"
+loop = "none"

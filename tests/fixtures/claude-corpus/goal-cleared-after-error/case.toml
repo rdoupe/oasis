@@ -1,0 +1,16 @@
+claude = "2.1.268"
+about = "A goal Claude cleared after an unrecoverable error (authentication failed)."
+
+[[read]]
+after_line = 12
+goal = "unknown"
+loop = "none"
+
+[[read]]
+after_line = 14
+goal = "none"
+loop = "none"
+
+[[read]]
+goal = "none"
+loop = "none"

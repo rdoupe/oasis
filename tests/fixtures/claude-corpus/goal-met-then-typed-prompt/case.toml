@@ -1,0 +1,17 @@
+claude = "2.1.310"
+about = "A met goal, then the user typed the next prompt, which ends the checkmark."
+
+[[read]]
+after_line = 7
+goal = "achieved"
+loop = "none"
+
+[[read]]
+after_line = 13
+goal = "achieved"
+loop = "none"
+
+[[read]]
+after_line = 14
+goal = "none"
+loop = "none"

@@ -1,0 +1,20 @@
+claude = "2.1.309"
+about = """A goal met after a firmware trace. Claude recorded it a few seconds after the
+turn's last message, after the read that follows the screen going idle; the
+screen already showed `✔ Goal achieved`."""
+
+[[read]] # as the screen goes idle
+after_line = 62
+goal = "active"
+loop = "none"
+
+[[read]]
+goal = "achieved"
+loop = "none"
+
+[screen]
+goal_achieved = true
+
+[shown]
+after_read = 1
+goal_achieved = true

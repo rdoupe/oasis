@@ -13,7 +13,7 @@ test:
 
 # Run repository maintenance contract tests
 maintenance-test:
-    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
+    {{python}} -m unittest scripts.test_agent_detection_manifest_check scripts.test_changelog scripts.test_claude_corpus scripts.test_config_reference_check scripts.test_docs_translation_parity scripts.test_hermes_integration_asset scripts.test_package_windows_conpty scripts.test_preview scripts.test_release scripts.test_unix_installer scripts.test_vendor_libghostty_vt scripts.test_vendor_portable_pty scripts.test_windows_cross scripts.test_windows_input
     bun test scripts/release-workflows.test.ts
 
 # Local interactive Windows Terminal input qualification (never runs in normal CI).
@@ -24,6 +24,11 @@ test-windows-input *args:
 # Run one nextest filter, e.g. `just test-one codex_stale_working`
 test-one filter:
     cargo nextest run --locked "{{filter}}" --status-level fail --final-status-level fail --failure-output final --success-output never
+
+# Replay real, anonymized Claude Code sessions through what Oasis reads from
+# Claude; capture new cases with scripts/claude_corpus.py after an upgrade
+claude-corpus:
+    cargo nextest run --locked -E 'test(claude_corpus)' --status-level fail --final-status-level fail --failure-output final --success-output never
 
 # Enforce deterministic UI hot-path architecture boundaries
 ui-hot-path-architecture-test:

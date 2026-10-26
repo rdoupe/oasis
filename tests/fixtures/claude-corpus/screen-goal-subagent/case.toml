@@ -1,0 +1,12 @@
+claude = "2.1.310"
+about = """An idle session with an active goal and one subagent row. Two records are
+unfinished; one died with an earlier process, so the row count caps them."""
+unfinished_subagents = 2
+
+[screen]
+agents = 1
+goal = true
+
+[shown]
+goal = true
+agents = 1

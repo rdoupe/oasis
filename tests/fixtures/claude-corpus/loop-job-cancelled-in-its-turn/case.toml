@@ -1,0 +1,28 @@
+claude = "2.1.282"
+about = """A /loop that creates a job every 30 minutes and cancels it again before its
+turn ends, so no loop is left."""
+
+[[read]]
+after_line = 8
+goal = "unknown"
+loop = "none"
+
+[[read]] # /loop
+after_line = 9
+goal = "unknown"
+loop = "running"
+
+[[read]] # the job is created
+after_line = 46
+goal = "unknown"
+loop = "running"
+
+[[read]] # and cancelled
+after_line = 151
+goal = "unknown"
+loop = "running"
+
+[[read]] # the turn ended
+after_line = 329
+goal = "unknown"
+loop = "none"

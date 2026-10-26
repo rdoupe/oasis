@@ -1,0 +1,42 @@
+claude = "2.1.282"
+about = """A /loop that schedules an hourly job (`41 * * * *`). It keeps running across
+later turns, a later /loop turn, and an unrelated scheduled task."""
+
+[[read]] # a wakeup from before the excerpt fires
+after_line = 12
+goal = "unknown"
+loop = "none"
+
+[[read]] # /loop
+after_line = 13
+goal = "unknown"
+loop = "running"
+
+[[read]] # the job is created
+after_line = 30
+goal = "unknown"
+loop = "running"
+
+[[read]] # the /loop turn ended
+after_line = 137
+goal = "unknown"
+loop = "every 1h"
+
+[[read]] # another /loop turn
+after_line = 142
+goal = "unknown"
+loop = "running"
+
+[[read]]
+after_line = 171
+goal = "unknown"
+loop = "every 1h"
+
+[[read]] # an unrelated scheduled task fires
+after_line = 174
+goal = "unknown"
+loop = "every 1h"
+
+[[read]]
+goal = "unknown"
+loop = "every 1h"

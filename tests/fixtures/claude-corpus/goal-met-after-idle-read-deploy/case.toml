@@ -1,0 +1,19 @@
+claude = "2.1.310"
+about = """A goal met at the end of a deploy. Claude recorded it 2.3 s after the turn's
+last message, after the read that follows the screen going idle, so the
+checkmark never showed."""
+
+[[read]] # as the screen goes idle
+after_line = 550
+goal = "active"
+loop = "none"
+
+[[read]]
+goal = "achieved"
+loop = "none"
+
+# The firmware session's screen at the same moment.
+[shown]
+after_read = 1
+screen_from = "goal-met-after-idle-read-firmware"
+goal_achieved = true

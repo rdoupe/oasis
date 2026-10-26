@@ -1,0 +1,10 @@
+claude = "2.1.310"
+about = """A turn waiting for one background subagent, with 92 subagent records of which
+two are unfinished."""
+unfinished_subagents = 2
+
+[screen]
+agents = 1
+
+[shown]
+agents = 1

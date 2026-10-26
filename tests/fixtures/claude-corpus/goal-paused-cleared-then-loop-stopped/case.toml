@@ -1,0 +1,42 @@
+claude = "2.1.296"
+about = """A goal whose check timed out (Claude pauses it, and it still stands), later
+cleared with /goal clear; then a /loop turn stops the loop's wakeups."""
+
+[[read]]
+after_line = 2
+goal = "unknown"
+loop = "none"
+
+[[read]]
+after_line = 3
+goal = "active"
+loop = "none"
+
+[[read]] # the goal check timed out
+after_line = 34
+goal = "active"
+loop = "none"
+
+[[read]]
+after_line = 80
+goal = "active"
+loop = "none"
+
+[[read]] # cleared
+after_line = 81
+goal = "none"
+loop = "none"
+
+[[read]] # /loop
+after_line = 89
+goal = "none"
+loop = "running"
+
+[[read]] # the loop stops its wakeups
+after_line = 101
+goal = "none"
+loop = "none"
+
+[[read]]
+goal = "none"
+loop = "none"

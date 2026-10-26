@@ -1,0 +1,7 @@
+claude = "2.1.310"
+about = """An idle session with an active goal and one monitor running; the turn's
+`1 monitor still running` line is transcript text, not the count."""
+
+[screen]
+monitors = 1
+goal = true

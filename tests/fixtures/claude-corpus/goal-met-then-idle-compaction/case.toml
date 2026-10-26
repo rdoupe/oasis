@@ -1,0 +1,17 @@
+claude = "2.1.310"
+about = """A met goal, then Claude compacted the idle session on its own and wrote its
+summary as a prompt. Nobody typed anything, so the goal stays achieved."""
+
+[[read]]
+after_line = 9
+goal = "achieved"
+loop = "none"
+
+[[read]] # the compaction summary
+after_line = 19
+goal = "achieved"
+loop = "none"
+
+[[read]]
+goal = "achieved"
+loop = "none"

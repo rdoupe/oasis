@@ -1,0 +1,7 @@
+claude = "2.1.309"
+about = """Records that copy a whole API request, tool docs included, so they name
+ScheduleWakeup and CronCreate; they must not start a loop."""
+
+[[read]]
+goal = "unknown"
+loop = "none"

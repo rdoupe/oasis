@@ -1,0 +1,15 @@
+claude = "2.1.310"
+about = """An idle session with an active goal, two shells and one subagent running. A
+custom statusline prints its own goal line, and the mode line counts the agent
+list (`← 1 agent`); neither is read."""
+unfinished_subagents = 1
+
+[screen]
+shells = 2
+agents = 1
+goal = true
+
+[shown]
+goal = true
+agents = 1
+shells = 2

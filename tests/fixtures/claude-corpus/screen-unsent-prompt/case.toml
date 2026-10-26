@@ -1,0 +1,5 @@
+claude = "2.1.310"
+about = """An idle session with text typed in the prompt box but not sent, and nothing
+running in the background."""
+
+[screen]
