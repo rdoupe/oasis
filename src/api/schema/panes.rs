@@ -584,6 +584,10 @@ impl BackgroundActivityInfo {
         use crate::detect::claude_loop::TranscriptGoal;
         let transcript_loop = transcript.and_then(|watch| watch.loop_label.as_deref());
         let (goal, goal_achieved) = match transcript.and_then(|watch| watch.goal) {
+            // Claude records a met goal a few seconds after the turn's last
+            // message, so a read as the screen goes idle still finds it
+            // active; the screen's notice is already there.
+            Some(TranscriptGoal::Active) if activity.goal_achieved => (false, true),
             Some(goal) => (
                 goal == TranscriptGoal::Active,
                 goal == TranscriptGoal::Achieved,
@@ -853,4 +857,61 @@ pub struct PaneLinkRegion {
     pub row: u16,
     pub start_col: u16,
     pub end_col: u16,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::detect::activity::BackgroundActivity;
+    use crate::detect::claude_loop::{ClaudeTranscriptWatch, TranscriptGoal};
+
+    fn watch(goal: TranscriptGoal) -> ClaudeTranscriptWatch {
+        let mut watch = ClaudeTranscriptWatch::new("/session.jsonl".into());
+        watch.goal = Some(goal);
+        watch
+    }
+
+    #[test]
+    fn a_goal_met_on_screen_wins_over_a_transcript_read_before_it_was_recorded() {
+        let screen = BackgroundActivity {
+            goal_achieved: true,
+            ..BackgroundActivity::default()
+        };
+        let info = BackgroundActivityInfo::from_activity(
+            &screen,
+            Some(&watch(TranscriptGoal::Active)),
+            None,
+        )
+        .unwrap();
+        assert!(info.goal_achieved);
+        assert!(!info.goal);
+    }
+
+    #[test]
+    fn the_transcript_goal_wins_otherwise() {
+        let screen = BackgroundActivity {
+            goal: true,
+            ..BackgroundActivity::default()
+        };
+        let info = BackgroundActivityInfo::from_activity(
+            &screen,
+            Some(&watch(TranscriptGoal::Achieved)),
+            None,
+        )
+        .unwrap();
+        assert!(info.goal_achieved);
+        assert!(!info.goal);
+        let screen = BackgroundActivity {
+            goal_achieved: true,
+            ..BackgroundActivity::default()
+        };
+        assert_eq!(
+            BackgroundActivityInfo::from_activity(
+                &screen,
+                Some(&watch(TranscriptGoal::None)),
+                None
+            ),
+            None
+        );
+    }
 }
