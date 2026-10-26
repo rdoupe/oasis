@@ -1,0 +1,13 @@
+claude = "2.1.310"
+about = """A background subagent six seconds in, its row on screen. Claude has started
+its transcript but writes its record only when it finishes, so the folder holds
+a transcript and no record yet."""
+unfinished_subagents = 1
+
+[screen]
+shells = 2
+agents = 1
+
+[shown]
+agents = 1
+shells = 2

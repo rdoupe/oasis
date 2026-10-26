@@ -252,9 +252,11 @@ fn transcript_for_session(session_id: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
-/// Subagents whose records beside the transcript (`<session>/subagents/
-/// *.meta.json`) are not marked finished. Claude keeps a finished one's row on
-/// screen with its timer stopped; one that died with an earlier process never
+/// Subagents beside the transcript (`<session>/subagents/agent-<id>.jsonl`)
+/// whose record (`agent-<id>.meta.json`) is not marked finished. Claude can
+/// write a subagent's record only when it finishes, so one with a transcript
+/// and no record yet is running. Claude keeps a finished one's row on screen
+/// with its timer stopped; one that died with an earlier process never
 /// finishes, but its row is gone, so callers cap the screen's row count.
 fn unfinished_subagents(transcript: &Path) -> Option<u16> {
     let dir = transcript.with_extension("").join("subagents");
@@ -263,26 +265,28 @@ fn unfinished_subagents(transcript: &Path) -> Option<u16> {
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Some(0),
         Err(_) => return None,
     };
-    let mut count = 0u16;
+    let mut started = std::collections::HashSet::new();
+    let mut finished = std::collections::HashSet::new();
     for entry in entries.flatten() {
         let path = entry.path();
-        if !path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.ends_with(".meta.json"))
-        {
+        let Some(name) = path.file_name().and_then(|name| name.to_str()) else {
             continue;
-        }
-        let finished = std::fs::read(&path)
-            .ok()
-            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
-            .and_then(|meta| meta.get("finished").and_then(serde_json::Value::as_bool))
-            == Some(true);
-        if !finished {
-            count = count.saturating_add(1);
+        };
+        if let Some(id) = name.strip_suffix(".meta.json") {
+            started.insert(id.to_owned());
+            let done = std::fs::read(&path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|meta| meta.get("finished").and_then(serde_json::Value::as_bool))
+                == Some(true);
+            if done {
+                finished.insert(id.to_owned());
+            }
+        } else if let Some(id) = name.strip_suffix(".jsonl") {
+            started.insert(id.to_owned());
         }
     }
-    Some(count)
+    Some(u16::try_from(started.difference(&finished).count()).unwrap_or(u16::MAX))
 }
 
 fn loop_label(status: LoopStatus) -> String {
@@ -372,6 +376,17 @@ mod tests {
         )
         .unwrap();
         std::fs::write(dir.join("agent-a1.jsonl"), "{}\n").unwrap();
+        std::fs::write(dir.join("agent-a2.jsonl"), "{}\n").unwrap();
+        assert_eq!(unfinished_subagents(&path), Some(1));
+        // Claude Code 2.1.310 can write the record only once the subagent
+        // finishes: a transcript alone is a running subagent.
+        std::fs::write(dir.join("agent-a3.jsonl"), "{}\n").unwrap();
+        assert_eq!(unfinished_subagents(&path), Some(2));
+        std::fs::write(
+            dir.join("agent-a3.meta.json"),
+            r#"{"agentType":"general-purpose","requestShape":"background","finished":true}"#,
+        )
+        .unwrap();
         assert_eq!(unfinished_subagents(&path), Some(1));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
