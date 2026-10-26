@@ -49,7 +49,7 @@ KEEP_WORDS = {
     auto mode for shortcuts done am pm update available mise upgrade claude opus sonnet
     haiku fable effort low medium high xhigh max context read cached uncached write esc
     interrupt worked crunched cooked baked thinking background running stopped
-    email tailnet ip could not be
+    email tailnet ip could not be new clear save
     """.split()
 }
 
@@ -191,18 +191,28 @@ def cmd_transcript(args: argparse.Namespace) -> None:
 
 def cmd_subagents(args: argparse.Namespace) -> None:
     source = args.session.with_suffix("") / "subagents"
-    metas = sorted(source.glob("*.meta.json"))
+    # Each subagent has a transcript (agent-<id>.jsonl) and, once Claude
+    # writes it, a record (agent-<id>.meta.json). Records are kept;
+    # transcripts become empty placeholders, since only their presence counts.
+    ids = sorted(
+        {path.name.removesuffix(".meta.json") for path in source.glob("*.meta.json")}
+        | {path.name.removesuffix(".jsonl") for path in source.glob("*.jsonl")}
+    )
     case = case_dir(args.case)
     # Beside the transcript, as Claude keeps them.
     target = case / "transcript" / "subagents"
     target.mkdir(parents=True, exist_ok=True)
     scrambler = Scrambler()
-    for index, meta in enumerate(metas, 1):
-        data = scrambler.value(json.loads(meta.read_text()))
-        (target / f"agent-{index}.meta.json").write_text(
-            json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
-        )
-    print(f"{target}: {len(metas)} records")
+    for index, agent in enumerate(ids, 1):
+        meta = source / f"{agent}.meta.json"
+        if meta.exists():
+            data = scrambler.value(json.loads(meta.read_text()))
+            (target / f"agent-{index}.meta.json").write_text(
+                json.dumps(data, ensure_ascii=False, separators=(",", ":")) + "\n"
+            )
+        if (source / f"{agent}.jsonl").exists():
+            (target / f"agent-{index}.jsonl").write_text("")
+    print(f"{target}: {len(ids)} subagents")
 
 
 def cmd_screen(args: argparse.Namespace) -> None:

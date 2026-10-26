@@ -35,10 +35,16 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
             .iter()
             .position(|line| is_border(line))?;
     let top = lines[..prompt].iter().rposition(|line| is_border(line));
-    // The notice row sits right above the prompt box's top border.
+    // The notice row sits right above the prompt box's top border. It can
+    // carry other hints first, `·`-separated (`new task? /clear to save 479k
+    // tokens · ◎ /goal active (3h)`).
     let goal_notice = top
         .and_then(|top| top.checked_sub(1))
-        .is_some_and(|notice| lines[notice].trim_start().starts_with("◎ /goal active"));
+        .is_some_and(|notice| {
+            lines[notice]
+                .split('·')
+                .any(|part| part.trim_start().starts_with("◎ /goal active"))
+        });
     // Only the last turn counts: stop at the prompt that started it.
     let last_turn_shows = |outcome: &str| {
         !goal_notice
@@ -229,6 +235,23 @@ mod tests {
             "● You're welcome.",
         ]));
         assert!(!met(&["● 4"]));
+    }
+
+    #[test]
+    fn reads_a_goal_notice_that_shares_its_row_with_a_hint() {
+        // Captured from a live Claude Code 2.1.310 pane with a long context.
+        let content = [
+            "✻ Baked for 2h 23m 22s · done 3:27 PM · 1 shell still running",
+            "                              new task? /clear to save 479.4k tokens · ◎ /goal active (3h)",
+            "──────────────────────────────────────────",
+            "❯ show me the side view when it's ready",
+            "──────────────────────────────────────────",
+            "  ⏵⏵ bypass permissions on · 1 shell · ← 1 agent · 1 feedback draft",
+        ]
+        .join("\n");
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.goal);
+        assert_eq!(activity.shells, 1);
     }
 
     #[test]

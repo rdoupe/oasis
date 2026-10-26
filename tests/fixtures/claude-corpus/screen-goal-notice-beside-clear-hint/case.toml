@@ -1,0 +1,9 @@
+claude = "2.1.310"
+about = """An idle session with an active goal, a shell and a subagent, whose context is
+long enough that Claude puts its `/clear` hint on the goal notice's row, before
+the notice."""
+
+[screen]
+shells = 1
+agents = 1
+goal = true
