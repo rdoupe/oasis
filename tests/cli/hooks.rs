@@ -224,6 +224,25 @@ fn codex_hook_reports_persisted_root_session_and_ignores_ephemeral_or_nested_ses
     .is_none());
 }
 
+/// Codex 0.164 runs no SessionStart in its TUI, so a prompt reports the
+/// session; other events still report nothing.
+#[test]
+fn codex_hook_reports_the_session_when_a_prompt_is_submitted() {
+    let request = run_codex_hook(
+        "session",
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"codex-session","transcript_path":"/tmp/codex-session.jsonl","prompt":"hi"}"#,
+    )
+    .expect("a prompt should report session identity");
+    assert_eq!(request["params"]["agent_session_id"], "codex-session");
+    assert!(request["params"].get("session_start_source").is_none());
+
+    assert!(run_codex_hook(
+        "session",
+        r#"{"hook_event_name":"Stop","session_id":"codex-session","transcript_path":"/tmp/codex-session.jsonl"}"#,
+    )
+    .is_none());
+}
+
 #[test]
 fn copilot_hook_reports_session_id_from_stdin() {
     let request = run_copilot_hook(

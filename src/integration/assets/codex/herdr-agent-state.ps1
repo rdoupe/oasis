@@ -20,7 +20,9 @@ try {
     exit 0
 }
 
-if ($payload.hook_event_name -and $payload.hook_event_name -ne "SessionStart") { exit 0 }
+# Codex 0.164 no longer runs SessionStart in its TUI, so each prompt reports
+# the session too.
+if ($payload.hook_event_name -and $payload.hook_event_name -ne "SessionStart" -and $payload.hook_event_name -ne "UserPromptSubmit") { exit 0 }
 
 $sessionId = $payload.session_id
 if ([string]::IsNullOrWhiteSpace($sessionId)) { exit 0 }

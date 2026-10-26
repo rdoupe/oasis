@@ -49,7 +49,9 @@ if hook_input_file:
         hook_input = {}
 
 hook_event_name = str(hook_input.get("hook_event_name") or "")
-if hook_event_name and hook_event_name != "SessionStart":
+# Codex 0.164 no longer runs SessionStart in its TUI, so each prompt reports
+# the session too.
+if hook_event_name and hook_event_name not in ("SessionStart", "UserPromptSubmit"):
     raise SystemExit(0)
 
 request_id = f"{source}:{int(time.time() * 1000)}:{random.randrange(1_000_000):06d}"

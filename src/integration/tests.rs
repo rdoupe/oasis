@@ -1461,7 +1461,11 @@ fn install_codex_writes_hook_and_updates_hooks_and_config() {
         .as_str()
         .unwrap()
         .contains(" session"));
-    assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
+    // Codex 0.164 runs no SessionStart in its TUI, so a prompt reports too.
+    assert!(hooks["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"]
+        .as_str()
+        .unwrap()
+        .ends_with("session"));
     assert!(hooks["hooks"].get("PreToolUse").is_none());
     assert!(hooks["hooks"].get("PermissionRequest").is_none());
     assert!(hooks["hooks"].get("Stop").is_none());
@@ -1516,7 +1520,10 @@ fn install_codex_is_idempotent_for_hook_entries_and_feature_flag() {
     let config = fs::read_to_string(codex_dir.join("config.toml")).unwrap();
 
     assert_eq!(hooks["hooks"]["SessionStart"].as_array().unwrap().len(), 1);
-    assert!(hooks["hooks"].get("UserPromptSubmit").is_none());
+    assert_eq!(
+        hooks["hooks"]["UserPromptSubmit"].as_array().unwrap().len(),
+        1
+    );
     assert!(hooks["hooks"].get("PreToolUse").is_none());
     assert!(hooks["hooks"].get("PermissionRequest").is_none());
     assert!(hooks["hooks"].get("Stop").is_none());

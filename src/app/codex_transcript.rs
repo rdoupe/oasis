@@ -37,15 +37,24 @@ impl App {
             }
             return;
         }
-        if terminal.codex_subagents.is_none() {
-            if terminal.effective_agent_label() != Some("codex") {
-                return;
-            }
-            let Some(session) = super::creation::terminal_agent_session_info(terminal)
-                .filter(|session| session.kind == crate::agent_resume::AgentSessionRefKind::Id)
-            else {
-                return;
-            };
+        if terminal.effective_agent_label() != Some("codex") {
+            return;
+        }
+        let Some(session) = super::creation::terminal_agent_session_info(terminal)
+            .filter(|session| session.kind == crate::agent_resume::AgentSessionRefKind::Id)
+        else {
+            return;
+        };
+        // A new thread (`/new`, a resume) replaces the watch.
+        let suffix = format!("-{}.jsonl", session.value);
+        let watching = terminal.codex_subagents.as_ref().is_some_and(|watch| {
+            watch
+                .path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(&suffix))
+        });
+        if !watching {
             let Some(path) = codex_sessions_dir()
                 .and_then(|sessions| transcript_for_thread(&sessions, &session.value))
             else {
