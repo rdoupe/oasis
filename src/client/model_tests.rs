@@ -291,8 +291,13 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
                 "oasis:goal_achieved",
             ),
             with(
-                agent("goal_failed", "ws", AgentStatus::Idle, 11),
+                agent("goal_failed", "ws", AgentStatus::Idle, 12),
                 "oasis:goal_failed",
+            ),
+            // Seen since, so idle, but the goal is still met until a prompt.
+            with(
+                agent("goal_met_seen", "ws", AgentStatus::Idle, 11),
+                "oasis:goal_achieved",
             ),
             with(agent("waiting", "ws", AgentStatus::Idle, 6), "oasis:agents"),
             agent("plain_idle", "ws", AgentStatus::Idle, 7),
@@ -302,6 +307,7 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
         ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
         [
             "goal_failed",
+            "goal_met_seen",
             "plain_done",
             "goal_met",
             "goal_ask",
@@ -376,6 +382,68 @@ fn priority_sinks_idle_panes_by_their_background_work() {
             .map(|agent| agent.pane_id.as_str())
             .collect::<Vec<_>>(),
         expected
+    );
+}
+
+/// MCP tasks are background work like shells; at equal totals more monitors
+/// sink a pane even when it has idled longest. Grey robot panes (idle while
+/// subagents run) also put the one idle longest first; busy panes put the
+/// latest change first.
+#[test]
+fn priority_counts_mcp_tasks_and_puts_the_robot_idle_longest_first() {
+    let with = |mut agent: ClientShellAgent, tokens: &[(&str, &str)]| {
+        agent.tokens = tokens
+            .iter()
+            .map(|(key, value)| ((*key).to_owned(), (*value).to_owned()))
+            .collect();
+        agent
+    };
+    let snap = snapshot(
+        vec![workspace("ws", 1, AgentStatus::Idle)],
+        vec![
+            with(
+                agent("mcp", "ws", AgentStatus::Idle, 1),
+                &[("oasis:mcp_tasks", "2")],
+            ),
+            with(
+                agent("shell", "ws", AgentStatus::Idle, 2),
+                &[("oasis:shells", "1")],
+            ),
+            agent("plain", "ws", AgentStatus::Idle, 3),
+            // As much work as `mcp`; more monitors sink it though it is older.
+            with(
+                agent("monitor_old", "ws", AgentStatus::Idle, 0),
+                &[("oasis:shells", "1"), ("oasis:monitors", "1")],
+            ),
+            with(
+                agent("shells_new", "ws", AgentStatus::Idle, 10),
+                &[("oasis:shells", "2")],
+            ),
+            with(
+                agent("robot_new", "ws", AgentStatus::Idle, 9),
+                &[("oasis:agents", "1")],
+            ),
+            with(
+                agent("robot_old", "ws", AgentStatus::Done, 4),
+                &[("oasis:agents", "3")],
+            ),
+            agent("work_old", "ws", AgentStatus::Working, 5),
+            agent("work_new", "ws", AgentStatus::Working, 8),
+        ],
+    );
+    assert_eq!(
+        ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
+        [
+            "plain",
+            "shell",
+            "mcp",
+            "shells_new",
+            "monitor_old",
+            "robot_old",
+            "robot_new",
+            "work_new",
+            "work_old",
+        ]
     );
 }
 

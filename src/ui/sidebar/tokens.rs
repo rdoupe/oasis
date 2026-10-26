@@ -899,6 +899,20 @@ rows = [[{ token = "$load", rules = [{ lt = 50, hide = true }] }], ["workspace"]
     }
 
     #[test]
+    fn background_parts_count_mcp_and_other_tasks() {
+        let tokens = std::collections::HashMap::from([
+            ("oasis:mcp_tasks".to_owned(), "2".to_owned()),
+            ("oasis:tasks".to_owned(), "1".to_owned()),
+        ]);
+        let parts = background_parts(&tokens);
+        assert_eq!(activity_texts(&parts), ["2mcp", "&1"]);
+        assert_eq!(
+            (parts[0].kind, parts[0].count, parts[0].color),
+            (ActivityKind::McpTasks, 2, COUNT_COLOR)
+        );
+    }
+
+    #[test]
     fn background_token_draws_each_part_in_its_own_color() {
         use ratatui::style::Style;
         let config: AgentsSidebarConfig = toml::from_str(r#"rows = [["background"]]"#).unwrap();

@@ -302,7 +302,9 @@ fn goal_and_loop_panes_always_show_their_glyph() {
         icon(AgentStatus::Blocked, Some(Goal)),
         ("×", fg(palette.red))
     );
-    let robot = (Subagents.glyph(), fg(palette.overlay0));
+    // The outlined robot (nf-md-robot_outline, U+F167A), grey like idle.
+    let robot = ("\u{f167a}", fg(palette.overlay0));
+    assert_eq!(Subagents.glyph(), robot.0);
     assert_eq!(icon(AgentStatus::Idle, Some(Subagents)), robot);
     assert_eq!(icon(AgentStatus::Done, Some(Subagents)), robot);
     assert_eq!(
@@ -316,6 +318,50 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     assert_eq!(icon(AgentStatus::Working, None), ("◐", fg(palette.yellow)));
     assert_eq!(icon(AgentStatus::Idle, None), ("○", fg(palette.overlay0)));
     assert_eq!(icon(AgentStatus::Done, None), ("✓", fg(palette.teal)));
+}
+
+/// A space name that is no goal or loop draws bold in the theme's brightest
+/// text, which on the terminal theme (text `Reset`) is bright white; a goal's
+/// takes the goal's color, and a robot pane's stays bright.
+#[test]
+fn plain_space_names_draw_bold_bright_white_on_the_terminal_theme() {
+    use crate::ui::{AgentMode, ResolvedToken, ResolvedTokenKind};
+    use ratatui::{buffer::Buffer, layout::Rect, style::Color, style::Modifier};
+    let mut config = ClientShellConfig::from_config(&Config::default());
+    config.palette = Palette::terminal();
+    assert_eq!(config.palette.text, Color::Reset);
+    let name_cell = |mode: Option<AgentMode>| {
+        let row = crate::client::model::AgentRow {
+            pane_id: "pane_1".into(),
+            status: AgentStatus::Idle,
+            mode,
+            focused: false,
+            rows: vec![vec![
+                ResolvedToken {
+                    kind: ResolvedTokenKind::StateIcon,
+                    style: Default::default(),
+                },
+                ResolvedToken {
+                    kind: ResolvedTokenKind::Workspace("alexapp".into()),
+                    style: Default::default(),
+                },
+            ]],
+        };
+        let rect = Rect::new(0, 0, 30, 1);
+        let mut buffer = Buffer::empty(rect);
+        super::agent_sidebar::render_agent_row(&mut buffer, rect, &row, &config);
+        let x = (0..rect.width)
+            .find(|x| buffer[(*x, 0)].symbol() == "a")
+            .expect("the space name is drawn");
+        let cell = &buffer[(x, 0)];
+        (cell.fg, cell.modifier.contains(Modifier::BOLD))
+    };
+    assert_eq!(name_cell(None), (Color::White, true));
+    assert_eq!(name_cell(Some(AgentMode::Subagents)), (Color::White, true));
+    assert_eq!(
+        name_cell(Some(AgentMode::Goal)),
+        (AgentMode::Goal.color().ratatui(), true)
+    );
 }
 
 /// A reconnect learns what the server supports after the client already holds
