@@ -3,7 +3,9 @@
 //! Codex shows a spawned subagent only as a `• Spawned <id>` line in the
 //! conversation, so the screen cannot count them. Its transcripts can: the
 //! parent's records each `spawn_agent` and `close_agent` call as a
-//! `CollabAgentToolCall` item naming the subagents' thread ids, and each
+//! `CollabAgentToolCall` item naming the subagents' thread ids (or, with
+//! named agents like `/root/sleep_then_done`, a `SubAgentActivity` item that
+//! `started` one, naming its thread id), and each
 //! subagent writes a transcript of its own whose turns start
 //! (`task_started`) and end (`task_complete`, `turn_aborted`) like any
 //! session's. A subagent runs while its last turn is open. It can finish
@@ -92,18 +94,31 @@ impl CodexSubagentWatch {
     }
 
     fn feed_line(&mut self, line: &[u8]) {
-        if !contains(line, b"\"CollabAgentToolCall\"") {
+        if !contains(line, b"\"CollabAgentToolCall\"") && !contains(line, b"\"SubAgentActivity\"") {
             return;
         }
         let Ok(entry) = serde_json::from_slice::<Value>(line) else {
             return;
         };
-        let Some(item) = entry
-            .pointer("/payload/item")
-            .filter(|item| item.get("type").and_then(Value::as_str) == Some("CollabAgentToolCall"))
-        else {
+        let Some(item) = entry.pointer("/payload/item") else {
             return;
         };
+        if item.get("type").and_then(Value::as_str) == Some("SubAgentActivity") {
+            let started = item.get("kind").and_then(Value::as_str) == Some("started");
+            if let Some(id) = item
+                .get("agent_thread_id")
+                .and_then(Value::as_str)
+                .filter(|id| started && is_thread_id(id))
+            {
+                if !self.subagents.iter().any(|known| known == id) {
+                    self.subagents.push(id.to_owned());
+                }
+            }
+            return;
+        }
+        if item.get("type").and_then(Value::as_str) != Some("CollabAgentToolCall") {
+            return;
+        }
         let ids = item
             .get("receiver_thread_ids")
             .and_then(Value::as_array)
@@ -423,6 +438,26 @@ mod tests {
         std::fs::write(&parent, format!("{}\n{}\n", spawn(CHILD), close(CHILD))).unwrap();
         watch.advance(&sessions, now);
         assert_eq!((watch.running, watch.subagents.len()), (Some(0), 0));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn named_agents_are_read_from_their_activity_records() {
+        let root = scratch("named");
+        let sessions = root.join("sessions");
+        let parent = root.join("parent.jsonl");
+        // Shape captured from a live Codex CLI 0.164.0 session on gpt-5.6-sol.
+        let started = format!(
+            r#"{{"type":"event_msg","payload":{{"type":"item_completed","item":{{"type":"SubAgentActivity","kind":"started","agent_thread_id":"{CHILD}"}}}}}}"#
+        );
+        std::fs::write(&parent, format!("{started}\n")).unwrap();
+        write_child(&sessions, &[STARTED]);
+        let mut watch = CodexSubagentWatch::new(parent);
+        watch.advance(&sessions, SystemTime::now());
+        assert_eq!(watch.running, Some(1));
+        write_child(&sessions, &[STARTED, COMPLETE]);
+        watch.advance(&sessions, SystemTime::now());
+        assert_eq!(watch.running, Some(0));
         let _ = std::fs::remove_dir_all(root);
     }
 
