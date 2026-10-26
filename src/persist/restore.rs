@@ -736,7 +736,10 @@ fn restore_tab(
                 }
                 #[cfg(unix)]
                 {
-                    terminal.claude_transcript = handoff_claude_transcript;
+                    terminal.claude_transcript = handoff_claude_transcript.map(|mut watch| {
+                        watch.forget_goal_read_by_an_older_build();
+                        watch
+                    });
                     terminal.codex_subagents = handoff_codex_subagents;
                 }
                 // A handed-over pane's title (an agent's session name) only

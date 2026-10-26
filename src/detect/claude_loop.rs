@@ -76,6 +76,11 @@ pub struct ClaudeTranscriptWatch {
     /// the transcript; `None` while unread.
     #[serde(default)]
     pub unfinished_subagents: Option<u16>,
+    /// Which goal records the reader knew when it read them (see
+    /// [`GOAL_READER`]); a watch handed over from an older build may have
+    /// misread ones it did not know.
+    #[serde(default)]
+    pub goal_reader: u8,
     /// A read is in flight on another thread.
     #[serde(skip)]
     pub scanning: bool,
@@ -92,11 +97,27 @@ impl ClaudeTranscriptWatch {
             loop_label: None,
             goal: None,
             unfinished_subagents: None,
+            goal_reader: GOAL_READER,
             scanning: false,
             rescan: false,
         }
     }
+
+    /// A watch handed over from a build that did not know every goal record
+    /// forgets the goal it read, until the next goal record; the screen shows
+    /// the goal meanwhile.
+    pub fn forget_goal_read_by_an_older_build(&mut self) {
+        if self.goal_reader < GOAL_READER {
+            self.goal = None;
+            self.tracker.goal = None;
+            self.goal_reader = GOAL_READER;
+        }
+    }
 }
+
+/// Bumped when the reader learns a goal record it used to misread: 1 knows
+/// goals Claude gives up on.
+pub const GOAL_READER: u8 = 1;
 
 /// What the sidebar shows for an active loop.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -531,6 +552,24 @@ mod tests {
         assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
         feed(&mut tracker, &[PROMPT]);
         assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
+    }
+
+    #[test]
+    fn a_watch_from_an_older_build_forgets_the_goal_it_read() {
+        let mut watch = ClaudeTranscriptWatch::new("/session.jsonl".into());
+        feed(&mut watch.tracker, &[GOAL_SET]);
+        watch.goal = watch.tracker.goal();
+        let mut json = serde_json::to_value(&watch).unwrap();
+        let mut current: ClaudeTranscriptWatch = serde_json::from_value(json.clone()).unwrap();
+        current.forget_goal_read_by_an_older_build();
+        assert_eq!(current.goal, Some(TranscriptGoal::Active));
+
+        json.as_object_mut().unwrap().remove("goal_reader");
+        let mut older: ClaudeTranscriptWatch = serde_json::from_value(json).unwrap();
+        older.forget_goal_read_by_an_older_build();
+        assert_eq!((older.goal, older.tracker.goal()), (None, None));
+        feed(&mut older.tracker, &[GOAL_CHECK]);
+        assert_eq!(older.tracker.goal(), Some(TranscriptGoal::Active));
     }
 
     #[test]
