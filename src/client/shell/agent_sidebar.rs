@@ -228,7 +228,7 @@ pub(super) fn render_agent_row(
     // is bright, so it stands apart from the session name under it.
     let name_color = match row.mode {
         Some(mode) if mode.colors_name() => mode.color().ratatui(),
-        _ => palette.text,
+        _ => palette.bright_text(),
     };
     let name_style = Style::default().fg(name_color).add_modifier(Modifier::BOLD);
     let status_style = Style::default().fg(status_color(row.status, palette));

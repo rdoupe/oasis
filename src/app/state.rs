@@ -74,6 +74,16 @@ pub struct Palette {
 }
 
 impl Palette {
+    /// The brightest text the theme has. The terminal theme's text is the
+    /// terminal's own foreground, often no brighter than its grey, so it takes
+    /// the terminal's bright white instead.
+    pub fn bright_text(&self) -> Color {
+        match self.text {
+            Color::Reset => Color::White,
+            text => text,
+        }
+    }
+
     /// Catppuccin Mocha — the default.
     pub fn catppuccin() -> Self {
         Self {
@@ -1481,6 +1491,13 @@ mod tests {
         assert_eq!(palette.sidebar_bg, Color::Rgb(24, 24, 37));
         assert_eq!(palette.active_row_bg, Color::Rgb(49, 50, 68));
         assert_eq!(palette.selection_bg, Color::Rgb(69, 71, 90));
+    }
+
+    #[test]
+    fn bright_text_is_bright_white_on_the_terminal_theme() {
+        assert_eq!(Palette::terminal().bright_text(), Color::White);
+        let catppuccin = Palette::catppuccin();
+        assert_eq!(catppuccin.bright_text(), catppuccin.text);
     }
 
     #[test]
