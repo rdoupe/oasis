@@ -228,7 +228,7 @@ fn working_screen(idle: &str, goal: bool) -> String {
 struct ReplayCase {
     name: String,
     screen: String,
-    expected: (bool, bool, u16, u16, u16),
+    expected: (bool, bool, bool, u16, u16, u16),
 }
 
 /// Corpus cases that say what the pane shows and have a transcript to time.
@@ -261,6 +261,7 @@ fn replay_cases() -> Vec<ReplayCase> {
                 expected: (
                     flag("goal"),
                     flag("goal_achieved"),
+                    flag("goal_failed"),
                     count("agents"),
                     count("shells"),
                     count("monitors"),
@@ -336,13 +337,14 @@ async fn replay(case: &ReplayCase) -> Vec<String> {
     let found = (
         info.goal,
         info.goal_achieved,
+        info.goal_failed,
         info.agents,
         info.shells,
         info.monitors,
     );
     if found != case.expected {
         failures.push(format!(
-            "{}: shows (goal, achieved, agents, shells, monitors) {found:?}, expected {:?}",
+            "{}: shows (goal, achieved, failed, agents, shells, monitors) {found:?}, expected {:?}",
             case.name, case.expected
         ));
     }
