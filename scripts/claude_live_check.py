@@ -178,7 +178,17 @@ class Check:
         args = ["agent", "prompt", AGENT, text]
         if wait:
             args += ["--wait", "--timeout", str(timeout * 1000)]
-        self.oasis.run(*args, timeout=timeout + 30)
+        try:
+            self.oasis.run(*args, timeout=timeout + 30)
+        except RuntimeError as error:
+            # Sent but never started a turn: send it once more, unless it
+            # reached the transcript after all.
+            if "agent_prompt_stalled" not in str(error):
+                raise
+            sent = self.transcript.is_file() and text[:40] in self.transcript.read_text(errors="replace")
+            if not sent and not text.startswith("/goal clear"):
+                time.sleep(3)
+                self.oasis.run(*args, timeout=timeout + 30)
 
     def settle(self, timeout: float = 600) -> None:
         """Waits for the agent's turn, and any goal turns it chains, to end,
@@ -263,17 +273,21 @@ class Check:
             lambda: (self.oasis.pane(self.pane_id).get("agent_session") or {}).get("value"),
             60,
         )
+        # Input sent the moment Claude reports ready can be lost while it
+        # finishes starting.
+        wait_for("Claude to sit idle", lambda: self.status() == "idle", 60)
+        time.sleep(5)
         version = subprocess.run([str(claude_dir / "claude"), "--version"], capture_output=True, text=True).stdout
         if self.report.version not in version:
             raise RuntimeError(f"expected Claude {self.report.version}, the pane runs {version.strip()}")
         self.session_id = session
 
-    def find_transcript(self) -> Path:
+    def find_transcript(self, timeout: float = 60) -> Path:
         projects = Path(os.environ.get("CLAUDE_CONFIG_DIR", Path.home() / ".claude")) / "projects"
         return wait_for(
             "the session transcript",
             lambda: next(iter(projects.glob(f"*/{self.session_id}.jsonl")), None),
-            60,
+            timeout,
         )
 
     def forget_session(self) -> None:
@@ -314,7 +328,12 @@ class Check:
         before = len(goal_records(self.transcript)) if self.transcript.is_file() else 0
         self.prompt(f"/goal {goal}", wait=False)
         if not self.transcript.is_file():
-            self.transcript = self.find_transcript()
+            try:
+                self.transcript = self.find_transcript(30)
+            except TimeoutError:
+                # The first prompt was lost while Claude finished starting.
+                self.prompt(f"/goal {goal}", wait=False)
+                self.transcript = self.find_transcript(60)
         # Claude pauses a goal its checks keep finding unmet and waits for a
         # message; it may give up on it once told to continue.
         for _ in range(3):
@@ -396,6 +415,25 @@ class Check:
         self.report.add(name, "pass" if shown else "fail",
                         "Oasis counts the shell" if shown else f"Oasis shows {self.activity()}")
 
+    def unfinished_on_disk(self) -> int:
+        """Subagents with a transcript whose record does not say finished
+        (Claude can write the record only when one finishes)."""
+        folder = self.transcript.with_suffix("") / "subagents"
+        started = {p.name.removesuffix(".jsonl") for p in folder.glob("*.jsonl")}
+        started |= {p.name.removesuffix(".meta.json") for p in folder.glob("*.meta.json")}
+        finished = {
+            p.name.removesuffix(".meta.json")
+            for p in folder.glob("*.meta.json")
+            if json.loads(p.read_text() or "{}").get("finished") is True
+        }
+        return len(started - finished)
+
+    def subagent_rows(self, screen: str) -> int:
+        return sum(
+            1 for line in screen.splitlines()
+            if line.strip().startswith("◯ ") and not line.strip()[2:].lstrip().startswith("main")
+        )
+
     def background_subagent(self) -> None:
         name = "background subagent"
         self.prompt(
@@ -403,32 +441,36 @@ class Check:
             "Tell the subagent to run `sleep 75` with the Bash tool and then reply done. "
             "Do not wait for it. Then reply with the single word started."
         )
-        self.settle(180)
-        metas = self.transcript.with_suffix("") / "subagents"
-        running = lambda: [m for m in metas.glob("*.meta.json") if '"finished":true' not in m.read_text()]
         if not tool_uses(self.transcript, "Agent"):
             self.report.add(name, "inconclusive", "Claude did not start a subagent")
             return
-        shown = self.shows("Oasis to count the subagent", lambda a: a.get("agents", 0) >= 1, 30)
+        # Oasis shows the screen's subagent rows capped by the subagents not
+        # finished on disk. Sample both against what Oasis shows; a short lag
+        # is fine (Oasis reads the records when the agent's status changes).
+        counted = running_seen = 0
+        disagree_since = None
+        for _ in range(45):
+            screen = self.oasis.screen(self.pane_id)
+            truth = min(self.subagent_rows(screen), self.unfinished_on_disk())
+            shown = self.activity().get("agents", 0)
+            running_seen = max(running_seen, truth)
+            counted = max(counted, shown)
+            if shown != truth:
+                disagree_since = disagree_since or time.monotonic()
+                if time.monotonic() - disagree_since > 10:
+                    self.save_screen("subagent-disagreed")
+                    self.report.add(name, "fail", f"for over 10 s Oasis shows {shown} subagents, the screen and "
+                                    f"records say {truth} ({self.subagent_rows(screen)} rows, "
+                                    f"{self.unfinished_on_disk()} unfinished)")
+                    return
+            else:
+                disagree_since = None
+            time.sleep(2)
         self.save_screen("subagent")
-        try:
-            records = wait_for("its record", running, 30, 1)
-        except TimeoutError:
-            records = []
-        if shown and records:
-            self.report.add(name, "pass", "Oasis counts the running subagent")
+        if not running_seen:
+            self.report.add(name, "inconclusive", "the subagent finished before it could be seen running")
         else:
-            self.report.add(name, "fail", f"records unfinished: {len(records)}; Oasis shows {self.activity()}")
-        try:
-            wait_for("the subagent to finish", lambda: not running(), 240, 5)
-        except TimeoutError:
-            self.report.add(f"{name} finishing", "inconclusive", "the subagent did not finish in time")
-            return
-        self.settle(240)
-        gone = self.shows("Oasis to stop counting it", lambda a: not a.get("agents"), 60)
-        self.save_screen("subagent-finished")
-        self.report.add(f"{name} finishing", "pass" if gone is not None else "fail",
-                        "Oasis stops counting it" if gone is not None else f"Oasis shows {self.activity()}")
+            self.report.add(name, "pass", f"Oasis agreed with the screen and records for 90 s (up to {counted})")
 
     def repeating_loop(self) -> None:
         name = "repeating /loop"
