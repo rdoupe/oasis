@@ -95,6 +95,10 @@
               "description": "The last turn met a goal, and no prompt has followed it yet.",
               "type": "boolean"
             },
+            "goal_failed": {
+              "description": "The last turn gave up on a goal, and no prompt has followed it yet.",
+              "type": "boolean"
+            },
             "loop_next": {
               "description": "The loop's next wakeup (`22:42`) or interval (`2m`), when known.",
               "type": [
@@ -6865,6 +6869,10 @@
             },
             "goal_achieved": {
               "description": "The last turn met a goal, and no prompt has followed it yet.",
+              "type": "boolean"
+            },
+            "goal_failed": {
+              "description": "The last turn gave up on a goal, and no prompt has followed it yet.",
               "type": "boolean"
             },
             "loop_next": {

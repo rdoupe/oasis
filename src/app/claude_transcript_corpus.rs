@@ -50,6 +50,7 @@ struct Screen {
     mcp_tasks: u16,
     goal: bool,
     goal_achieved: bool,
+    goal_failed: bool,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,6 +64,8 @@ struct Shown {
     goal: bool,
     #[serde(default)]
     goal_achieved: bool,
+    #[serde(default)]
+    goal_failed: bool,
     #[serde(default)]
     agents: u16,
     #[serde(default)]
@@ -80,6 +83,7 @@ fn goal_name(goal: Option<TranscriptGoal>) -> &'static str {
         None => "unknown",
         Some(TranscriptGoal::Active) => "active",
         Some(TranscriptGoal::Achieved) => "achieved",
+        Some(TranscriptGoal::Failed) => "failed",
         Some(TranscriptGoal::None) => "none",
     }
 }
@@ -206,6 +210,7 @@ fn check(name: &str, dir: &Path) -> Vec<String> {
                     mcp_tasks: expected.mcp_tasks,
                     goal: expected.goal,
                     goal_achieved: expected.goal_achieved,
+                    goal_failed: expected.goal_failed,
                     ..BackgroundActivity::default()
                 };
                 if found != expected {
@@ -234,6 +239,7 @@ fn check(name: &str, dir: &Path) -> Vec<String> {
                 let summary = (
                     found.goal,
                     found.goal_achieved,
+                    found.goal_failed,
                     found.agents,
                     found.shells,
                     found.monitors,
@@ -241,13 +247,14 @@ fn check(name: &str, dir: &Path) -> Vec<String> {
                 let expected = (
                     shown.goal,
                     shown.goal_achieved,
+                    shown.goal_failed,
                     shown.agents,
                     shown.shells,
                     shown.monitors,
                 );
                 if summary != expected {
                     fail(format!(
-                        "shown (goal, achieved, agents, shells, monitors) is {summary:?}, expected {expected:?}"
+                        "shown (goal, achieved, failed, agents, shells, monitors) is {summary:?}, expected {expected:?}"
                     ));
                 }
             }

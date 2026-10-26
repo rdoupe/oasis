@@ -562,6 +562,9 @@ pub struct BackgroundActivityInfo {
     /// The last turn met a goal, and no prompt has followed it yet.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub goal_achieved: bool,
+    /// The last turn gave up on a goal, and no prompt has followed it yet.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub goal_failed: bool,
 }
 
 fn is_zero(value: &u16) -> bool {
@@ -583,16 +586,19 @@ impl BackgroundActivityInfo {
     ) -> Option<Self> {
         use crate::detect::claude_loop::TranscriptGoal;
         let transcript_loop = transcript.and_then(|watch| watch.loop_label.as_deref());
-        let (goal, goal_achieved) = match transcript.and_then(|watch| watch.goal) {
-            // Claude records a met goal a few seconds after the turn's last
-            // message, so a read as the screen goes idle still finds it
+        let (goal, goal_achieved, goal_failed) = match transcript.and_then(|watch| watch.goal) {
+            // Claude records a goal's outcome a few seconds after the turn's
+            // last message, so a read as the screen goes idle still finds it
             // active; the screen's notice is already there.
-            Some(TranscriptGoal::Active) if activity.goal_achieved => (false, true),
+            Some(TranscriptGoal::Active) if activity.goal_achieved || activity.goal_failed => {
+                (false, activity.goal_achieved, activity.goal_failed)
+            }
             Some(goal) => (
                 goal == TranscriptGoal::Active,
                 goal == TranscriptGoal::Achieved,
+                goal == TranscriptGoal::Failed,
             ),
-            None => (activity.goal, activity.goal_achieved),
+            None => (activity.goal, activity.goal_achieved, activity.goal_failed),
         };
         let agents = match (
             transcript.and_then(|watch| watch.unfinished_subagents),
@@ -615,6 +621,7 @@ impl BackgroundActivityInfo {
                 .or_else(|| activity.loop_next.clone()),
             goal,
             goal_achieved,
+            goal_failed,
         };
         (info != Self::default()).then_some(info)
     }
@@ -642,6 +649,10 @@ impl BackgroundActivityInfo {
         .chain(
             self.goal_achieved
                 .then(|| ("oasis:goal_achieved".to_owned(), "1".to_owned())),
+        )
+        .chain(
+            self.goal_failed
+                .then(|| ("oasis:goal_failed".to_owned(), "1".to_owned())),
         )
         .collect()
     }

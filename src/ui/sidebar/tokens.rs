@@ -68,6 +68,8 @@ pub enum AgentMode {
     Loop,
     /// The last turn met a goal; it lasts until the next prompt.
     GoalAchieved,
+    /// The last turn gave up on a goal; it lasts until the next prompt.
+    GoalFailed,
     /// Subagents still run, so a pane between turns is waiting on them and
     /// will pick up again when they finish.
     Subagents,
@@ -87,6 +89,8 @@ impl AgentMode {
             Some(Self::Loop)
         } else if has("oasis:goal_achieved") {
             Some(Self::GoalAchieved)
+        } else if has("oasis:goal_failed") {
+            Some(Self::GoalFailed)
         } else if has("oasis:agents") {
             Some(Self::Subagents)
         } else {
@@ -104,6 +108,7 @@ impl AgentMode {
             Self::Goal => "◎",
             Self::Loop => "↻",
             Self::GoalAchieved => "✓",
+            Self::GoalFailed => "✘",
             // Nerd Font's outlined robot (nf-md-robot_outline): the chat
             // itself is idle while its subagents work.
             Self::Subagents => "\u{f167a}",
@@ -113,6 +118,7 @@ impl AgentMode {
     pub fn color(self) -> SidebarTokenColor {
         match self {
             Self::Goal | Self::GoalAchieved => GOAL_COLOR,
+            Self::GoalFailed => GOAL_FAILED_COLOR,
             Self::Loop => LOOP_COLOR,
             Self::Subagents => SUBAGENT_COLOR,
         }
@@ -239,6 +245,7 @@ pub(crate) fn agent_rows(
 // Claude has no glyph for shells, monitors or MCP tasks, so those are short
 // counts in its cyan.
 const GOAL_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x87, 0xff);
+const GOAL_FAILED_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0xff, 0x5f, 0x5f);
 const LOOP_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0x87, 0xd7, 0x87);
 const COUNT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(0, 204, 204);
 const SUBAGENT_COLOR: SidebarTokenColor = SidebarTokenColor::from_rgb(153, 153, 153);

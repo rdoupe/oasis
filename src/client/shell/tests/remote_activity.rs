@@ -265,7 +265,7 @@ fn an_unavailable_read_is_silent_and_stops_further_reads() {
 #[test]
 fn goal_and_loop_panes_always_show_their_glyph() {
     use crate::config::StatusIndicatorStyle::Symbols;
-    use crate::ui::AgentMode::{Goal, GoalAchieved, Loop, Subagents};
+    use crate::ui::AgentMode::{Goal, GoalAchieved, GoalFailed, Loop, Subagents};
     use ratatui::style::{Color, Style};
     let palette = Palette::catppuccin();
     let icon = |status, mode| agent_status_icon(status, mode, Symbols, &palette);
@@ -287,6 +287,13 @@ fn goal_and_loop_panes_always_show_their_glyph() {
     let achieved = ("✓", fg(goal).add_modifier(ratatui::style::Modifier::BOLD));
     assert_eq!(icon(AgentStatus::Done, Some(GoalAchieved)), achieved);
     assert_eq!(icon(AgentStatus::Idle, Some(GoalAchieved)), achieved);
+    let failed = (
+        "✘",
+        fg(GoalFailed.color().ratatui()).add_modifier(ratatui::style::Modifier::BOLD),
+    );
+    assert_eq!(icon(AgentStatus::Done, Some(GoalFailed)), failed);
+    assert_eq!(icon(AgentStatus::Idle, Some(GoalFailed)), failed);
+    assert_ne!(GoalFailed.color(), GoalAchieved.color());
     assert_eq!(
         icon(AgentStatus::Working, Some(GoalAchieved)),
         ("◐", fg(palette.yellow))

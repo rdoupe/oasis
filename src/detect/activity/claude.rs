@@ -5,7 +5,9 @@
 //! subagent (`◯ general-purpose  Writing tests  2m 3s`). Claude marks an
 //! active goal with `◎ /goal active (5m)` on the notice row right above the
 //! prompt box, and a goal that was just met leaves `✔ Goal achieved (…)` in
-//! the last turn, read until the next prompt. Loops show nothing on screen.
+//! the last turn, read until the next prompt; one Claude gave up on leaves
+//! `✘ Goal could not be achieved (…)` the same way. Loops show nothing on
+//! screen.
 //! Where a server watches the session's transcript, it knows better: its
 //! loop and goal win, and it caps the rows by the subagents not yet finished,
 //! since a finished subagent keeps its row (see `claude_loop`).
@@ -38,16 +40,19 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
         .and_then(|top| top.checked_sub(1))
         .is_some_and(|notice| lines[notice].trim_start().starts_with("◎ /goal active"));
     // Only the last turn counts: stop at the prompt that started it.
-    let goal_achieved = !goal_notice
-        && lines[..top.unwrap_or(0)]
-            .iter()
-            .rev()
-            .map(|line| line.trim_start())
-            .take_while(|line| !line.starts_with('❯'))
-            .any(|line| line.starts_with("✔ Goal achieved"));
+    let last_turn_shows = |outcome: &str| {
+        !goal_notice
+            && lines[..top.unwrap_or(0)]
+                .iter()
+                .rev()
+                .map(|line| line.trim_start())
+                .take_while(|line| !line.starts_with('❯'))
+                .any(|line| line.starts_with(outcome))
+    };
     let mut activity = BackgroundActivity {
         goal: goal_notice,
-        goal_achieved,
+        goal_achieved: last_turn_shows("✔ Goal achieved"),
+        goal_failed: last_turn_shows("✘ Goal could not be achieved"),
         ..BackgroundActivity::default()
     };
     let mut agent_rows = 0u16;
@@ -204,6 +209,34 @@ mod tests {
             "● You're welcome.",
         ]));
         assert!(!met(&["● 4"]));
+    }
+
+    #[test]
+    fn reads_a_goal_given_up_on_in_the_last_turn_only() {
+        // Claude Code 2.1.310's line when a goal check gives up.
+        let failed = |turn: &[&str]| {
+            let mut lines = vec!["❯ /goal free the disk", "  ⎿  Goal set: free the disk"];
+            lines.extend_from_slice(turn);
+            lines.extend_from_slice(&[
+                "──────────────────────────────────────────",
+                "❯ ",
+                "──────────────────────────────────────────",
+                "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+            ]);
+            let activity = background_activity(Some(Agent::Claude), &lines.join("\n")).unwrap();
+            assert!(!activity.goal_achieved);
+            activity.goal_failed
+        };
+        assert!(failed(&[
+            "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",
+            "  The condition is not satisfied.",
+            "✻ Crunched for 2m 33s · done 12:26 PM",
+        ]));
+        assert!(!failed(&[
+            "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",
+            "❯ what can't you do",
+            "● The skipped files are gone.",
+        ]));
     }
 
     #[test]

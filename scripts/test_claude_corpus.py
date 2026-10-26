@@ -25,6 +25,10 @@ class ScramblerTest(unittest.TestCase):
             "✔ Goal achieved (14h · 62 turns · 439.3k tokens)",
         )
         self.assertEqual(
+            scrambler.text("✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)"),
+            "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",
+        )
+        self.assertEqual(
             scrambler.text("Scheduled recurring job d7a8a2b4 (Every 30 minutes)"),
             "Scheduled recurring job d7a8a2b4 (Every 30 minutes)",
         )

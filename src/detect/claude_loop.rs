@@ -10,9 +10,10 @@
 //! process, so a watch starts at the end of a resumed transcript.
 //!
 //! A `/goal` writes `goal_status` attachments: `met: false` while it runs,
-//! `met: true` with a reason once achieved, and `met: true` marked
-//! `sentinel` when it is cleared without being met. An achieved goal lasts
-//! until the next prompt, as the screen shows it.
+//! `met: true` with a reason once achieved, `met: false` marked `failed` once
+//! Claude gives up on it, and `met: true` marked `sentinel` when it is cleared
+//! without being met. An achieved or failed goal lasts until the next prompt,
+//! as the screen shows it.
 //!
 //! The tracker only parses bytes it is fed; the caller reads the file.
 
@@ -38,6 +39,8 @@ pub enum TranscriptGoal {
     Active,
     /// Met in the last turn; lasts until the next prompt.
     Achieved,
+    /// Given up on in the last turn; lasts until the next prompt.
+    Failed,
     /// Cleared, or achieved before the current prompt.
     None,
 }
@@ -149,9 +152,9 @@ impl ClaudeLoopTracker {
     }
 
     fn feed_line(&mut self, line: &[u8]) {
-        // Only an achieved goal needs every prompt: the next one ends it.
-        let prompt_ends_goal = self.goal == Some(TranscriptGoal::Achieved)
-            && contains(&line[..line.len().min(160)], b"\"type\":\"user\"");
+        // Only an ended goal needs every prompt: the next one clears it.
+        let prompt_ends_goal =
+            self.goal_ended() && contains(&line[..line.len().min(160)], b"\"type\":\"user\"");
         if !prompt_ends_goal && !RELEVANT.iter().any(|needle| contains(line, needle)) {
             return;
         }
@@ -187,19 +190,26 @@ impl ClaudeLoopTracker {
         };
         let flag = |name: &str| attachment.get(name).and_then(Value::as_bool) == Some(true);
         self.goal = Some(match (flag("met"), flag("sentinel")) {
+            (false, _) if flag("failed") => TranscriptGoal::Failed,
             (false, _) => TranscriptGoal::Active,
             (true, false) => TranscriptGoal::Achieved,
             (true, true) => TranscriptGoal::None,
         });
     }
 
-    /// A prompt typed after a goal was achieved ends the achieved notice.
+    fn goal_ended(&self) -> bool {
+        matches!(
+            self.goal,
+            Some(TranscriptGoal::Achieved | TranscriptGoal::Failed)
+        )
+    }
+
+    /// A prompt typed after a goal was achieved or failed ends its notice.
     /// Prompts Claude makes itself (a task notification, a scheduled loop
     /// turn, the summary an idle compaction writes) are not seen by anyone.
     fn prompt_entry(&mut self, entry: &Value) {
         let flag = |name: &str| entry.get(name).and_then(Value::as_bool) == Some(true);
-        if self.goal != Some(TranscriptGoal::Achieved) || flag("isMeta") || flag("isCompactSummary")
-        {
+        if !self.goal_ended() || flag("isMeta") || flag("isCompactSummary") {
             return;
         }
         let Some(text) = entry.pointer("/message/content").and_then(Value::as_str) else {
@@ -520,6 +530,27 @@ mod tests {
         feed(&mut tracker, &[GOAL_MET, TURN_END, TOOL_RESULT]);
         assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
         feed(&mut tracker, &[PROMPT]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
+    }
+
+    #[test]
+    fn a_goal_given_up_on_lasts_until_a_typed_prompt() {
+        let mut tracker = ClaudeLoopTracker::default();
+        feed(
+            &mut tracker,
+            &[
+                GOAL_SET,
+                GOAL_CHECK,
+                r#"{"type":"attachment","attachment":{"type":"goal_status","met":false,"failed":true,"condition":"deploy it","reason":"cannot"}}"#,
+                TURN_END,
+                r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>done</task-notification>"}}"#,
+            ],
+        );
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::Failed));
+        feed(
+            &mut tracker,
+            &[r#"{"type":"user","origin":{"kind":"human"},"message":{"content":"why"}}"#],
+        );
         assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
     }
 

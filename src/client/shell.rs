@@ -242,11 +242,15 @@ fn agent_status_icon(
     use crate::api::schema::AgentStatus;
     use crate::ui::AgentMode;
     match (mode, status) {
-        // A goal just met keeps a bold pink check until the next prompt.
-        (Some(AgentMode::GoalAchieved), AgentStatus::Idle | AgentStatus::Done) => (
-            AgentMode::GoalAchieved.glyph(),
+        // A goal just met keeps a bold pink check until the next prompt, and
+        // one Claude gave up on a bold red cross.
+        (
+            Some(mode @ (AgentMode::GoalAchieved | AgentMode::GoalFailed)),
+            AgentStatus::Idle | AgentStatus::Done,
+        ) => (
+            mode.glyph(),
             Style::default()
-                .fg(AgentMode::GoalAchieved.color().ratatui())
+                .fg(mode.color().ratatui())
                 .add_modifier(Modifier::BOLD),
         ),
         (Some(AgentMode::Goal), AgentStatus::Working) => {

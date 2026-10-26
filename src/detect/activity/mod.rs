@@ -32,6 +32,8 @@ pub struct BackgroundActivity {
     pub goal: bool,
     /// The last turn met a `/goal`, and no prompt has followed it.
     pub goal_achieved: bool,
+    /// The last turn gave up on a `/goal`, and no prompt has followed it.
+    pub goal_failed: bool,
 }
 
 impl BackgroundActivity {

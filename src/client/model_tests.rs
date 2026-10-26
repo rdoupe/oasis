@@ -290,6 +290,10 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
                 agent("goal_met", "ws", AgentStatus::Done, 0),
                 "oasis:goal_achieved",
             ),
+            with(
+                agent("goal_failed", "ws", AgentStatus::Idle, 11),
+                "oasis:goal_failed",
+            ),
             with(agent("waiting", "ws", AgentStatus::Idle, 6), "oasis:agents"),
             agent("plain_idle", "ws", AgentStatus::Idle, 7),
         ],
@@ -297,6 +301,7 @@ fn priority_ranks_done_needing_you_idle_busy_goals_then_loops() {
     assert_eq!(
         ordered_agent_pane_ids(&snap, AgentPanelSortConfig::Priority),
         [
+            "goal_failed",
             "plain_done",
             "goal_met",
             "goal_ask",

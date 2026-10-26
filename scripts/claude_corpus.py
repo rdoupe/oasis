@@ -49,7 +49,7 @@ KEEP_WORDS = {
     auto mode for shortcuts done am pm update available mise upgrade claude opus sonnet
     haiku fable effort low medium high xhigh max context read cached uncached write esc
     interrupt worked crunched cooked baked thinking background running stopped
-    email tailnet ip
+    email tailnet ip could not be
     """.split()
 }
 

@@ -31,7 +31,7 @@ pub(crate) fn status_priority(status: AgentStatus) -> u8 {
 }
 
 /// The sort rank in priority order, highest first: turns that ended unseen
-/// (done, or a goal just met), needing you, idle, idle while subagents run,
+/// (done, or a goal just met or given up on), needing you, idle, idle while subagents run,
 /// busy, goals, and loops last. A goal or loop pane keeps its place whether it
 /// is working, done or between runs, unless it needs you; a pane between
 /// turns whose subagents run shows the robot, done or not. Each matches the
@@ -41,7 +41,10 @@ pub(crate) fn agent_sort_priority(status: AgentStatus, mode: Option<crate::ui::A
     match (status, mode) {
         (AgentStatus::Blocked, _) => 6,
         (AgentStatus::Unknown, _) => 0,
-        (AgentStatus::Idle | AgentStatus::Done, Some(AgentMode::GoalAchieved)) => 7,
+        (
+            AgentStatus::Idle | AgentStatus::Done,
+            Some(AgentMode::GoalAchieved | AgentMode::GoalFailed),
+        ) => 7,
         (_, Some(AgentMode::Loop)) => 1,
         (_, Some(AgentMode::Goal)) => 2,
         (AgentStatus::Working, _) => 3,

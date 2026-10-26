@@ -1,0 +1,36 @@
+claude = "2.1.310"
+about = """A goal Claude gave up on: its check recorded `failed` a few seconds after the
+turn's last message and the screen showed `✘ Goal could not be achieved`. The
+user's next typed prompt ends it."""
+
+[[read]]
+after_line = 7
+goal = "active"
+loop = "none"
+
+[[read]] # as the screen goes idle
+after_line = 48
+goal = "active"
+loop = "none"
+
+[[read]]
+after_line = 49
+goal = "failed"
+loop = "none"
+
+[[read]]
+after_line = 54
+goal = "failed"
+loop = "none"
+
+[[read]] # the user's next prompt
+after_line = 55
+goal = "none"
+loop = "none"
+
+[screen]
+goal_failed = true
+
+[shown]
+after_read = 2
+goal_failed = true
