@@ -59,17 +59,40 @@ case "$last" in
         esac
         if [ "$TEST_MODE" = offline ]; then echo 'test remote connection failed' >&2; exit 255; fi
         printf 'login banner\n'
-        PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" exec /bin/sh -c "$last" ;;
+        PATH="$TEST_ROOT/remote bin:$TEST_ROOT/remote system" exec /bin/sh -c "$last" ;;
     '/bin/sh -s')
         script=$(cat)
         printf 'login banner\n'
         case "$script" in
             *'uname -s'*) printf 'herdr-remote-output-ready:1\n'; uname -s; uname -m ;;
-            *) PATH="$TEST_ROOT/remote bin:/usr/bin:/bin" exec /bin/sh -c "$script" ;;
+            *) PATH="$TEST_ROOT/remote bin:$TEST_ROOT/remote system" exec /bin/sh -c "$script" ;;
         esac ;;
     *) echo "unexpected command: $last" >&2; exit 2 ;;
 esac
 "#;
+
+/// The fake remote host's system tools: the build machine's, except any
+/// Herdr or Oasis installed there, which the remote must not find on its
+/// PATH in place of the binary under test.
+fn link_remote_system_tools(dir: &std::path::Path) {
+    fs::create_dir_all(dir).unwrap();
+    for system in ["/usr/bin", "/bin"] {
+        let Ok(entries) = fs::read_dir(system) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let text = name.to_string_lossy();
+            if text.starts_with("herdr") || text.starts_with("oasis") {
+                continue;
+            }
+            let link = dir.join(&name);
+            if !link.exists() {
+                let _ = std::os::unix::fs::symlink(entry.path(), link);
+            }
+        }
+    }
+}
 
 struct Harness {
     root: PathBuf,
@@ -101,6 +124,7 @@ impl Harness {
         fs::set_permissions(root.join("bin/ssh"), fs::Permissions::from_mode(0o700)).unwrap();
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_oasis"), root.join("remote herdr")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
+        link_remote_system_tools(&root.join("remote system"));
         let remote_wrapper = root.join("remote bin/herdr");
         fs::write(
             &remote_wrapper,
