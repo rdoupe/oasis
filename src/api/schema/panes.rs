@@ -934,6 +934,33 @@ mod tests {
         assert_eq!(info, None, "no robot for a finished subagent's row");
     }
 
+    /// What the server sends is what the sidebar reads back.
+    #[test]
+    fn goal_outcomes_reach_the_sidebar_as_their_modes() {
+        use crate::ui::AgentMode;
+        let mode = |info: BackgroundActivityInfo| {
+            let tokens = info.sidebar_tokens();
+            AgentMode::from_keys(|key| tokens.iter().any(|(k, _)| k == key))
+        };
+        let info = |edit: fn(&mut BackgroundActivityInfo)| {
+            let mut info = BackgroundActivityInfo::default();
+            edit(&mut info);
+            info
+        };
+        assert_eq!(mode(info(|i| i.goal = true)), Some(AgentMode::Goal));
+        assert_eq!(
+            mode(info(|i| i.goal_achieved = true)),
+            Some(AgentMode::GoalAchieved)
+        );
+        assert_eq!(
+            mode(info(|i| i.goal_failed = true)),
+            Some(AgentMode::GoalFailed)
+        );
+        assert_eq!(mode(info(|i| i.looping = true)), Some(AgentMode::Loop));
+        assert_eq!(mode(info(|i| i.agents = 1)), Some(AgentMode::Subagents));
+        assert_eq!(mode(BackgroundActivityInfo::default()), None);
+    }
+
     #[test]
     fn the_transcript_goal_wins_otherwise() {
         let screen = BackgroundActivity {

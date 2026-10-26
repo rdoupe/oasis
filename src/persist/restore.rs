@@ -2039,7 +2039,13 @@ mod tests {
             codex_watch.running = Some(1);
             state.claude_transcript = Some(claude_watch.clone());
             state.codex_subagents = Some(codex_watch.clone());
-            let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
+            // Handed over by a build that did not know every goal record.
+            let mut state = serde_json::to_value(state).unwrap();
+            state["claude_transcript"]
+                .as_object_mut()
+                .unwrap()
+                .remove("goal_reader");
+            let state = serde_json::from_value(state).unwrap();
             let mut imports = HashMap::from([(
                 pane_id.raw(),
                 crate::handoff_runtime::ImportedHandoffRuntime {
@@ -2067,7 +2073,27 @@ mod tests {
                 Some("Coven trial 1 build"),
                 "the handed-over title shows without waiting for a new one"
             );
-            assert_eq!(terminal.claude_transcript.as_ref(), Some(&claude_watch));
+            let restored = terminal.claude_transcript.as_ref().unwrap();
+            assert_eq!(
+                restored.goal, None,
+                "an older build's goal reading is dropped"
+            );
+            assert_eq!(
+                restored.goal_reader,
+                crate::detect::claude_loop::GOAL_READER
+            );
+            assert_eq!(
+                (
+                    &restored.path,
+                    &restored.loop_label,
+                    restored.unfinished_subagents
+                ),
+                (
+                    &claude_watch.path,
+                    &claude_watch.loop_label,
+                    claude_watch.unfinished_subagents
+                )
+            );
             assert_eq!(
                 terminal
                     .claude_transcript

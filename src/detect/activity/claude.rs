@@ -232,6 +232,25 @@ mod tests {
     }
 
     #[test]
+    fn a_new_active_goal_hides_the_last_outcome() {
+        // A goal met, then another set in the next breath: the notice shows
+        // the new goal, so the old outcome is not read.
+        let content = [
+            "✔ Goal achieved (4s · 1 turn · 100 tokens)",
+            "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",
+            "                                                  ◎ /goal active (1s)",
+            "──────────────────────────────────────────",
+            "❯ ",
+            "──────────────────────────────────────────",
+            "  ⏵⏵ bypass permissions on (shift+tab to cycle)",
+        ]
+        .join("\n");
+        let activity = background_activity(Some(Agent::Claude), &content).unwrap();
+        assert!(activity.goal);
+        assert!(!activity.goal_achieved && !activity.goal_failed);
+    }
+
+    #[test]
     fn reads_a_goal_given_up_on_in_the_last_turn_only() {
         // Claude Code 2.1.310's line when a goal check gives up.
         let failed = |turn: &[&str]| {
