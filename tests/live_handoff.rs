@@ -2118,3 +2118,235 @@ fn live_handoff_import_failure_rolls_back_old_server_at(failure_point: &str) {
 fn live_handoff_after_restored_failure_rolls_back_old_server() {
     live_handoff_import_failure_rolls_back_old_server_at("after_restored");
 }
+
+/// Polls `pane.get` until `ready` accepts the pane.
+fn wait_for_pane(
+    socket_path: &Path,
+    pane_id: &str,
+    what: &str,
+    ready: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let response = request(
+            socket_path,
+            serde_json::json!({"id":"test:pane:get","method":"pane.get","params":{"pane_id": pane_id}}),
+        );
+        let pane = response["result"]["pane"].clone();
+        if ready(&pane) {
+            return pane;
+        }
+        assert!(Instant::now() < deadline, "{what}: {response}");
+        thread::sleep(Duration::from_millis(50));
+    }
+}
+
+/// What a pane's transcripts showed (a Claude loop's next wakeup, a Codex
+/// thread's running subagent) and its session name all show on the new
+/// server at once, before anything reads the transcripts again.
+#[test]
+fn live_handoff_keeps_transcript_watches_and_session_names() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _lock = test_lock();
+    let base = unique_test_dir();
+    let config_home = base.join("config");
+    let runtime_dir = base.join("runtime");
+    let api_socket = runtime_dir.join("herdr.sock");
+    let home = base.join("home");
+    let codex_home = base.join("codex");
+    let claude_transcript = base.join("claude/session.jsonl");
+    fs::create_dir_all(&home).unwrap();
+    fs::create_dir_all(claude_transcript.parent().unwrap()).unwrap();
+
+    // A Codex thread that spawned one subagent whose turn is still open.
+    // Shapes captured from a live Codex CLI 0.164.0 session.
+    let parent = "01a1753b-cd5d-7900-9d3f-3251e0833832";
+    let child = "01a1753c-06df-75f0-8e36-46dbcea2c2cf";
+    let day = codex_home.join("sessions/2026/10/25");
+    fs::create_dir_all(&day).unwrap();
+    fs::write(
+        day.join(format!("rollout-2026-10-25T18-43-35-{parent}.jsonl")),
+        format!(
+            "{{\"type\":\"event_msg\",\"payload\":{{\"type\":\"item_completed\",\"item\":{{\"type\":\"CollabAgentToolCall\",\"tool\":\"spawn_agent\",\"status\":\"completed\",\"sender_thread_id\":\"{parent}\",\"receiver_thread_ids\":[\"{child}\"]}}}}}}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        day.join(format!("rollout-2026-10-25T18-43-50-{child}.jsonl")),
+        "{\"type\":\"event_msg\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"t1\"}}\n",
+    )
+    .unwrap();
+
+    // Stand-ins for the agents: each names itself in its pane's title, the
+    // Codex one ending in its thread's id.
+    let bin = base.join("bin");
+    fs::create_dir_all(&bin).unwrap();
+    let fake_agent = |name: &str, title: &str| {
+        let path = bin.join(name);
+        fs::write(
+            &path,
+            format!(
+                "#!/bin/sh\nexport HERDR_AGENT={name}\nprintf '\\033]2;{title}\\007'\n/bin/sleep 60\n:\n"
+            ),
+        )
+        .unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+        path
+    };
+    let fake_claude = fake_agent("claude", "✳ Alex build");
+    let fake_codex = fake_agent("codex", &format!("Ship it | {}...", &parent[..29]));
+
+    let home_env = home.display().to_string();
+    let codex_env = codex_home.display().to_string();
+    let spawned = spawn_server_with_env(
+        &config_home,
+        &runtime_dir,
+        &api_socket,
+        &[
+            ("HOME", &home_env),
+            ("CODEX_HOME", &codex_env),
+            ("TZ", "UTC0"),
+        ],
+    );
+    wait_for_socket(&api_socket, Duration::from_secs(10));
+    register_runtime_dir(&runtime_dir);
+    let start_agent = |id: &str, agent: &Path| {
+        let created = request(
+            &api_socket,
+            serde_json::json!({"id": id, "method": "workspace.create", "params": {"cwd": "/tmp"}}),
+        );
+        let pane_id = created["result"]["root_pane"]["pane_id"]
+            .as_str()
+            .unwrap()
+            .to_string();
+        assert_ok(request(
+            &api_socket,
+            serde_json::json!({
+                "id": "test:start",
+                "method": "pane.send_input",
+                "params": {"pane_id": pane_id, "text": agent, "keys": ["Enter"]}
+            }),
+        ));
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let response = request(
+                &api_socket,
+                serde_json::json!({"id":"test:agent:get","method":"agent.get","params":{"target": pane_id}}),
+            );
+            if response.get("result").is_some() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "agent process was not detected: {response}"
+            );
+            thread::sleep(Duration::from_millis(25));
+        }
+        pane_id
+    };
+    let report = |method: &str, params: serde_json::Value| {
+        assert_ok(request(
+            &api_socket,
+            serde_json::json!({"id": "test:report", "method": method, "params": params}),
+        ));
+    };
+
+    // Claude: a new session's transcript, then a self-paced loop that arms
+    // its wakeup for 05:00 UTC and ends its turn.
+    let claude = start_agent("test:claude", &fake_claude);
+    report(
+        "pane.report_agent_session",
+        serde_json::json!({
+            "pane_id": claude,
+            "source": "herdr:claude",
+            "agent": "claude",
+            "seq": 1,
+            "agent_session_path": claude_transcript,
+            "session_start_source": "startup",
+        }),
+    );
+    // The read the report starts finds no transcript yet: a new session.
+    thread::sleep(Duration::from_millis(800));
+    // Shapes captured from a stock Claude Code 2.1.309 transcript.
+    fs::write(
+        &claude_transcript,
+        concat!(
+            r#"{"type":"user","timestamp":"2026-10-24T04:55:26.138Z","message":{"role":"user","content":"<command-name>/loop</command-name>"}}"#,
+            "\n",
+            r#"{"type":"assistant","timestamp":"2026-10-24T04:55:00.000Z","message":{"content":[{"type":"tool_use","id":"toolu_5owbxd","name":"ScheduleWakeup","input":{"delaySeconds":300}}]}}"#,
+            "\n",
+            r#"{"type":"system","subtype":"turn_duration","durationMs":4112,"timestamp":"2026-10-24T04:55:30.225Z"}"#,
+            "\n",
+        ),
+    )
+    .unwrap();
+    report(
+        "pane.report_agent",
+        serde_json::json!({
+            "pane_id": claude,
+            "source": "herdr:claude",
+            "agent": "claude",
+            "state": "idle",
+            "seq": 2,
+        }),
+    );
+    wait_for_pane(&api_socket, &claude, "the claude loop and title", |pane| {
+        pane["background_activity"]["loop_next"] == "05:00"
+            && pane["terminal_title_stripped"] == "Alex build"
+    });
+
+    // Codex: the pane's title names its thread.
+    let codex = start_agent("test:codex", &fake_codex);
+    report(
+        "pane.report_agent",
+        serde_json::json!({
+            "pane_id": codex,
+            "source": "herdr:codex",
+            "agent": "codex",
+            "state": "working",
+            "seq": 1,
+        }),
+    );
+    wait_for_pane(&api_socket, &codex, "the codex subagent", |pane| {
+        pane["background_activity"]["agents"] == 1 && pane["terminal_title_stripped"] == "Ship it"
+    });
+
+    assert_ok(request(
+        &api_socket,
+        serde_json::json!({"id":"test:handoff","method":"server.live_handoff","params":{}}),
+    ));
+    drop(spawned);
+    wait_for_api(&api_socket, Duration::from_secs(10));
+
+    let get = |pane_id: &str| {
+        request(
+            &api_socket,
+            serde_json::json!({"id":"test:pane:get","method":"pane.get","params":{"pane_id": pane_id}}),
+        )["result"]["pane"]
+            .clone()
+    };
+    let claude_after = get(&claude);
+    let codex_after = get(&codex);
+    let _ = request(
+        &api_socket,
+        serde_json::json!({"id":"test:stop","method":"server.stop","params":{}}),
+    );
+    cleanup_test_base(&base);
+    assert_eq!(
+        claude_after["background_activity"]["loop_next"], "05:00",
+        "{claude_after}"
+    );
+    assert_eq!(
+        claude_after["terminal_title_stripped"], "Alex build",
+        "{claude_after}"
+    );
+    assert_eq!(
+        codex_after["background_activity"]["agents"], 1,
+        "{codex_after}"
+    );
+    assert_eq!(
+        codex_after["terminal_title_stripped"], "Ship it",
+        "{codex_after}"
+    );
+}

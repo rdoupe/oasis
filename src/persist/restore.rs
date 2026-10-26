@@ -2013,6 +2013,32 @@ mod tests {
             let mut state = runtime.handoff_runtime_state(pane_id.raw());
             state.agent_state = terminals.values().next().unwrap().handoff_agent_state();
             state.terminal_title = Some("✳ Coven trial 1 build".into());
+            // The transcript watches ride along, so a live loop, a met goal and
+            // running subagents still show on the new server.
+            let mut tracker = crate::detect::claude_loop::ClaudeLoopTracker::default();
+            tracker.feed(
+                concat!(
+                    r#"{"type":"assistant","timestamp":"2026-10-24T04:55:29.094Z","message":{"content":[{"type":"tool_use","id":"toolu_5owbxd","name":"ScheduleWakeup","input":{"delaySeconds":300}}]}}"#,
+                    "\n"
+                )
+                .as_bytes(),
+            );
+            let mut claude_watch = crate::detect::claude_loop::ClaudeTranscriptWatch::new(
+                "/var/tmp/alex.jsonl".into(),
+            );
+            claude_watch.tracker = tracker;
+            claude_watch.loop_label = Some("00:00".into());
+            claude_watch.goal = Some(crate::detect::claude_loop::TranscriptGoal::Achieved);
+            claude_watch.unfinished_subagents = Some(2);
+            let mut codex_watch = crate::detect::codex_subagents::CodexSubagentWatch::new(
+                "/var/tmp/rollout-2026-10-25T18-43-35-01a1753b-cd5d-7900-9d3f-3251e0833832.jsonl"
+                    .into(),
+            );
+            codex_watch.offset = 812;
+            codex_watch.subagents = vec!["01a1753c-06df-75f0-8e36-46dbcea2c2cf".into()];
+            codex_watch.running = Some(1);
+            state.claude_transcript = Some(claude_watch.clone());
+            state.codex_subagents = Some(codex_watch.clone());
             let state = serde_json::from_value(serde_json::to_value(state).unwrap()).unwrap();
             let mut imports = HashMap::from([(
                 pane_id.raw(),
@@ -2041,6 +2067,15 @@ mod tests {
                 Some("Coven trial 1 build"),
                 "the handed-over title shows without waiting for a new one"
             );
+            assert_eq!(terminal.claude_transcript.as_ref(), Some(&claude_watch));
+            assert_eq!(
+                terminal
+                    .claude_transcript
+                    .as_ref()
+                    .and_then(|watch| watch.tracker.status()),
+                claude_watch.tracker.status()
+            );
+            assert_eq!(terminal.codex_subagents.as_ref(), Some(&codex_watch));
             terminal.set_detected_state(Some(crate::detect::Agent::Pi), AgentState::Idle);
             assert_eq!(
                 terminal.state, state_before_handoff,
