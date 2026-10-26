@@ -1,0 +1,20 @@
+● Redacted summary of the turn's work, wrapped to the pane width the way Claude Code 2.1.309 drew it. Redacted text, redacted text, redacted text, redacted
+  text, redacted text.
+
+  Redacted:
+  - Redacted item one, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted
+    text.
+  - Redacted item two.
+
+  Redacted closing paragraph, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted text, redacted
+  text, redacted text.
+
+✔ Goal achieved (14h · 62 turns · 439.3k tokens)
+
+✻ Crunched for 1m 8s · done 9:58 AM
+                                                                                                                    Update available! Run: mise upgrade claude
+───────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────── test ─
+❯ 
+────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+  claude-opus-5-5 - read 166.6M cached / 778 uncached - write 798.1K · effort: medium · context: 67%
+  ⏵⏵ bypass permissions on (shift+tab to cycle)

@@ -308,6 +308,7 @@ fn local_clock(unix: i64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::detect::claude_loop::TranscriptGoal;
 
     fn temp_transcript(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -370,6 +371,98 @@ mod tests {
         std::fs::write(dir.join("agent-a1.jsonl"), "{}\n").unwrap();
         assert_eq!(unfinished_subagents(&path), Some(1));
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    /// Anonymized excerpts of real sessions where a met goal never showed:
+    /// each runs from the goal record before the met one to the end of the
+    /// turn that met it.
+    const MET_GOALS: [(&str, &str); 3] = [
+        (
+            "backup work",
+            include_str!("../../tests/fixtures/claude-goal/met-after-backup-work.jsonl"),
+        ),
+        (
+            "deploy",
+            include_str!("../../tests/fixtures/claude-goal/met-after-deploy.jsonl"),
+        ),
+        (
+            "firmware trace",
+            include_str!("../../tests/fixtures/claude-goal/met-after-firmware-trace.jsonl"),
+        ),
+    ];
+    /// The anonymized screen of the firmware trace session right after its
+    /// goal was met.
+    const SCREEN_GOAL_MET: &str =
+        include_str!("../../tests/fixtures/claude-goal/screen-goal-met.txt");
+
+    /// Milliseconds into the day of a transcript line's timestamp.
+    fn line_millis(line: &str) -> Option<u64> {
+        let at = line.find("\"timestamp\":\"")? + "\"timestamp\":\"".len();
+        let clock = line.get(at + 11..at + 23)?; // HH:MM:SS.mmm
+        let part = |range: std::ops::Range<usize>| clock.get(range)?.parse::<u64>().ok();
+        Some(((part(0..2)? * 60 + part(3..5)?) * 60 + part(6..8)?) * 1000 + part(9..12)?)
+    }
+
+    #[test]
+    fn a_goal_met_after_the_idle_read_shows_as_achieved() {
+        let screen = crate::detect::activity::background_activity(
+            Some(crate::detect::Agent::Claude),
+            SCREEN_GOAL_MET,
+        )
+        .unwrap();
+        for (name, transcript) in MET_GOALS {
+            let lines = transcript.lines().collect::<Vec<_>>();
+            let met = lines
+                .iter()
+                .rposition(|line| line.contains("\"goal_status\"") && line.contains("\"met\":true"))
+                .unwrap();
+            let last_message = lines[..met]
+                .iter()
+                .rposition(|line| {
+                    line.starts_with("{\"type\":\"assistant\"")
+                        || line.contains(",\"type\":\"assistant\"")
+                })
+                .unwrap();
+            // The screen goes idle with the last message; the read follows.
+            let read_at = line_millis(lines[last_message]).unwrap() + SETTLE.as_millis() as u64;
+            assert!(
+                line_millis(lines[met]).unwrap() > read_at,
+                "{name}: met before the read"
+            );
+            let written = lines
+                .iter()
+                .take_while(|line| line_millis(line).is_none_or(|at| at <= read_at))
+                .count();
+            assert!(written <= met, "{name}");
+
+            let path = temp_transcript(&format!("goal-{}", name.replace(' ', "-")));
+            std::fs::write(&path, lines[..written].join("\n") + "\n").unwrap();
+            let mut watch = ClaudeTranscriptWatch::new(path.clone());
+            watch.tracker = advance(&path, ClaudeLoopTracker::starting_at(0));
+            watch.goal = watch.tracker.goal();
+            assert_eq!(
+                watch.goal,
+                Some(TranscriptGoal::Active),
+                "{name}: read before the met record"
+            );
+
+            let info = crate::api::schema::BackgroundActivityInfo::from_activity(
+                &screen,
+                Some(&watch),
+                None,
+            )
+            .unwrap();
+            assert!(info.goal_achieved && !info.goal, "{name}: {info:?}");
+
+            // The next read finds the met record and agrees.
+            std::fs::write(&path, transcript).unwrap();
+            assert_eq!(
+                advance(&path, watch.tracker).goal(),
+                Some(TranscriptGoal::Achieved),
+                "{name}"
+            );
+            let _ = std::fs::remove_dir_all(path.parent().unwrap());
+        }
     }
 
     #[test]
