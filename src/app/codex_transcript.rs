@@ -1,5 +1,5 @@
 //! Keeps each Codex pane's running-subagent count current from its session
-//! transcripts (see `codex_subagents`).
+//! transcripts (see `codex_subagents`), for the thread its title names.
 //!
 //! The transcripts are read off the app thread when the agent's status
 //! changes. A subagent can finish without waking its parent, so while any
@@ -13,7 +13,9 @@ use std::time::{Duration, SystemTime};
 use tracing::warn;
 
 use super::App;
-use crate::detect::codex_subagents::{transcript_for_thread, CodexSubagentWatch};
+use crate::detect::codex_subagents::{
+    title_thread_prefix, transcript_for_thread_prefix, CodexSubagentWatch,
+};
 use crate::events::AppEvent;
 use crate::layout::PaneId;
 
@@ -23,46 +25,71 @@ const SETTLE: Duration = Duration::from_millis(400);
 const RECHECK: Duration = Duration::from_secs(5);
 
 impl App {
-    /// The agent's status changed: start watching a Codex pane's thread by
-    /// its session id, and read what changed. An agent that exited took its
-    /// subagents with it.
+    /// The agent's status changed: read what changed in the thread the pane
+    /// shows. An agent that exited took its subagents with it.
     pub(crate) fn codex_agent_status_changed(&mut self, pane_id: PaneId, released: bool) {
-        let Some(terminal) = self.codex_terminal_mut(pane_id) else {
-            return;
-        };
         if released {
+            let Some(terminal) = self.codex_terminal_mut(pane_id) else {
+                return;
+            };
             if terminal.codex_subagents.take().is_some() {
                 terminal.revision = terminal.revision.saturating_add(1);
                 self.emit_codex_pane_updated(pane_id);
             }
             return;
         }
-        if terminal.effective_agent_label() != Some("codex") {
-            return;
+        self.bind_codex_thread_from_title(pane_id);
+        self.scan_codex_subagents(pane_id, SETTLE);
+    }
+
+    /// The pane's title changed: a new thread (`/new`, a resume) moves the
+    /// watch. A spinner turning changes nothing.
+    pub(crate) fn codex_title_changed(&mut self, pane_id: PaneId) {
+        if self.bind_codex_thread_from_title(pane_id) {
+            self.scan_codex_subagents(pane_id, SETTLE);
         }
-        let Some(session) = super::creation::terminal_agent_session_info(terminal)
-            .filter(|session| session.kind == crate::agent_resume::AgentSessionRefKind::Id)
-        else {
-            return;
+    }
+
+    /// Watches the thread whose id the pane's title ends in, when exactly one
+    /// transcript has that id. The title comes from the Codex inside the pane;
+    /// hook reports can come from another pane's environment, so they are not
+    /// used. Returns whether the watch changed.
+    fn bind_codex_thread_from_title(&mut self, pane_id: PaneId) -> bool {
+        let Some(terminal) = self.codex_terminal_mut(pane_id) else {
+            return false;
         };
-        // A new thread (`/new`, a resume) replaces the watch.
-        let suffix = format!("-{}.jsonl", session.value);
+        if terminal.effective_agent_label() != Some("codex") {
+            return false;
+        }
+        let Some(prefix) = terminal
+            .terminal_title
+            .as_deref()
+            .and_then(title_thread_prefix)
+        else {
+            return false;
+        };
+        let needle = format!("-{prefix}");
         let watching = terminal.codex_subagents.as_ref().is_some_and(|watch| {
             watch
                 .path
                 .file_name()
                 .and_then(|name| name.to_str())
-                .is_some_and(|name| name.ends_with(&suffix))
+                .and_then(|name| name.strip_suffix(".jsonl"))
+                .and_then(|name| name.get(name.len().checked_sub(37)?..))
+                .is_some_and(|id| id.starts_with(&needle))
         });
-        if !watching {
-            let Some(path) = codex_sessions_dir()
-                .and_then(|sessions| transcript_for_thread(&sessions, &session.value))
-            else {
-                return;
-            };
-            terminal.codex_subagents = Some(CodexSubagentWatch::new(path));
+        if watching {
+            return false;
         }
-        self.scan_codex_subagents(pane_id, SETTLE);
+        // A new thread's transcript appears with its first prompt.
+        let Some(path) = codex_sessions_dir()
+            .and_then(|sessions| transcript_for_thread_prefix(&sessions, prefix))
+        else {
+            return false;
+        };
+        terminal.codex_subagents = Some(CodexSubagentWatch::new(path));
+        terminal.revision = terminal.revision.saturating_add(1);
+        true
     }
 
     fn scan_codex_subagents(&mut self, pane_id: PaneId, delay: Duration) {

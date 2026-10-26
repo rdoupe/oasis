@@ -11,6 +11,12 @@
 //!
 //! Transcripts live at `<codex home>/sessions/YYYY/MM/DD/rollout-…-<id>.jsonl`,
 //! the date the thread started; its id is a UUIDv7, which carries that time.
+//!
+//! Which thread a pane shows comes from its terminal title. Codex runs hooks
+//! in a shared app-server, with the environment of whichever pane started it,
+//! so a hook cannot say which pane it is for. The title comes from the Codex
+//! inside the pane: with `[tui] terminal_title = [..., "thread-id"]` it ends
+//! in ` | 01a17614-4139-7270-880e-5a530...`, the id cut to 29 characters.
 
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
@@ -228,22 +234,90 @@ fn last_turn_open(path: &Path, len: u64) -> bool {
     len > 0
 }
 
-/// `<sessions>/YYYY/MM/DD/rollout-…-<id>.jsonl`, looked up in the folders for
-/// the UTC day the id's time falls on and the days either side, which covers
-/// any local time zone.
+/// The thread id, or the start of one, that ends a Codex title:
+/// `Fix the login | 01a17614-4139-7270-880e-5a530...`. With no name yet, the
+/// whole title can be the id.
+pub fn title_thread_prefix(title: &str) -> Option<&str> {
+    let tail = title
+        .rsplit_once(" | ")
+        .map_or(title, |(_, tail)| tail)
+        .trim();
+    let id = tail
+        .strip_suffix("...")
+        .or_else(|| tail.strip_suffix('…'))
+        .unwrap_or(tail);
+    is_thread_id_prefix(id).then_some(id)
+}
+
+/// A UUID's start, long enough (two groups and more) to carry its timestamp.
+fn is_thread_id_prefix(id: &str) -> bool {
+    const GROUPS: [usize; 5] = [8, 4, 4, 4, 12];
+    let groups = id.split('-').collect::<Vec<_>>();
+    id.len() >= 23
+        && groups.len() <= GROUPS.len()
+        && groups.iter().enumerate().all(|(index, group)| {
+            let full = GROUPS[index];
+            let last = index + 1 == groups.len();
+            (group.len() == full || (last && !group.is_empty() && group.len() < full))
+                && group.chars().all(|c| c.is_ascii_hexdigit())
+        })
+}
+
+/// The one transcript whose thread id starts with `prefix`, as a title
+/// carries it; none when no transcript or more than one matches.
+pub fn transcript_for_thread_prefix(sessions: &Path, prefix: &str) -> Option<PathBuf> {
+    if !is_thread_id_prefix(prefix) {
+        return None;
+    }
+    let needle = format!("-{prefix}");
+    let mut found = day_folders(sessions, prefix)?.into_iter().flat_map(|dir| {
+        std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .and_then(|name| name.strip_prefix("rollout-"))
+                    .and_then(|name| name.strip_suffix(".jsonl"))
+                    // `<date>T<time>-<id>`: the id is the last 36 characters.
+                    .and_then(|name| name.get(name.len().checked_sub(37)?..))
+                    .is_some_and(|id| id.starts_with(&needle))
+            })
+            .collect::<Vec<_>>()
+    });
+    let first = found.next()?;
+    found.next().is_none().then_some(first)
+}
+
+/// The folders for the UTC day an id's time falls on and the days either
+/// side, which covers any local time zone.
+fn day_folders(sessions: &Path, id: &str) -> Option<Vec<PathBuf>> {
+    let millis = i64::from_str_radix(&id.replace('-', "")[..12], 16).ok()?;
+    let started = time::OffsetDateTime::from_unix_timestamp(millis / 1000).ok()?;
+    Some(
+        [-1i64, 0, 1]
+            .into_iter()
+            .filter_map(|days| started.checked_add(time::Duration::days(days)))
+            .map(|day| {
+                sessions
+                    .join(format!("{:04}", day.year()))
+                    .join(format!("{:02}", u8::from(day.month())))
+                    .join(format!("{:02}", day.day()))
+            })
+            .collect(),
+    )
+}
+
+/// `<sessions>/YYYY/MM/DD/rollout-…-<id>.jsonl`, the day the id's time
+/// falls on.
 pub fn transcript_for_thread(sessions: &Path, id: &str) -> Option<PathBuf> {
     if !is_thread_id(id) {
         return None;
     }
-    let millis = i64::from_str_radix(&id.replace('-', "")[..12], 16).ok()?;
-    let started = time::OffsetDateTime::from_unix_timestamp(millis / 1000).ok()?;
     let suffix = format!("-{id}.jsonl");
-    [-1i64, 0, 1].into_iter().find_map(|days| {
-        let day = started.checked_add(time::Duration::days(days))?;
-        let dir = sessions
-            .join(format!("{:04}", day.year()))
-            .join(format!("{:02}", u8::from(day.month())))
-            .join(format!("{:02}", day.day()));
+    day_folders(sessions, id)?.into_iter().find_map(|dir| {
         std::fs::read_dir(dir)
             .ok()?
             .flatten()
@@ -373,6 +447,58 @@ mod tests {
         assert_eq!(transcript_for_thread(&sessions, CHILD), Some(path));
         assert_eq!(transcript_for_thread(&sessions, PARENT), None);
         assert_eq!(transcript_for_thread(&sessions, "../../etc"), None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reads_the_thread_id_a_codex_title_ends_in() {
+        // Captured from a live Codex CLI 0.164.0 title.
+        let named = "⠦ Spawn sleep command subagent | 01a17614-4139-7270-880e-5a530...";
+        assert_eq!(
+            title_thread_prefix(named),
+            Some("01a17614-4139-7270-880e-5a530")
+        );
+        let unnamed = "01a17614-4139-7270-880e-5a530ea4286e | 01a17614-4139-7270-880e-5a530...";
+        assert_eq!(
+            title_thread_prefix(unnamed),
+            Some("01a17614-4139-7270-880e-5a530")
+        );
+        assert_eq!(title_thread_prefix(CHILD), Some(CHILD));
+        for title in [
+            "Fix the login | main",
+            "⠦ Working",
+            "a | 01a17614",
+            "x | 01a17614-zzzz-7270",
+        ] {
+            assert_eq!(title_thread_prefix(title), None, "{title}");
+        }
+    }
+
+    #[test]
+    fn a_title_prefix_finds_only_a_unique_transcript() {
+        let root = scratch("prefix");
+        let sessions = root.join("sessions");
+        let path = write_child(&sessions, &[STARTED]);
+        let prefix = &CHILD[..29];
+        assert_eq!(
+            transcript_for_thread_prefix(&sessions, prefix),
+            Some(path.clone())
+        );
+        let twin = path.with_file_name(format!(
+            "rollout-2026-10-25T18-43-51-{}ffffff.jsonl",
+            &CHILD[..30]
+        ));
+        std::fs::write(&twin, "").unwrap();
+        assert_eq!(
+            transcript_for_thread_prefix(&sessions, prefix),
+            None,
+            "ambiguous"
+        );
+        assert_eq!(
+            transcript_for_thread_prefix(&sessions, &CHILD[..8]),
+            None,
+            "too short"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

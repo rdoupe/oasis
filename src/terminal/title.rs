@@ -18,6 +18,17 @@ pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
     } else {
         title
     };
+    // Codex can end its title in the thread's id (` | 01a17614-…`), which
+    // Oasis reads but does not show; a thread with no name yet shows its id
+    // as the name too.
+    use crate::detect::codex_subagents::title_thread_prefix;
+    let stripped = match stripped.rsplit_once(" | ") {
+        Some((name, tail)) if title_thread_prefix(tail).is_some() => name.trim(),
+        _ => stripped,
+    };
+    if title_thread_prefix(stripped).is_some() {
+        return None;
+    }
 
     (!stripped.is_empty()).then(|| stripped.to_string())
 }
@@ -25,6 +36,29 @@ pub(crate) fn stripped_terminal_title(title: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::stripped_terminal_title;
+
+    #[test]
+    fn hides_the_thread_id_a_codex_title_ends_in() {
+        // Captured from a live Codex CLI 0.164.0 title.
+        assert_eq!(
+            stripped_terminal_title(
+                "⠦ Spawn sleep command subagent | 01a17614-4139-7270-880e-5a530..."
+            )
+            .as_deref(),
+            Some("Spawn sleep command subagent")
+        );
+        assert_eq!(
+            stripped_terminal_title(
+                "01a17614-4139-7270-880e-5a530ea4286e | 01a17614-4139-7270-880e-5a530..."
+            ),
+            None,
+            "a thread with no name yet"
+        );
+        assert_eq!(
+            stripped_terminal_title("build | main").as_deref(),
+            Some("build | main")
+        );
+    }
 
     #[test]
     fn strips_one_recognized_leading_activity_glyph() {

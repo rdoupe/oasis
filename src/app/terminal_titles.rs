@@ -57,6 +57,7 @@ impl App {
 
         let mut changes = TerminalTitleChanges::default();
         let mut publish = Vec::new();
+        let mut codex_titles = Vec::new();
         for (ws_idx, pane_id, terminal_id, title) in observations {
             let Some(terminal) = self.state.terminals.get_mut(&terminal_id) else {
                 continue;
@@ -67,10 +68,17 @@ impl App {
             if change.stripped_changed {
                 publish.push((ws_idx, pane_id));
             }
+            if change.raw_changed && terminal.effective_agent_label() == Some("codex") {
+                codex_titles.push(pane_id);
+            }
         }
 
         for (ws_idx, pane_id) in publish {
             self.emit_pane_updated(ws_idx, pane_id);
+        }
+        // A Codex title names the thread its pane shows.
+        for pane_id in codex_titles {
+            self.codex_title_changed(pane_id);
         }
 
         changes
