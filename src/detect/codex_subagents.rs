@@ -485,6 +485,51 @@ mod tests {
         let _ = std::fs::remove_dir_all(root);
     }
 
+    /// Codex files a transcript under the local date it started, which is
+    /// up to a day either side of the UTC date its id carries (22:43 UTC on
+    /// the 25th here).
+    #[test]
+    fn finds_a_transcript_filed_a_day_either_side_of_its_ids_utc_date() {
+        let root = scratch("days");
+        let sessions = root.join("sessions");
+        for (day, found) in [("24", true), ("26", true), ("27", false), ("23", false)] {
+            let _ = std::fs::remove_dir_all(&sessions);
+            let dir = sessions.join("2026/10").join(day);
+            std::fs::create_dir_all(&dir).unwrap();
+            let path = dir.join(format!("rollout-2026-10-{day}T00-43-50-{CHILD}.jsonl"));
+            std::fs::write(&path, format!("{STARTED}\n")).unwrap();
+            let expected = found.then_some(path);
+            assert_eq!(transcript_for_thread(&sessions, CHILD), expected, "{day}");
+            assert_eq!(
+                transcript_for_thread_prefix(&sessions, &CHILD[..29]),
+                expected,
+                "{day}, by a title's prefix"
+            );
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// A subagent whose open turn wrote nothing for 30 minutes died with an
+    /// earlier process; one quiet for less still runs.
+    #[test]
+    fn an_open_turn_goes_stale_after_thirty_minutes() {
+        let root = scratch("stale-edge");
+        let sessions = root.join("sessions");
+        let parent = root.join("parent.jsonl");
+        std::fs::write(&parent, format!("{}\n", spawn(CHILD))).unwrap();
+        let child = write_child(&sessions, &[STARTED]);
+        let written = std::fs::metadata(&child).unwrap().modified().unwrap();
+        let minute = Duration::from_secs(60);
+        let running = |idle: Duration| {
+            let mut watch = CodexSubagentWatch::new(parent.clone());
+            watch.advance(&sessions, written + idle);
+            watch.running
+        };
+        assert_eq!(running(29 * minute), Some(1));
+        assert_eq!(running(31 * minute), Some(0));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
     #[test]
     fn reads_the_thread_id_a_codex_title_ends_in() {
         // Captured from a live Codex CLI 0.164.0 title.

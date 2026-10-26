@@ -376,6 +376,85 @@ mod tests {
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
+    /// The label is the armed wakeup's own time, `delaySeconds` after the
+    /// record that armed it, on the local clock: a real session's first
+    /// wakeup, shown in whole-hour and half-hour zones.
+    #[cfg(unix)]
+    #[test]
+    fn the_next_wakeup_label_is_its_local_time() {
+        let transcript = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/claude-corpus/loop-self-paced-stopped-then-goal-met")
+            .join("transcript.jsonl");
+        let lines = std::fs::read_to_string(transcript)
+            .unwrap()
+            .lines()
+            .take(25)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        // When the excerpt's last wakeup is due, read straight from its record.
+        let (stamp, delay) = lines
+            .iter()
+            .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+            .filter_map(|entry| {
+                let blocks = entry.pointer("/message/content")?.as_array()?.clone();
+                let armed = blocks.iter().find(|block| {
+                    block.get("name").and_then(serde_json::Value::as_str) == Some("ScheduleWakeup")
+                })?;
+                let delay = armed.pointer("/input/delaySeconds")?.as_f64()? as i64;
+                let stamp = entry.get("timestamp")?.as_str()?.to_owned();
+                Some((stamp, delay))
+            })
+            .next_back()
+            .expect("the excerpt arms a wakeup");
+        let date = time::Date::from_calendar_date(
+            stamp[0..4].parse().unwrap(),
+            time::Month::try_from(stamp[5..7].parse::<u8>().unwrap()).unwrap(),
+            stamp[8..10].parse().unwrap(),
+        )
+        .unwrap();
+        let clock = time::Time::from_hms(
+            stamp[11..13].parse().unwrap(),
+            stamp[14..16].parse().unwrap(),
+            stamp[17..19].parse().unwrap(),
+        )
+        .unwrap();
+        let due = time::PrimitiveDateTime::new(date, clock)
+            .assume_utc()
+            .unix_timestamp()
+            + delay;
+
+        let path = temp_transcript("wakeup-label");
+        std::fs::write(&path, lines.join("\n") + "\n").unwrap();
+        let tracker = advance(&path, ClaudeLoopTracker::starting_at(0));
+        assert_eq!(tracker.status(), Some(LoopStatus::NextWakeup(due)));
+
+        extern "C" {
+            // POSIX; the libc crate leaves it out.
+            fn tzset();
+        }
+        let _env = crate::integration::integration_env_lock();
+        let previous = std::env::var_os("TZ");
+        let mut labels = Vec::new();
+        for (zone, offset_minutes) in [("UTC0", 0), ("EST5", -300), ("IST-5:30", 330)] {
+            std::env::set_var("TZ", zone);
+            // SAFETY: tzset only rereads TZ; the lock keeps other tests off it.
+            unsafe { tzset() };
+            let local = (due + offset_minutes * 60).rem_euclid(86_400);
+            let expected = format!("{:02}:{:02}", local / 3600, local % 3600 / 60);
+            labels.push((zone, loop_label(tracker.status().unwrap()), expected));
+        }
+        match previous {
+            Some(value) => std::env::set_var("TZ", value),
+            None => std::env::remove_var("TZ"),
+        }
+        // SAFETY: as above.
+        unsafe { tzset() };
+        for (zone, label, expected) in labels {
+            assert_eq!(label, expected, "{zone}");
+        }
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
     #[test]
     fn local_clock_formats_hours_and_minutes() {
         let clock = local_clock(1_761_282_000).unwrap();

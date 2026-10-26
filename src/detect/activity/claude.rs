@@ -123,6 +123,26 @@ mod tests {
         );
     }
 
+    #[test]
+    fn reads_mcp_task_counts_from_the_mode_line() {
+        let read = |mode_line: &str| {
+            let content = screen(&["  claude-opus-5-5 - context: 41%", mode_line]);
+            background_activity(Some(Agent::Claude), &content).unwrap()
+        };
+        let activity = read("  ⏵⏵ auto mode on · 1 shell · 2 MCP tasks");
+        assert_eq!((activity.shells, activity.mcp_tasks), (1, 2));
+        assert_eq!(read("  ⏸ plan mode on · 1 MCP task").mcp_tasks, 1);
+        assert_eq!(read("  ? for shortcuts · 3 MCP tasks").mcp_tasks, 3);
+        // Only the mode line counts; a statusline above it can say anything.
+        let content = screen(&["  my-statusline · 4 MCP tasks", "  ⏵⏵ auto mode on"]);
+        assert_eq!(
+            background_activity(Some(Agent::Claude), &content)
+                .unwrap()
+                .mcp_tasks,
+            0
+        );
+    }
+
     /// Captured from a live Claude Code 2.1.310 pane whose session ran no
     /// subagent while its agent list showed one.
     #[test]

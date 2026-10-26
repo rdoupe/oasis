@@ -898,6 +898,42 @@ mod tests {
         assert!(!info.goal);
     }
 
+    /// Claude keeps a finished subagent's row on screen with its timer
+    /// stopped, so the rows count only up to the subagents whose records are
+    /// unfinished; a record that died with an earlier process has no row.
+    #[test]
+    fn subagent_rows_are_capped_by_unfinished_records() {
+        let screen = BackgroundActivity {
+            agents: 2,
+            shells: 1,
+            ..BackgroundActivity::default()
+        };
+        let shown = |unfinished: Option<u16>| {
+            let mut watch = ClaudeTranscriptWatch::new("/session.jsonl".into());
+            watch.unfinished_subagents = unfinished;
+            BackgroundActivityInfo::from_activity(&screen, Some(&watch), None)
+                .unwrap()
+                .agents
+        };
+        assert_eq!(shown(Some(0)), 0, "both rows are finished subagents");
+        assert_eq!(shown(Some(1)), 1, "one row is a finished subagent");
+        assert_eq!(shown(Some(5)), 2, "records of dead processes have no row");
+        assert_eq!(shown(None), 2, "records not read yet");
+        let info = BackgroundActivityInfo::from_activity(
+            &BackgroundActivity {
+                agents: 1,
+                ..BackgroundActivity::default()
+            },
+            Some(&{
+                let mut watch = ClaudeTranscriptWatch::new("/session.jsonl".into());
+                watch.unfinished_subagents = Some(0);
+                watch
+            }),
+            None,
+        );
+        assert_eq!(info, None, "no robot for a finished subagent's row");
+    }
+
     #[test]
     fn the_transcript_goal_wins_otherwise() {
         let screen = BackgroundActivity {

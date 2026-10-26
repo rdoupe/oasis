@@ -604,6 +604,12 @@ mod tests {
                 r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>done</task-notification>"}}"#,
                 r#"{"type":"user","scheduledTaskId":"c1b98c2c","message":{"content":"<command-name>/loop</command-name>"}}"#,
                 r#"{"type":"user","message":{"content":"<task-notification>done</task-notification>"}}"#,
+                // Shapes from a stock Claude Code 2.1.296 transcript: the
+                // prompt a goal's stop hook writes, and a message from another
+                // session (its isMeta flag left off, so its origin alone says
+                // nobody typed it).
+                r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"A session-scoped Stop hook is now active with condition: \"ship it\"."}}"#,
+                r#"{"type":"user","origin":{"kind":"peer"},"message":{"content":"the build is green"}}"#,
             ],
         );
         assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
