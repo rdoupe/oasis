@@ -194,16 +194,25 @@ impl ClaudeLoopTracker {
     }
 
     /// A prompt typed after a goal was achieved ends the achieved notice.
+    /// Prompts Claude makes itself (a task notification, a scheduled loop
+    /// turn, the summary an idle compaction writes) are not seen by anyone.
     fn prompt_entry(&mut self, entry: &Value) {
-        if self.goal != Some(TranscriptGoal::Achieved)
-            || entry.get("isMeta").and_then(Value::as_bool) == Some(true)
+        let flag = |name: &str| entry.get(name).and_then(Value::as_bool) == Some(true);
+        if self.goal != Some(TranscriptGoal::Achieved) || flag("isMeta") || flag("isCompactSummary")
         {
             return;
         }
-        if entry
-            .pointer("/message/content")
-            .is_some_and(Value::is_string)
-        {
+        let Some(text) = entry.pointer("/message/content").and_then(Value::as_str) else {
+            return;
+        };
+        let typed = match entry.pointer("/origin/kind").and_then(Value::as_str) {
+            Some(kind) => kind == "human",
+            // Older versions record no origin.
+            None => {
+                entry.get("scheduledTaskId").is_none() && !text.starts_with("<task-notification>")
+            }
+        };
+        if typed {
             self.goal = Some(TranscriptGoal::None);
         }
     }
@@ -511,6 +520,27 @@ mod tests {
         feed(&mut tracker, &[GOAL_MET, TURN_END, TOOL_RESULT]);
         assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
         feed(&mut tracker, &[PROMPT]);
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
+    }
+
+    #[test]
+    fn only_a_typed_prompt_ends_a_met_goal() {
+        let mut tracker = ClaudeLoopTracker::default();
+        feed(
+            &mut tracker,
+            &[
+                GOAL_MET,
+                r#"{"type":"user","isCompactSummary":true,"message":{"content":"This session is being continued"}}"#,
+                r#"{"type":"user","origin":{"kind":"task-notification"},"message":{"content":"<task-notification>done</task-notification>"}}"#,
+                r#"{"type":"user","scheduledTaskId":"c1b98c2c","message":{"content":"<command-name>/loop</command-name>"}}"#,
+                r#"{"type":"user","message":{"content":"<task-notification>done</task-notification>"}}"#,
+            ],
+        );
+        assert_eq!(tracker.goal(), Some(TranscriptGoal::Achieved));
+        feed(
+            &mut tracker,
+            &[r#"{"type":"user","origin":{"kind":"human"},"message":{"content":"next"}}"#],
+        );
         assert_eq!(tracker.goal(), Some(TranscriptGoal::None));
     }
 
