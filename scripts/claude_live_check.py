@@ -567,6 +567,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--report-to-oasis", action="store_true",
                         help="on failure, open a tab in the user's Oasis with Claude briefed to fix it")
     parser.add_argument("--force", action="store_true", help="check again a version already checked")
+    parser.add_argument("--tell-tty", type=Path,
+                        help="on failure, also print an error to this terminal (the one that installed Claude)")
     args = parser.parse_args(argv)
 
     version = args.claude or latest_installed_claude()
@@ -588,9 +590,28 @@ def main(argv: list[str] | None = None) -> int:
         report.add("check run", "fail", f"{type(error).__name__}: {error}")
     (out / "report.md").write_text(report.markdown())
     print(out / "report.md")
+    tab = ""
     if report.failed and args.report_to_oasis:
-        report_to_oasis(args, report, out)
+        try:
+            report_to_oasis(args, report, out)
+            tab = "; a tab to fix Oasis opened in the oasis workspace"
+        except Exception as error:
+            tab = f"; opening a tab to fix Oasis failed too ({type(error).__name__}: {error})"
+    if report.failed and args.tell_tty:
+        tell_tty(args.tell_tty, report, out, tab)
     return 1 if report.failed else 0
+
+
+def tell_tty(tty: Path, report: Report, out: Path, tab: str) -> None:
+    """Prints a red error to the terminal that ran the upgrade, if it is still open."""
+    failed = [s for s, o, _ in report.results if o == "fail"]
+    message = (f"\a\r\n\033[1;41;97m ERROR \033[0m \033[1;31mOasis check of Claude {report.version} FAILED: "
+               f"{', '.join(failed)}{tab}. Report: {out / 'report.md'}\033[0m\r\n")
+    try:
+        with open(tty, "w") as terminal:
+            terminal.write(message)
+    except OSError:
+        pass
 
 
 if __name__ == "__main__":
