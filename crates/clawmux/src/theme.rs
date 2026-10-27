@@ -208,6 +208,15 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-tabs button.tab-add {{ background: none; border: none; box-shadow: none; min-height: 0; padding: 1px 8px; border-radius: 6px; color: alpha({fg}, 0.55); }}
 .clawmux-tabs button.tab-add:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
 .clawmux-banner {{ background: {raised}; color: {fg}; padding: 6px 12px; }}
+.clawmux-tabs button.sidebar-toggle {{ background: none; border: none; box-shadow: none; min-height: 0; padding: 1px 9px; border-radius: 6px; color: alpha({fg}, 0.6); }}
+.clawmux-tabs button.sidebar-toggle:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
+.clawmux-scrim {{ background: alpha(black, 0.45); }}
+.clawmux-drawer .clawmux-sidebar {{ min-width: 300px; box-shadow: 4px 0 18px alpha(black, 0.5); }}
+.touch .clawmux-sidebar row {{ padding: 11px 10px; }}
+.touch .clawmux-tabs {{ padding: 4px 6px; }}
+.touch .clawmux-tabs button.sidebar-toggle {{ min-width: 44px; min-height: 38px; font-size: 1.35em; }}
+.touch .clawmux-tabs .tab-pill {{ min-height: 38px; }}
+.touch .clawmux-tabs button.tab-add {{ min-width: 44px; min-height: 38px; }}
 .clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
 .clawmux-sidebar separator.section-divider {{ background: {raised}; min-height: 1px; margin: 10px 12px 2px; }}
 .clawmux-sidebar row.heading-row:hover {{ background: transparent; }}

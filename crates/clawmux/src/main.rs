@@ -6,6 +6,7 @@
 mod app;
 mod browser;
 mod conn;
+mod drawer;
 mod grid;
 mod keys;
 mod logos;

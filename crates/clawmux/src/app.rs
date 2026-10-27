@@ -21,6 +21,7 @@ use oasis_core::embed::wire::{
 use serde_json::json;
 
 use crate::conn::{Conn, Geometry, Machine};
+use crate::drawer::Drawer;
 use crate::grid::Grid;
 use crate::keys::{self, Key};
 use crate::sidebar::{dot, SidebarView, Target};
@@ -38,6 +39,7 @@ pub struct App {
     snapshot: RefCell<Option<Box<ClientShellSnapshot>>>,
     keys: RefCell<KeyEngine>,
     sidebar: Rc<SidebarView>,
+    drawer: Rc<Drawer>,
     model: RefCell<Option<SidebarModel>>,
     prefs: RefCell<SidebarPrefs>,
     previous_pane: RefCell<Option<String>>,
@@ -93,7 +95,6 @@ impl App {
         let sidebar = SidebarView::new();
 
         let tabs = gtk::Box::new(gtk::Orientation::Horizontal, 2);
-        tabs.add_css_class("clawmux-tabs");
         let banner_label = gtk::Label::new(None);
         banner_label.set_xalign(0.0);
         banner_label.set_wrap(true);
@@ -104,13 +105,16 @@ impl App {
             .child(&banner_label)
             .build();
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
-        main.append(&tabs);
+        let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+        header.add_css_class("clawmux-tabs");
+        tabs.set_hexpand(true);
+        let drawer = Drawer::new(&sidebar.root, &main);
+        header.append(&drawer.button);
+        header.append(&tabs);
+        main.append(&header);
         main.append(&banner);
         main.append(&view);
-        let root = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-        root.append(&sidebar.root);
-        root.append(&main);
-        window.set_child(Some(&root));
+        window.set_child(Some(&drawer.root));
 
         let app = Rc::new(Self {
             application: application.clone(),
@@ -122,6 +126,7 @@ impl App {
             snapshot: RefCell::new(None),
             keys: RefCell::new(KeyEngine::new(oasis_core::embed::keys::load())),
             sidebar,
+            drawer,
             model: RefCell::new(None),
             prefs: RefCell::new(SidebarPrefs::load()),
             previous_pane: RefCell::new(None),
@@ -176,6 +181,17 @@ impl App {
             app.application.quit();
             glib::Propagation::Proceed
         });
+
+        for property in [
+            "default-width",
+            "default-height",
+            "maximized",
+            "fullscreened",
+        ] {
+            let app = self.clone();
+            self.window
+                .connect_notify_local(Some(property), move |_, _| app.fit_sidebar());
+        }
 
         let app = self.clone();
         self.window.connect_is_active_notify(move |window| {
@@ -344,11 +360,21 @@ impl App {
     }
 
     fn on_resize(self: &Rc<Self>, _cols: u16, _rows: u16) {
+        self.fit_sidebar();
         if let Some(conn) = self.conn.borrow().as_ref() {
             conn.resize(&self.geometry());
             return;
         }
         self.connect();
+    }
+
+    /// Moves the sidebar between beside the terminal and a drawer over it, after the
+    /// current layout pass (a widget can't change parents while it is being allocated).
+    fn fit_sidebar(self: &Rc<Self>) {
+        let app = self.clone();
+        glib::idle_add_local_once(move || {
+            app.drawer.fit(app.window.width(), app.window.height());
+        });
     }
 
     /// Starts oasis's client core; from here the GTK loop wakes only on its wake fd.
@@ -1024,10 +1050,7 @@ impl App {
                     });
                 }
             }
-            KeybindAction::ToggleSidebar => self
-                .sidebar
-                .root
-                .set_visible(!self.sidebar.root.is_visible()),
+            KeybindAction::ToggleSidebar => self.drawer.toggle(),
             KeybindAction::Detach => self.put_away(),
             KeybindAction::EnterResizeMode => {
                 self.keys.borrow_mut().set_mode(KeyMode::Resize);
@@ -1072,10 +1095,12 @@ impl App {
                     return;
                 }
                 self.request("workspace.focus", json!({ "workspace_id": workspace_id }));
+                self.drawer.close();
             }
             Target::Agent { endpoint, pane_id } => {
                 self.switch_machine_str(endpoint);
                 self.request("pane.focus", json!({ "pane_id": pane_id }));
+                self.drawer.close();
             }
             Target::GroupToggle {
                 endpoint,
@@ -1553,7 +1578,7 @@ fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
                     if c.symbol.is_empty() {
                         " ".into()
                     } else {
-                        c.symbol.clone()
+                        c.symbol.to_string()
                     },
                 )
             })
@@ -1660,7 +1685,7 @@ mod tests {
         let cells: Vec<CellData> = text
             .chars()
             .map(|c| CellData {
-                symbol: c.to_string(),
+                symbol: c.into(),
                 fg: 0,
                 bg: 0,
                 modifier: 0,
