@@ -37,6 +37,8 @@ pub struct Drawer {
     drawer: Cell<bool>,
     /// Whether the inline sidebar is shown in a wide window (the toggle keybind).
     inline_shown: Cell<bool>,
+    /// A touchscreen keeps the big touch targets in either orientation.
+    touch: Cell<bool>,
 }
 
 impl Drawer {
@@ -82,6 +84,7 @@ impl Drawer {
             button,
             drawer: Cell::new(false),
             inline_shown: Cell::new(true),
+            touch: Cell::new(false),
         });
         drawer.wire();
         drawer
@@ -155,17 +158,29 @@ impl Drawer {
         }
         self.drawer.set(drawer);
         self.sidebar.unparent();
+        self.style_for_touch(drawer || self.touch.get());
         if drawer {
             self.revealer.set_child(Some(&self.sidebar));
             self.sidebar.set_visible(true);
-            self.root.add_css_class("touch");
             self.set_open(false);
         } else {
             self.revealer.set_child(None::<&gtk::Widget>);
             self.inline.append(&self.sidebar);
             self.sidebar.set_visible(self.inline_shown.get());
-            self.root.remove_css_class("touch");
             self.set_open(false);
+        }
+    }
+
+    pub fn set_touch(&self, touch: bool) {
+        self.touch.set(touch);
+        self.style_for_touch(touch || self.drawer.get());
+    }
+
+    fn style_for_touch(&self, touch: bool) {
+        if touch {
+            self.root.add_css_class("touch");
+        } else {
+            self.root.remove_css_class("touch");
         }
     }
 

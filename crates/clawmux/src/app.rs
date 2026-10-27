@@ -40,6 +40,10 @@ pub struct App {
     keys: RefCell<KeyEngine>,
     sidebar: Rc<SidebarView>,
     drawer: Rc<Drawer>,
+    /// The on-screen keyboard's input context, on a touchscreen.
+    keyboard: RefCell<Option<gtk::IMMulticontext>>,
+    /// The font size when a pinch began.
+    pinch_base: Cell<f64>,
     model: RefCell<Option<SidebarModel>>,
     prefs: RefCell<SidebarPrefs>,
     previous_pane: RefCell<Option<String>>,
@@ -65,6 +69,11 @@ enum DragState {
     },
     Forward {
         button: ClientMouseButton,
+    },
+    /// A finger on the terminal: it scrolls once it moves, and taps otherwise.
+    Finger {
+        last_y: f64,
+        moved: bool,
     },
 }
 
@@ -127,6 +136,8 @@ impl App {
             keys: RefCell::new(KeyEngine::new(oasis_core::embed::keys::load())),
             sidebar,
             drawer,
+            keyboard: RefCell::new(None),
+            pinch_base: Cell::new(0.0),
             model: RefCell::new(None),
             prefs: RefCell::new(SidebarPrefs::load()),
             previous_pane: RefCell::new(None),
@@ -144,6 +155,7 @@ impl App {
             _monitor: RefCell::new(None),
         });
         app.wire();
+        app.wire_touch();
         app.update_status();
         app
     }
@@ -274,6 +286,14 @@ impl App {
         drag.set_button(0);
         let app = self.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
+            if crate::touch::from_finger(gesture) {
+                app.pointer.set((x, y));
+                app.drag.set(Some(DragState::Finger {
+                    last_y: y,
+                    moved: false,
+                }));
+                return;
+            }
             let button = gesture.current_button();
             let state = gesture.current_event_state();
             app.mouse_down(button, x, y, state);
@@ -283,6 +303,19 @@ impl App {
             let Some((sx, sy)) = gesture.start_point() else {
                 return;
             };
+            if let Some(DragState::Finger { last_y, moved }) = app.drag.get() {
+                if !moved && dx.hypot(dy) < crate::touch::TAP_SLOP {
+                    return;
+                }
+                let y = sy + dy;
+                let lines = crate::touch::scrolled_lines(last_y, y, app.view.metrics().cell_h);
+                app.drag.set(Some(DragState::Finger {
+                    last_y: y,
+                    moved: true,
+                }));
+                app.on_scroll(lines, gesture.current_event_state());
+                return;
+            }
             app.mouse_drag(sx + dx, sy + dy, gesture.current_event_state());
         });
         let app = self.clone();
@@ -290,6 +323,15 @@ impl App {
             let Some((sx, sy)) = gesture.start_point() else {
                 return;
             };
+            if let Some(DragState::Finger { moved, .. }) = app.drag.take() {
+                if !moved {
+                    // A tap clicks, so apps that read the mouse and pane focus still work.
+                    let state = gesture.current_event_state();
+                    app.mouse_down(gdk::BUTTON_PRIMARY, sx, sy, state);
+                    app.mouse_up(sx, sy, state);
+                }
+                return;
+            }
             app.mouse_up(sx + dx, sy + dy, gesture.current_event_state());
         });
         self.view.add_controller(drag);
@@ -301,6 +343,43 @@ impl App {
             glib::Propagation::Stop
         });
         self.view.add_controller(scroll);
+    }
+
+    /// On a touchscreen: bigger touch targets, the on-screen keyboard, and pinch to
+    /// resize the font.
+    fn wire_touch(self: &Rc<Self>) {
+        if !crate::touch::has_touchscreen() {
+            return;
+        }
+        self.drawer.set_touch(true);
+        let app = self.clone();
+        let keyboard = crate::touch::keyboard_for(&self.view, move |text| {
+            if let (Some(pane_id), Some(conn)) = (app.focused_pane_id(), app.conn.borrow().as_ref())
+            {
+                conn.pane_input(
+                    &pane_id,
+                    vec![ClientPaneInputEvent::TextCommit(text.to_owned())],
+                );
+            }
+        });
+        self.keyboard.replace(Some(keyboard));
+
+        let pinch = gtk::GestureZoom::new();
+        let app = self.clone();
+        pinch.connect_begin(move |_, _| {
+            // The first finger began a scroll; a pinch is not one.
+            app.drag.set(None);
+            app.pinch_base.set(app.theme.borrow().font_size);
+        });
+        let app = self.clone();
+        pinch.connect_scale_changed(move |_, scale| {
+            let size = crate::touch::pinched_size(app.pinch_base.get(), scale);
+            if size != app.theme.borrow().font_size {
+                crate::theme::save_font_size(Some(size));
+                app.reload_theme();
+            }
+        });
+        self.view.add_controller(pinch);
     }
 
     fn wire_theme_monitor(self: &Rc<Self>) {
@@ -1438,7 +1517,7 @@ impl App {
                     cols: bounds.0,
                 }));
             }
-            None => {}
+            Some(DragState::Finger { .. }) | None => {}
         }
     }
 
@@ -1462,7 +1541,7 @@ impl App {
                     }
                 }
             }
-            None => {}
+            Some(DragState::Finger { .. }) | None => {}
         }
     }
 

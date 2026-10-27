@@ -13,6 +13,7 @@ mod logos;
 mod sidebar;
 mod termview;
 mod theme;
+mod touch;
 
 use std::cell::RefCell;
 use std::rc::Rc;
