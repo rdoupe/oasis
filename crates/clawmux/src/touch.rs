@@ -19,10 +19,17 @@ pub fn has_touchscreen() -> bool {
 
 /// Whether the event that started a gesture came from a finger.
 pub fn from_finger(gesture: &impl IsA<gtk::EventController>) -> bool {
-    gesture
-        .current_event()
-        .and_then(|event| event.device())
-        .is_some_and(|device| device.source() == gdk::InputSource::Touchscreen)
+    gesture.current_event().is_some_and(|event| {
+        matches!(
+            event.event_type(),
+            gdk::EventType::TouchBegin
+                | gdk::EventType::TouchUpdate
+                | gdk::EventType::TouchEnd
+                | gdk::EventType::TouchCancel
+        ) || event
+            .device()
+            .is_some_and(|device| device.source() == gdk::InputSource::Touchscreen)
+    })
 }
 
 /// The font size a pinch of `scale` makes of `base`, in half points.

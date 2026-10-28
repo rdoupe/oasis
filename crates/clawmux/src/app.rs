@@ -293,7 +293,16 @@ impl App {
         drag.set_button(0);
         let app = self.clone();
         drag.connect_drag_begin(move |gesture, x, y| {
-            if crate::touch::from_finger(gesture) {
+            let finger = crate::touch::from_finger(gesture);
+            debug(|| {
+                let event = gesture.current_event();
+                format!(
+                    "press finger={finger} event={:?} source={:?}",
+                    event.as_ref().map(|e| e.event_type()),
+                    event.and_then(|e| e.device()).map(|d| d.source())
+                )
+            });
+            if finger {
                 app.pointer.set((x, y));
                 app.drag.set(Some(DragState::Finger {
                     last_y: y,
