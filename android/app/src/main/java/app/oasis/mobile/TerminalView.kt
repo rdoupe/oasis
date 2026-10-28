@@ -3,12 +3,15 @@ package app.oasis.mobile
 import android.annotation.SuppressLint
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ActivityNotFoundException
 import android.content.Context
+import android.content.Intent
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.Typeface
+import android.net.Uri
 import android.text.InputType
 import android.util.TypedValue
 import android.view.ActionMode
@@ -339,6 +342,21 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         context.getSystemService(InputMethodManager::class.java).showSoftInput(this, 0)
     }
 
+    /** Opens a link the bridge found under a tap; false when nothing can handle it. */
+    private fun openLink(link: String): Boolean {
+        val uri = Uri.parse(link)
+        if (uri.scheme?.lowercase() !in setOf("http", "https", "mailto")) return false
+        val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+        if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        return try {
+            context.startActivity(intent)
+            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+            true
+        } catch (_: ActivityNotFoundException) {
+            false
+        }
+    }
+
     fun toggleKeyboard() {
         val shown = rootWindowInsets?.isVisible(android.view.WindowInsets.Type.ime()) == true
         val imm = context.getSystemService(InputMethodManager::class.java)
@@ -363,7 +381,15 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
                     return true
                 }
                 val (col, row) = cellAt(e.x, e.y)
-                if (core.handle != 0L) Native.tap(core.handle, col, row)
+                if (core.handle == 0L) {
+                    showKeyboard()
+                    return true
+                }
+                // A link opens in the phone's browser; the tap is not passed on, so the
+                // remote app doesn't also act on it.
+                val link = Native.linkAt(core.handle, col, row)
+                if (link != null && openLink(link)) return true
+                Native.tap(core.handle, col, row)
                 showKeyboard()
                 return true
             }

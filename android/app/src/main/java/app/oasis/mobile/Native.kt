@@ -24,6 +24,7 @@ object Native {
     @JvmStatic external fun scroll(handle: Long, lines: Int, col: Int, row: Int)
     @JvmStatic external fun tap(handle: Long, col: Int, row: Int)
     @JvmStatic external fun wordAt(handle: Long, col: Int, row: Int): IntArray
+    @JvmStatic external fun linkAt(handle: Long, col: Int, row: Int): String?
     @JvmStatic external fun selectionText(handle: Long, col0: Int, row0: Int, col1: Int, row1: Int, left: Int, right: Int): String
 }
 

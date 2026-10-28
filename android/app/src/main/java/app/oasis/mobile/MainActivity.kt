@@ -233,6 +233,8 @@ private fun AgentsScreen(
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Background),
         )
+        val offTailnet = machines.filter { core.waitsForTailscale(it) }
+        if (offTailnet.isNotEmpty()) TailscaleBanner(offTailnet)
         if (starting || machines.isEmpty()) {
             Text(
                 if (starting) "Setting up ssh…" else "Connecting…",
@@ -240,30 +242,38 @@ private fun AgentsScreen(
                 modifier = Modifier.padding(24.dp),
             )
         }
-        val offTailnet = machines.filter { core.waitsForTailscale(it) }
-        if (offTailnet.isNotEmpty()) TailscaleBanner(offTailnet)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
+            // Every agent on every machine first, in the order the bridge sends them,
+            // which is also the order swiping in the terminal follows.
+            if (agents.isNotEmpty()) {
+                item(key = "agents") { SectionHeader("Agents") }
+                items(agents, key = { "a:" + it.endpoint + it.pane }) {
+                    AgentCard(it, place = "${it.machine} · ${spaceName(core, it)}".trimEnd(' ', '·')) { onAgent(it) }
+                }
+            }
             for (machine in machines) {
                 item(key = "m:" + machine.id) {
                     MachineHeader(machine, waitsForTailscale = machine in offTailnet) { core.retry(machine) }
                 }
-                val mine = agents.filter { it.endpoint == machine.id }
-                val spaceOrder = machine.spaces.map { it.id }
-                val bySpace = mine.groupBy { it.space }
-                for (space in machine.spaces) {
-                    val spaceAgents = bySpace[space.id].orEmpty()
-                    item(key = "s:" + machine.id + space.id) {
-                        SpaceRow(space, spaceAgents.isEmpty()) { onSpace(machine, space) }
-                    }
-                    items(spaceAgents, key = { "a:" + it.endpoint + it.pane }) { AgentCard(it) { onAgent(it) } }
-                }
-                // Agents whose space the machine has not reported yet.
-                items(mine.filter { it.space !in spaceOrder }, key = { "a:" + it.endpoint + it.pane }) {
-                    AgentCard(it) { onAgent(it) }
+                val counts = agents.filter { it.endpoint == machine.id }.groupingBy { it.space }.eachCount()
+                items(machine.spaces, key = { "s:" + machine.id + it.id }) { space ->
+                    SpaceRow(space, counts[space.id] ?: 0) { onSpace(machine, space) }
                 }
             }
         }
     }
+}
+
+@Composable
+private fun SectionHeader(text: String) {
+    Text(
+        text.uppercase(),
+        color = Dim,
+        fontSize = 13.sp,
+        fontWeight = FontWeight.Bold,
+        letterSpacing = 1.5.sp,
+        modifier = Modifier.padding(start = 20.dp, end = 8.dp, top = 18.dp, bottom = 8.dp),
+    )
 }
 
 @Composable
@@ -330,7 +340,8 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
 }
 
 @Composable
-private fun SpaceRow(space: Space, empty: Boolean, onClick: () -> Unit) {
+private fun SpaceRow(space: Space, agents: Int, onClick: () -> Unit) {
+    val empty = agents == 0
     Row(
         Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
@@ -344,7 +355,7 @@ private fun SpaceRow(space: Space, empty: Boolean, onClick: () -> Unit) {
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        if (empty) Text("open", color = Dim, fontSize = 13.sp)
+        Text(if (empty) "open" else if (agents == 1) "1 agent" else "$agents agents", color = Dim, fontSize = 13.sp)
     }
 }
 
@@ -370,7 +381,7 @@ private fun AgentLogo(agent: Agent, size: Int = 22) {
 }
 
 @Composable
-private fun AgentCard(agent: Agent, onClick: () -> Unit) {
+private fun AgentCard(agent: Agent, place: String, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
@@ -408,6 +419,9 @@ private fun AgentCard(agent: Agent, onClick: () -> Unit) {
                         Text(agent.detail, color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
+            }
+            if (place.isNotBlank()) {
+                Text(place, color = Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             }
         }
     }

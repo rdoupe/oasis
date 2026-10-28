@@ -191,3 +191,13 @@ pub extern "system" fn Java_app_oasis_mobile_Native_selectionText(mut env: JNIEn
     let text = grid.text((u(col0), u(row0)), (u(col1), u(row1)), (u(left), u(right)));
     new_string(&mut env, &text)
 }
+
+/// The web or mail link under a cell (an OSC 8 hyperlink or a URL in the text), or null.
+#[no_mangle]
+pub extern "system" fn Java_app_oasis_mobile_Native_linkAt(mut env: JNIEnv, _class: JClass, handle: jlong, col: jint, row: jint) -> jstring {
+    let grid = &unsafe { session(handle) }.grid;
+    match grid.link_at(col.max(0) as u16, row.max(0) as u16) {
+        Some(link) => new_string(&mut env, &link),
+        None => std::ptr::null_mut(),
+    }
+}

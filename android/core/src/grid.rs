@@ -137,4 +137,230 @@ impl Grid {
         }
         ((first, at.1), (last, at.1))
     }
+
+    /// The link under a cell, for a tap to open: the cell's OSC 8 hyperlink, or a
+    /// plain http(s) URL written in the text across that cell, kept inside the pane's
+    /// columns and followed across rows it wraps over. Only web and mail links are returned.
+    pub fn link_at(&self, col: u16, row: u16) -> Option<String> {
+        let cell = self.cell(col, row)?;
+        if let Some(index) = cell.hyperlink {
+            if let Some(target) = self.hyperlinks.get(index as usize) {
+                if openable(target) {
+                    return Some(target.clone());
+                }
+            }
+        }
+        let (left, right) = self.pane_columns(col, row);
+        let right = right.min(self.width.saturating_sub(1));
+        // A row whose text runs to the pane's right edge most likely wraps onto the
+        // next, so a URL is read across such rows (a few at most).
+        let wraps = |r: u16| {
+            self.cell(right, r)
+                .is_some_and(|cell| cell.skip || !cell.symbol.trim().is_empty())
+        };
+        let mut first = row;
+        while first > 0 && row - first < 8 && wraps(first - 1) {
+            first -= 1;
+        }
+        let mut last = row;
+        while last + 1 < self.height && last - row < 8 && wraps(last) {
+            last += 1;
+        }
+        // The text, with the (row, column) each char starts at; a wide glyph's
+        // trailing skip cell belongs to the char before it.
+        let mut chars: Vec<(char, (u16, u16))> = Vec::new();
+        for r in first..=last {
+            for c in left..=right {
+                let Some(cell) = self.cell(c, r) else { break };
+                if cell.skip {
+                    continue;
+                }
+                if cell.symbol.is_empty() {
+                    chars.push((' ', (r, c)));
+                } else {
+                    chars.extend(cell.symbol.chars().map(|ch| (ch, (r, c))));
+                }
+            }
+        }
+        let tapped = chars.iter().rposition(|(_, at)| *at <= (row, col))?;
+        let starts_with = |at: usize, scheme: &str| {
+            scheme.chars().enumerate().all(|(i, want)| {
+                chars
+                    .get(at + i)
+                    .is_some_and(|(ch, _)| ch.to_ascii_lowercase() == want)
+            })
+        };
+        let mut at = 0;
+        while at < chars.len() {
+            let Some(scheme) = ["https://", "http://"]
+                .into_iter()
+                .find(|scheme| starts_with(at, scheme))
+            else {
+                at += 1;
+                continue;
+            };
+            let mut end = at;
+            while end < chars.len() && url_char(chars[end].0) {
+                end += 1;
+            }
+            let url = trim_url(&chars[at..end].iter().map(|(ch, _)| ch).collect::<String>());
+            let len = url.chars().count();
+            if len > scheme.len() && (at..at + len).contains(&tapped) {
+                return Some(url);
+            }
+            at = end.max(at + 1);
+        }
+        None
+    }
+}
+
+fn openable(target: &str) -> bool {
+    let lower = target.to_ascii_lowercase();
+    ["http://", "https://", "mailto:"]
+        .iter()
+        .any(|scheme| lower.starts_with(scheme) && lower.len() > scheme.len())
+}
+
+fn url_char(ch: char) -> bool {
+    !ch.is_whitespace() && !ch.is_control() && !matches!(ch, '"' | '\'' | '<' | '>' | '`' | '│')
+}
+
+/// Drops sentence punctuation after a URL and a closing bracket it never opened.
+fn trim_url(url: &str) -> String {
+    let mut url = url.to_string();
+    while let Some(last) = url.chars().last() {
+        let unbalanced = |open: char, close: char| {
+            last == close && url.matches(close).count() > url.matches(open).count()
+        };
+        if matches!(last, '.' | ',' | ';' | ':' | '!' | '?')
+            || unbalanced('(', ')')
+            || unbalanced('[', ']')
+            || unbalanced('{', '}')
+        {
+            url.pop();
+        } else {
+            break;
+        }
+    }
+    url
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn grid(rows: &[&str]) -> Grid {
+        let width = rows.iter().map(|r| r.chars().count()).max().unwrap_or(0) as u16;
+        let mut cells = Vec::new();
+        for row in rows {
+            let mut n = 0;
+            for ch in row.chars() {
+                cells.push(cell(&ch.to_string()));
+                n += 1;
+            }
+            while n < width {
+                cells.push(cell(" "));
+                n += 1;
+            }
+        }
+        Grid {
+            width,
+            height: rows.len() as u16,
+            cells,
+            ..Grid::default()
+        }
+    }
+
+    fn cell(symbol: &str) -> CellData {
+        CellData {
+            symbol: symbol.into(),
+            fg: 0,
+            bg: 0,
+            modifier: 0,
+            skip: false,
+            hyperlink: None,
+        }
+    }
+
+    #[test]
+    fn a_hyperlinked_cell_opens_its_target() {
+        let mut g = grid(&["click here now"]);
+        g.hyperlinks = vec!["https://example.com/docs".into()];
+        for col in 6..10 {
+            g.cells[col].hyperlink = Some(0);
+        }
+        assert_eq!(g.link_at(7, 0).as_deref(), Some("https://example.com/docs"));
+        assert_eq!(g.link_at(2, 0), None);
+    }
+
+    #[test]
+    fn a_hyperlink_with_another_scheme_is_not_opened() {
+        let mut g = grid(&["file"]);
+        g.hyperlinks = vec!["file:///etc/passwd".into()];
+        g.cells[0].hyperlink = Some(0);
+        assert_eq!(g.link_at(0, 0), None);
+    }
+
+    #[test]
+    fn a_plain_url_is_found_from_any_of_its_chars() {
+        let line = "see https://example.com/a?b=1 for more";
+        let g = grid(&[line]);
+        let start = line.find("https").unwrap();
+        let end = start + "https://example.com/a?b=1".len();
+        for col in start..end {
+            assert_eq!(
+                g.link_at(col as u16, 0).as_deref(),
+                Some("https://example.com/a?b=1"),
+                "col {col}"
+            );
+        }
+        assert_eq!(g.link_at((start - 1) as u16, 0), None);
+        assert_eq!(g.link_at(end as u16, 0), None);
+    }
+
+    #[test]
+    fn trailing_punctuation_is_not_part_of_the_url() {
+        let g = grid(&["go to https://example.com."]);
+        assert_eq!(g.link_at(10, 0).as_deref(), Some("https://example.com"));
+        assert_eq!(g.link_at(25, 0), None);
+        let g = grid(&["(http://example.com/x), ok"]);
+        assert_eq!(g.link_at(5, 0).as_deref(), Some("http://example.com/x"));
+        assert_eq!(g.link_at(21, 0), None);
+        let g = grid(&["https://en.wikipedia.org/wiki/Rust_(language)"]);
+        assert_eq!(
+            g.link_at(3, 0).as_deref(),
+            Some("https://en.wikipedia.org/wiki/Rust_(language)")
+        );
+    }
+
+    #[test]
+    fn the_second_url_on_a_row_is_found() {
+        let g = grid(&["http://a.example b https://b.example"]);
+        assert_eq!(g.link_at(2, 0).as_deref(), Some("http://a.example"));
+        assert_eq!(g.link_at(20, 0).as_deref(), Some("https://b.example"));
+    }
+
+    #[test]
+    fn a_url_wrapped_onto_the_next_row_is_found_from_either_row() {
+        let g = grid(&["see (https://exampl", "e.org/x) and more"]);
+        assert_eq!(g.link_at(10, 0).as_deref(), Some("https://example.org/x"));
+        assert_eq!(g.link_at(2, 1).as_deref(), Some("https://example.org/x"));
+        assert_eq!(g.link_at(12, 1), None);
+    }
+
+    #[test]
+    fn a_row_that_stops_short_of_the_edge_does_not_join_the_next() {
+        let g = grid(&["https://a.example  ", "next"]);
+        assert_eq!(g.link_at(3, 0).as_deref(), Some("https://a.example"));
+        assert_eq!(g.link_at(1, 1), None);
+    }
+
+    #[test]
+    fn text_without_a_link_has_none() {
+        let g = grid(&["just some text https:// here"]);
+        for col in 0..g.width {
+            assert_eq!(g.link_at(col, 0), None);
+        }
+        assert_eq!(g.link_at(99, 0), None);
+    }
 }
