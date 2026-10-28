@@ -29,6 +29,9 @@ data class Machine(
     val spaces: List<Space>,
 )
 
+/** One piece of an agent's background work: a Nerd Font icon, its count or schedule, its color. */
+data class Activity(val icon: String, val detail: String, val color: Int)
+
 data class Agent(
     val endpoint: String,
     val machine: String,
@@ -41,6 +44,7 @@ data class Agent(
     val title: String,
     val detail: String,
     val stale: Boolean,
+    val activity: List<Activity>,
 )
 
 /**
@@ -314,6 +318,12 @@ class Core(private val context: Context) {
                 title = a.getString("title"),
                 detail = a.getString("detail"),
                 stale = a.optBoolean("stale"),
+                activity = a.optJSONArray("activity")?.let { parts ->
+                    (0 until parts.length()).map { i ->
+                        val p = parts.getJSONObject(i)
+                        Activity(p.getString("icon"), p.getString("detail"), android.graphics.Color.parseColor(p.getString("color")))
+                    }
+                }.orEmpty(),
             )
         }
     }

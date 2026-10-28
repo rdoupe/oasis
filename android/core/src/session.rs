@@ -383,7 +383,29 @@ fn agents_json(model: &SidebarModel) -> Value {
         .iter()
         .map(|agent| {
             let logo = logo(agent.agent);
-            let lines = rows_text(&agent.rows, logo.is_some());
+            // The app lists agents under their machine and space headings, so the
+            // rows leave those names out; what is left leads with the agent's own
+            // title (Claude's session summary), then its background work.
+            let rows: Vec<TokenRow> = agent
+                .rows
+                .iter()
+                .map(|row| {
+                    row.iter()
+                        .filter(|token| {
+                            !matches!(
+                                token.kind,
+                                ResolvedTokenKind::Workspace(_) | ResolvedTokenKind::Machine(_)
+                            )
+                        })
+                        .cloned()
+                        .collect()
+                })
+                .collect();
+            let mut lines = rows_text(&rows, logo.is_some());
+            if lines.len() > 1 {
+                let first = lines.remove(0);
+                lines.push(first);
+            }
             json!({
                 "endpoint": agent.endpoint,
                 "machine": agent.machine_label,
@@ -394,6 +416,7 @@ fn agents_json(model: &SidebarModel) -> Value {
                 "logo": logo,
                 "title": lines.first().cloned().unwrap_or_default(),
                 "detail": lines[1.min(lines.len())..].join("  "),
+                "activity": activity_json(&agent.rows),
                 "focused": agent.focused,
                 "stale": agent.stale,
             })
@@ -436,13 +459,54 @@ fn token_text(kind: &ResolvedTokenKind, logo: bool) -> Option<String> {
             (0, b) => format!("↓{b}"),
             (a, b) => format!("↑{a}↓{b}"),
         },
+        // Background work goes out as icons (activity_json); the agent's own mark
+        // stays as text when the app has no logo for it.
         ResolvedTokenKind::Activity(parts) => parts
             .iter()
-            .filter(|part: &&ActivityPart| !(logo && part.kind == ActivityKind::Agent))
+            .filter(|part: &&ActivityPart| !logo && part.kind == ActivityKind::Agent)
             .map(|part| part.text.clone())
             .collect::<Vec<_>>()
             .join(" "),
     })
+}
+
+/// The agent's background work as clawmux draws it: a Nerd Font icon per kind
+/// (goal, loop, shells, monitors, subagents, MCP tasks) in the part's color, with
+/// its schedule or a count above one. Kinds without an icon keep their text.
+fn activity_json(rows: &[TokenRow]) -> Value {
+    rows.iter()
+        .flatten()
+        .filter_map(|token| match &token.kind {
+            ResolvedTokenKind::Activity(parts) => Some(parts),
+            _ => None,
+        })
+        .flatten()
+        .filter(|part| part.kind != ActivityKind::Agent)
+        .map(|part| {
+            let icon = match part.kind {
+                ActivityKind::Goal => "\u{f04fe}",
+                ActivityKind::Loop => "\u{f0450}",
+                ActivityKind::Shells => "\u{f018d}",
+                ActivityKind::Monitors => "\u{f0379}",
+                ActivityKind::Subagents => "\u{f06a9}",
+                ActivityKind::McpTasks => "\u{f0493}",
+                _ => "",
+            };
+            let detail = match (&part.label, part.kind) {
+                _ if icon.is_empty() => part.text.clone(),
+                (Some(label), _) => label.clone(),
+                (None, ActivityKind::Goal | ActivityKind::Loop) => String::new(),
+                (None, _) if part.count > 1 => part.count.to_string(),
+                (None, _) => String::new(),
+            };
+            let (r, g, b) = part.color.rgb();
+            json!({
+                "icon": icon,
+                "detail": detail,
+                "color": format!("#{r:02x}{g:02x}{b:02x}"),
+            })
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -491,8 +555,12 @@ mod tests {
         ];
         assert_eq!(
             rows_text(&rows, true),
-            vec!["oasis 2 subagents".to_owned(), "fix the phone app".to_owned()]
+            vec!["oasis".to_owned(), "fix the phone app".to_owned()]
         );
-        assert_eq!(rows_text(&rows, false)[0], "✳ oasis 2 subagents");
+        assert_eq!(rows_text(&rows, false)[0], "✳ oasis");
+        let activity = activity_json(&rows);
+        assert_eq!(activity.as_array().map(Vec::len), Some(1), "the mark is not background work");
+        assert_eq!(activity[0]["icon"], "\u{f06a9}");
+        assert_eq!(activity[0]["detail"], "2");
     }
 }

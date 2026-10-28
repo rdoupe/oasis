@@ -72,6 +72,7 @@ import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontFamily
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -179,7 +180,7 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
 
     fun openAgent(agent: Agent) {
         core.openAgent(agent)
-        screen = Screen.Terminal(agent.detail.ifBlank { agent.title }, "${agent.machine} · ${agent.title}", agent)
+        screen = Screen.Terminal(agent.title, "${agent.machine} · ${spaceName(core, agent)}", agent)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -347,6 +348,11 @@ private fun SpaceRow(space: Space, empty: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** The name of the space an agent runs in, as its machine reports it. */
+private fun spaceName(core: Core, agent: Agent) =
+    core.machines.value.firstOrNull { it.id == agent.endpoint }
+        ?.spaces?.firstOrNull { it.id == agent.space }?.name.orEmpty()
+
 /** The agent tool's logo, or nothing when the app has none for it. */
 @Composable
 private fun AgentLogo(agent: Agent, size: Int = 22) {
@@ -394,11 +400,39 @@ private fun AgentCard(agent: Agent, onClick: () -> Unit) {
                 Spacer(Modifier.width(8.dp))
                 Text(statusWord(agent.status), color = statusColor(agent.status), fontSize = 13.sp, maxLines = 1)
             }
-            if (agent.detail.isNotBlank()) {
-                Text(agent.detail, color = Dim, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+            if (agent.activity.isNotEmpty() || agent.detail.isNotBlank()) {
+                Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
+                    ActivityIcons(agent.activity)
+                    if (agent.detail.isNotBlank()) {
+                        if (agent.activity.isNotEmpty()) Spacer(Modifier.width(10.dp))
+                        Text(agent.detail, color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    }
+                }
             }
         }
     }
+}
+
+/** Background work as the desktop shows it: colored Nerd Font icons with counts or schedules. */
+@Composable
+private fun ActivityIcons(parts: List<Activity>) {
+    if (parts.isEmpty()) return
+    val nerd = remember { FontFamily(androidx.compose.ui.text.font.Font(R.font.jetbrains_mono_regular)) }
+    Text(
+        androidx.compose.ui.text.buildAnnotatedString {
+            parts.forEachIndexed { index, part ->
+                if (index > 0) append("  ")
+                withStyle(androidx.compose.ui.text.SpanStyle(color = Color(part.color))) {
+                    if (part.icon.isNotEmpty()) {
+                        withStyle(androidx.compose.ui.text.SpanStyle(fontFamily = nerd, fontSize = 17.sp)) { append(part.icon) }
+                    }
+                    if (part.detail.isNotEmpty()) append((if (part.icon.isNotEmpty()) " " else "") + part.detail)
+                }
+            }
+        },
+        fontSize = 14.sp,
+        maxLines = 1,
+    )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -427,13 +461,13 @@ private fun TerminalScreen(
                     }
                     Column {
                         Text(
-                            live?.let { it.detail.ifBlank { it.title } } ?: screen.title,
+                            live?.title ?: screen.title,
                             fontSize = 17.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            live?.let { "${it.machine} · ${it.title}" } ?: screen.subtitle,
+                            live?.let { "${it.machine} · ${spaceName(core, it)}" } ?: screen.subtitle,
                             fontSize = 13.sp,
                             color = Dim,
                             maxLines = 1,
