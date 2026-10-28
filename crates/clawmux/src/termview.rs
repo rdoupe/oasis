@@ -63,6 +63,15 @@ mod imp {
         fn size_allocate(&self, width: i32, height: i32, baseline: i32) {
             self.parent_size_allocate(width, height, baseline);
             self.obj().update_size(width, height);
+            // A popover over the terminal (the touch Copy and Paste menu) is
+            // placed by its parent.
+            let mut child = self.obj().first_child();
+            while let Some(widget) = child {
+                if let Some(popover) = widget.downcast_ref::<gtk::Popover>() {
+                    popover.present();
+                }
+                child = widget.next_sibling();
+            }
         }
 
         fn snapshot(&self, snapshot: &gtk::Snapshot) {

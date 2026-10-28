@@ -75,6 +75,12 @@ enum DragState {
         last_y: f64,
         moved: bool,
     },
+    /// A finger held on the terminal selected the word under it; moving it
+    /// extends the selection from that word.
+    TouchSelect {
+        word: ((u16, u16), (u16, u16)),
+        bounds: ((u16, u16), (u16, u16)),
+    },
 }
 
 impl App {
@@ -339,8 +345,14 @@ impl App {
             let Some((sx, sy)) = gesture.start_point() else {
                 return;
             };
+            if let Some(DragState::TouchSelect { .. }) = app.drag.get() {
+                app.drag.set(None);
+                app.touch_menu(sx + dx, sy + dy);
+                return;
+            }
             if let Some(DragState::Finger { moved, .. }) = app.drag.take() {
                 if !moved {
+                    app.view.set_selection(None);
                     // A tap clicks, so apps that read the mouse and pane focus still work.
                     let state = gesture.current_event_state();
                     app.mouse_down(gdk::BUTTON_PRIMARY, sx, sy, state);
@@ -399,6 +411,88 @@ impl App {
             }
         });
         self.view.add_controller(pinch);
+
+        // Hold a finger on the terminal to select the word under it, slide to
+        // extend, and lift for Copy and Paste: a drag alone scrolls.
+        let hold = gtk::GestureLongPress::new();
+        hold.set_touch_only(true);
+        let app = self.clone();
+        hold.connect_pressed(move |_, x, y| app.touch_select(x, y));
+        self.view.add_controller(hold);
+    }
+
+    /// Starts a touch selection at the word under a held finger.
+    fn touch_select(self: &Rc<Self>, x: f64, y: f64) {
+        let cell = self.view.cell_at(x, y);
+        let (pane_id, focused, bounds) = {
+            let grid = self.grid.borrow();
+            let Some(pane) = grid.pane_at(cell.0, cell.1) else {
+                return;
+            };
+            let inner = pane.inner_rect;
+            (
+                pane.pane_id.clone(),
+                pane.focused,
+                (
+                    (inner.x, inner.x + inner.width.saturating_sub(1)),
+                    (inner.y, inner.y + inner.height.saturating_sub(1)),
+                ),
+            )
+        };
+        if !focused {
+            self.request("pane.focus", json!({ "pane_id": pane_id }));
+        }
+        let word = self.grid.borrow().word_at(cell, bounds.0);
+        self.view.set_selection(Some(Selection {
+            anchor: word.0,
+            head: word.1,
+            cols: bounds.0,
+        }));
+        self.drag.set(Some(DragState::TouchSelect { word, bounds }));
+    }
+
+    /// Copy and Paste beside a lifted finger; dismissing it drops the selection.
+    fn touch_menu(self: &Rc<Self>, x: f64, y: f64) {
+        let text = self
+            .view
+            .selection()
+            .map(|s| self.grid.borrow().text(s.anchor, s.head, s.cols))
+            .filter(|text| !text.trim().is_empty());
+        let row = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        let popover = gtk::Popover::builder()
+            .child(&row)
+            .position(gtk::PositionType::Top)
+            .pointing_to(&gdk::Rectangle::new(x as i32, y as i32, 1, 1))
+            .build();
+        popover.add_css_class("touch-menu");
+        if let Some(text) = text {
+            let copy = gtk::Button::with_label("Copy");
+            let (app, menu) = (self.clone(), popover.downgrade());
+            copy.connect_clicked(move |_| {
+                app.view.clipboard().set_text(&text);
+                app.show_banner("Copied", Some(2));
+                if let Some(menu) = menu.upgrade() {
+                    menu.popdown();
+                }
+            });
+            row.append(&copy);
+        }
+        let paste = gtk::Button::with_label("Paste");
+        let (app, menu) = (self.clone(), popover.downgrade());
+        paste.connect_clicked(move |_| {
+            app.paste();
+            if let Some(menu) = menu.upgrade() {
+                menu.popdown();
+            }
+        });
+        row.append(&paste);
+        let app = self.clone();
+        popover.connect_closed(move |menu| {
+            app.view.set_selection(None);
+            menu.unparent();
+        });
+        popover.set_parent(&self.view);
+        popover.popup();
     }
 
     /// Asks the touch shell for its on-screen keyboard, as a tap on a text field does;
@@ -1551,6 +1645,25 @@ impl App {
                     cols: bounds.0,
                 }));
             }
+            Some(DragState::TouchSelect { word, bounds }) => {
+                let head = self.view.cell_at(x, y);
+                let head = (
+                    head.0.clamp(bounds.0 .0, bounds.0 .1),
+                    head.1.clamp(bounds.1 .0, bounds.1 .1),
+                );
+                let (anchor, head) = if (head.1, head.0) < (word.0 .1, word.0 .0) {
+                    (word.1, head)
+                } else if (head.1, head.0) > (word.1 .1, word.1 .0) {
+                    (word.0, head)
+                } else {
+                    word
+                };
+                self.view.set_selection(Some(Selection {
+                    anchor,
+                    head,
+                    cols: bounds.0,
+                }));
+            }
             Some(DragState::Finger { .. }) | None => {}
         }
     }
@@ -1575,7 +1688,7 @@ impl App {
                     }
                 }
             }
-            Some(DragState::Finger { .. }) | None => {}
+            Some(DragState::Finger { .. } | DragState::TouchSelect { .. }) | None => {}
         }
     }
 

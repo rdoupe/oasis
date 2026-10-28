@@ -203,6 +203,27 @@ impl Grid {
         }
         out
     }
+
+    /// The run of non-blank cells around `at` on its row, kept inside the pane's
+    /// columns `cols`: what a long press selects. A blank cell is its own word.
+    pub fn word_at(&self, at: (u16, u16), cols: (u16, u16)) -> ((u16, u16), (u16, u16)) {
+        let blank = |col: u16| {
+            self.cell(col, at.1)
+                .is_none_or(|cell| !cell.skip && cell.symbol.to_string().trim().is_empty())
+        };
+        if blank(at.0) {
+            return (at, at);
+        }
+        let mut first = at.0;
+        while first > cols.0 && !blank(first - 1) {
+            first -= 1;
+        }
+        let mut last = at.0;
+        while last < cols.1 && !blank(last + 1) {
+            last += 1;
+        }
+        ((first, at.1), (last, at.1))
+    }
 }
 
 pub enum Damage {
@@ -299,6 +320,15 @@ mod tests {
     fn copy_text_stays_inside_the_pane_columns() {
         let grid = grid_with(&["│ab  ▕", "│cd  ▕"]);
         assert_eq!(grid.text((1, 0), (4, 1), (1, 4)), "ab\ncd");
+    }
+
+    #[test]
+    fn a_long_press_selects_the_word_inside_the_pane() {
+        let grid = grid_with(&["│sudo  pacman -Syu▕"]);
+        assert_eq!(grid.word_at((2, 0), (1, 16)), ((1, 0), (4, 0)));
+        assert_eq!(grid.word_at((9, 0), (1, 16)), ((7, 0), (12, 0)));
+        assert_eq!(grid.word_at((16, 0), (1, 16)), ((14, 0), (16, 0)));
+        assert_eq!(grid.word_at((5, 0), (1, 16)), ((5, 0), (5, 0)), "a blank");
     }
 
     #[test]

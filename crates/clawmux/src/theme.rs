@@ -217,6 +217,7 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .touch .clawmux-tabs button.sidebar-toggle {{ min-width: 44px; min-height: 38px; font-size: 1.35em; }}
 .touch .clawmux-tabs .tab-pill {{ min-height: 38px; }}
 .touch .clawmux-tabs button.tab-add {{ min-width: 44px; min-height: 38px; }}
+popover.touch-menu button {{ min-width: 72px; min-height: 44px; font-size: 1.15em; }}
 .clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
 .clawmux-sidebar separator.section-divider {{ background: {raised}; min-height: 1px; margin: 10px 12px 2px; }}
 .clawmux-sidebar row.heading-row:hover {{ background: transparent; }}
