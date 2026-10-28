@@ -353,6 +353,11 @@ impl App {
             if let Some(DragState::Finger { moved, .. }) = app.drag.take() {
                 if !moved {
                     app.view.set_selection(None);
+                    // A tap on a link opens it, as ctrl+click does, and leaves the
+                    // keyboard down.
+                    if app.tap_link(sx, sy) {
+                        return;
+                    }
                     // A tap clicks, so apps that read the mouse and pane focus still work.
                     let state = gesture.current_event_state();
                     app.mouse_down(gdk::BUTTON_PRIMARY, sx, sy, state);
@@ -383,6 +388,7 @@ impl App {
             return;
         }
         self.drawer.set_touch(true);
+        self.sync_sidebar_order();
         let app = self.clone();
         let keyboard = crate::touch::keyboard_for(&self.view, move |text| {
             if let (Some(pane_id), Some(conn)) = (app.focused_pane_id(), app.conn.borrow().as_ref())
@@ -419,6 +425,27 @@ impl App {
         let app = self.clone();
         hold.connect_pressed(move |_, x, y| app.touch_select(x, y));
         self.view.add_controller(hold);
+    }
+
+    /// Opens the link under a tapped point, focusing its pane; false when there is none.
+    fn tap_link(self: &Rc<Self>, x: f64, y: f64) -> bool {
+        let cell = self.view.cell_at(x, y);
+        let pane = {
+            let grid = self.grid.borrow();
+            if link_url(&grid, cell).is_none() {
+                return false;
+            }
+            grid.pane_at(cell.0, cell.1)
+                .map(|pane| (pane.pane_id.clone(), pane.focused))
+        };
+        let Some((pane_id, focused)) = pane else {
+            return false;
+        };
+        debug(|| format!("tap on a link at cell {cell:?}"));
+        if !focused {
+            self.request("pane.focus", json!({ "pane_id": pane_id }));
+        }
+        self.open_link_at(cell)
     }
 
     /// Starts a touch selection at the word under a held finger.
@@ -581,7 +608,15 @@ impl App {
         let app = self.clone();
         glib::idle_add_local_once(move || {
             app.drawer.fit(app.window.width(), app.window.height());
+            app.sync_sidebar_order();
         });
+    }
+
+    /// Agents go above the spaces while the sidebar is laid out for fingers.
+    fn sync_sidebar_order(self: &Rc<Self>) {
+        if self.sidebar.set_agents_first(self.drawer.touch_layout()) {
+            self.rebuild_chrome();
+        }
     }
 
     /// Starts oasis's client core; from here the GTK loop wakes only on its wake fd.
@@ -1715,13 +1750,7 @@ impl App {
     /// Opens the link under a cell, an OSC 8 hyperlink or a plain URL in the text, in a
     /// new window of the user's default browser.
     fn open_link_at(self: &Rc<Self>, cell: (u16, u16)) -> bool {
-        let url = {
-            let grid = self.grid.borrow();
-            grid.cell(cell.0, cell.1)
-                .and_then(|c| c.hyperlink)
-                .and_then(|index| grid.hyperlinks.get(index as usize).cloned())
-                .or_else(|| url_at(&grid, cell))
-        };
+        let url = link_url(&self.grid.borrow(), cell);
         let Some(url) = url else { return false };
         if let Err(error) = self.browser.open(&url) {
             self.show_banner(
@@ -1791,6 +1820,14 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
         KeyCode::Char('0') => Some(None),
         _ => None,
     }
+}
+
+/// The link under `cell`: its OSC 8 hyperlink, else a plain URL in the text.
+fn link_url(grid: &Grid, cell: (u16, u16)) -> Option<String> {
+    grid.cell(cell.0, cell.1)
+        .and_then(|c| c.hyperlink)
+        .and_then(|index| grid.hyperlinks.get(index as usize).cloned())
+        .or_else(|| url_at(grid, cell))
 }
 
 /// A plain `http(s)://` URL in the row text under `cell`, for links apps print without OSC 8.
@@ -1953,6 +1990,27 @@ mod tests {
         );
         assert_eq!(url_at(&grid, (2, 0)), None);
         assert_eq!(url_at(&grid, (40, 0)).as_deref(), Some("http://x.io"));
+    }
+
+    #[test]
+    fn a_tapped_cell_links_to_its_osc8_target_before_its_text() {
+        let mut grid = grid_with_row("docs here https://plain.example");
+        grid.hyperlinks = vec!["https://osc8.example/docs".into()];
+        for col in 0..4 {
+            if let Some(cell) = grid.cells.get_mut(col) {
+                cell.hyperlink = Some(0);
+            }
+        }
+        assert_eq!(
+            link_url(&grid, (1, 0)).as_deref(),
+            Some("https://osc8.example/docs")
+        );
+        assert_eq!(
+            link_url(&grid, (12, 0)).as_deref(),
+            Some("https://plain.example")
+        );
+        assert_eq!(link_url(&grid, (6, 0)), None, "a tap off any link");
+        assert_eq!(link_url(&grid, (99, 0)), None, "a tap past the row");
     }
 
     #[test]

@@ -25,6 +25,11 @@ pub fn is_swipe(dx: f64, dy: f64, sign: f64) -> bool {
     dx * sign >= SWIPE && dx.abs() > dy.abs()
 }
 
+/// Whether the sidebar is laid out for fingers: as a drawer, or on a touchscreen.
+pub fn is_touch_layout(drawer: bool, touch: bool) -> bool {
+    drawer || touch
+}
+
 pub struct Drawer {
     /// What the window holds: the inline sidebar and the main area, with the drawer above.
     pub root: gtk::Overlay,
@@ -158,7 +163,7 @@ impl Drawer {
         }
         self.drawer.set(drawer);
         self.sidebar.unparent();
-        self.style_for_touch(drawer || self.touch.get());
+        self.style_for_touch(is_touch_layout(drawer, self.touch.get()));
         if drawer {
             self.revealer.set_child(Some(&self.sidebar));
             self.sidebar.set_visible(true);
@@ -173,7 +178,12 @@ impl Drawer {
 
     pub fn set_touch(&self, touch: bool) {
         self.touch.set(touch);
-        self.style_for_touch(touch || self.drawer.get());
+        self.style_for_touch(is_touch_layout(self.drawer.get(), touch));
+    }
+
+    /// Whether the sidebar is now laid out for fingers (see `is_touch_layout`).
+    pub fn touch_layout(&self) -> bool {
+        is_touch_layout(self.drawer.get(), self.touch.get())
     }
 
     fn style_for_touch(&self, touch: bool) {
@@ -230,6 +240,13 @@ mod tests {
         assert!(!is_drawer(1920, 1200), "landscape tablet");
         assert!(!is_drawer(1400, 860), "desktop window");
         assert!(!is_drawer(0, 0), "not yet sized");
+    }
+
+    #[test]
+    fn a_drawer_or_a_touchscreen_lays_the_sidebar_out_for_fingers() {
+        assert!(is_touch_layout(true, false), "portrait drawer");
+        assert!(is_touch_layout(false, true), "landscape touchscreen");
+        assert!(!is_touch_layout(false, false), "wide desktop window");
     }
 
     #[test]

@@ -2,7 +2,7 @@
 //! worktree groups, agents across machines, and the footer, with the same tokens and
 //! styles the TUI shows.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use gtk::prelude::*;
@@ -41,6 +41,9 @@ pub struct SidebarView {
     pub status: gtk::Label,
     targets: RefCell<Vec<Option<Target>>>,
     handler: RefCell<Option<Handler>>,
+    /// Agents above the spaces, as the touch drawer shows them; a wide window keeps
+    /// the spaces first.
+    agents_first: Cell<bool>,
 }
 
 impl SidebarView {
@@ -70,6 +73,7 @@ impl SidebarView {
             status,
             targets: RefCell::new(Vec::new()),
             handler: RefCell::new(None),
+            agents_first: Cell::new(false),
         });
         let weak = Rc::downgrade(&view);
         view.list.connect_row_activated(move |_, row| {
@@ -93,6 +97,12 @@ impl SidebarView {
     /// Called with the clicked target, its row, and the mouse button.
     pub fn connect(&self, handler: impl Fn(&Target, Option<&gtk::ListBoxRow>, u32) + 'static) {
         self.handler.replace(Some(Box::new(handler)));
+    }
+
+    /// Puts the agents above the spaces, or back below them; true when that changed,
+    /// so the caller knows to render again.
+    pub fn set_agents_first(&self, agents_first: bool) -> bool {
+        self.agents_first.replace(agents_first) != agents_first
     }
 
     fn fire(&self, row: &gtk::ListBoxRow, button: u32) {
@@ -121,14 +131,35 @@ impl SidebarView {
     ) {
         self.list.remove_all();
         let mut targets = Vec::new();
+        let agents_first = self.agents_first.get();
+        let has_agents = !model.agents.is_empty();
+        if agents_first && has_agents {
+            self.agent_rows(model, active_endpoint, fg, &mut targets);
+            self.divider(&mut targets);
+        }
+        self.space_rows(model, active_endpoint, &mut targets);
+        if !agents_first && has_agents {
+            self.divider(&mut targets);
+            self.agent_rows(model, active_endpoint, fg, &mut targets);
+        }
+        self.targets.replace(targets);
+    }
+
+    /// The machines and their spaces, under a SPACES heading when there is one machine.
+    fn space_rows(
+        self: &Rc<Self>,
+        model: &SidebarModel,
+        active_endpoint: &str,
+        targets: &mut Vec<Option<Target>>,
+    ) {
         let several = model.machines.len() > 1;
         if !several {
-            self.heading("SPACES", &mut targets);
+            self.heading("SPACES", targets);
         }
         for machine in &model.machines {
             if several {
                 if machine.id != model.machines[0].id {
-                    self.divider(&mut targets);
+                    self.divider(targets);
                 }
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
                 row.append(&dot(if machine.online {
@@ -147,7 +178,7 @@ impl SidebarView {
                 row.append(&label);
                 let list_row = self.push(
                     row.upcast_ref(),
-                    &mut targets,
+                    targets,
                     Some(Target::Machine {
                         endpoint: machine.id.clone(),
                     }),
@@ -193,7 +224,7 @@ impl SidebarView {
                 }
                 let list_row = self.push(
                     row.upcast_ref(),
-                    &mut targets,
+                    targets,
                     Some(Target::Space {
                         endpoint: machine.id.clone(),
                         workspace_id: space.workspace_id.clone(),
@@ -204,10 +235,17 @@ impl SidebarView {
                 }
             }
         }
-        if !model.agents.is_empty() {
-            self.divider(&mut targets);
-            self.heading("AGENTS", &mut targets);
-        }
+    }
+
+    /// The AGENTS heading and a row per agent across machines.
+    fn agent_rows(
+        &self,
+        model: &SidebarModel,
+        active_endpoint: &str,
+        fg: crate::theme::Rgb,
+        targets: &mut Vec<Option<Target>>,
+    ) {
+        self.heading("AGENTS", targets);
         for agent in &model.agents {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&dot(agent.status));
@@ -227,7 +265,7 @@ impl SidebarView {
             row.append(&token_rows(&rows));
             let list_row = self.push(
                 row.upcast_ref(),
-                &mut targets,
+                targets,
                 Some(Target::Agent {
                     endpoint: agent.endpoint.clone(),
                     pane_id: agent.pane_id.clone(),
@@ -240,7 +278,6 @@ impl SidebarView {
                 list_row.add_css_class("stale");
             }
         }
-        self.targets.replace(targets);
     }
 
     fn divider(&self, targets: &mut Vec<Option<Target>>) {
@@ -448,18 +485,32 @@ mod tests {
         let rows = vec![
             vec![
                 token(ResolvedTokenKind::StateIcon),
-                token(ResolvedTokenKind::Activity(vec![part(ActivityKind::Agent, 1, None)])),
+                token(ResolvedTokenKind::Activity(vec![part(
+                    ActivityKind::Agent,
+                    1,
+                    None,
+                )])),
                 token(ResolvedTokenKind::Workspace("oasis".into())),
-                token(ResolvedTokenKind::Activity(vec![part(ActivityKind::Subagents, 2, None)])),
+                token(ResolvedTokenKind::Activity(vec![part(
+                    ActivityKind::Subagents,
+                    2,
+                    None,
+                )])),
             ],
             vec![token(ResolvedTokenKind::Agent("Claude".into()))],
-            vec![token(ResolvedTokenKind::TerminalTitle("fix the phone app".into()))],
+            vec![token(ResolvedTokenKind::TerminalTitle(
+                "fix the phone app".into(),
+            ))],
         ];
         let kept = without_agent_name(&rows, true);
         assert_eq!(kept.len(), 2, "the name-only row goes");
         assert_eq!(kept[0].len(), 3, "the mark goes, the subagents stay");
         assert_eq!(kept[1], rows[2]);
-        assert_eq!(without_agent_name(&rows, false).len(), 3, "no logo keeps the name");
+        assert_eq!(
+            without_agent_name(&rows, false).len(),
+            3,
+            "no logo keeps the name"
+        );
     }
 
     #[test]
