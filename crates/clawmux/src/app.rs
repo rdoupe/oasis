@@ -27,6 +27,7 @@ use crate::keys::{self, Key};
 use crate::sidebar::{dot, SidebarView, Target};
 use crate::termview::{Selection, TermView};
 use crate::theme::Theme;
+use oasis_core::embed::links;
 use oasis_core::embed::{CoreEvent, EndpointId, EndpointStatus, SurfaceUpdate};
 
 pub struct App {
@@ -2074,11 +2075,21 @@ impl App {
     fn open_link_at(self: &Rc<Self>, cell: (u16, u16)) -> bool {
         let url = link_url(&self.grid.borrow(), cell);
         let Some(url) = url else { return false };
-        if let Err(error) = self.browser.open(&url) {
-            self.show_banner(
-                &format!("could not open a browser window: {error}"),
-                Some(5),
-            );
+        let scheme = url
+            .split(':')
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        // Web and browser pages open in the browser window; other schemes (mailto,
+        // vscode, …) go to the app the desktop has for them.
+        let opened = if matches!(scheme.as_str(), "http" | "https" | "chrome" | "about") {
+            self.browser.open(&url)
+        } else {
+            gio::AppInfo::launch_default_for_uri(&url, gio::AppLaunchContext::NONE)
+                .map_err(|error| std::io::Error::other(error.to_string()))
+        };
+        if let Err(error) = opened {
+            self.show_banner(&format!("could not open {url}: {error}"), Some(5));
         }
         true
     }
@@ -2144,55 +2155,45 @@ fn font_zoom(key: &Key) -> Option<Option<f64>> {
     }
 }
 
-/// The link under `cell`: its OSC 8 hyperlink, else a plain URL in the text.
+/// The link under `cell`: its OSC 8 hyperlink, else a link written in the pane's
+/// text, followed across the rows a long one wrapped over.
 fn link_url(grid: &Grid, cell: (u16, u16)) -> Option<String> {
     grid.cell(cell.0, cell.1)
         .and_then(|c| c.hyperlink)
         .and_then(|index| grid.hyperlinks.get(index as usize).cloned())
+        .filter(|target| links::openable(target))
         .or_else(|| url_at(grid, cell))
 }
 
-/// A plain `http(s)://` URL in the row text under `cell`, for links apps print without OSC 8.
+/// A link written in the text of the pane under `cell`, for apps that print links
+/// without OSC 8.
 fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
-    let row: Vec<(u16, String)> = (0..grid.width)
-        .filter_map(|col| {
-            let c = grid.cell(col, cell.1)?;
-            (!c.skip).then(|| {
-                (
-                    col,
-                    if c.symbol.is_empty() {
-                        " ".into()
-                    } else {
-                        c.symbol.to_string()
-                    },
-                )
-            })
+    let (left, right) = grid
+        .pane_at(cell.0, cell.1)
+        .map(|pane| {
+            let r = pane.inner_rect;
+            (r.x, (r.x + r.width).saturating_sub(1))
+        })
+        .unwrap_or((0, grid.width.saturating_sub(1)));
+    let right = right.min(grid.width.saturating_sub(1));
+    let rows: Vec<links::Row> = (0..grid.height)
+        .map(|row| {
+            let mut chars = Vec::new();
+            for col in left..=right {
+                let Some(c) = grid.cell(col, row) else { break };
+                if c.skip {
+                    continue;
+                }
+                if c.symbol.is_empty() {
+                    chars.push((' ', col));
+                } else {
+                    chars.extend(c.symbol.chars().map(|ch| (ch, col)));
+                }
+            }
+            chars
         })
         .collect();
-    let text: String = row.iter().map(|(_, s)| s.as_str()).collect();
-    let mut offsets = Vec::new();
-    for (col, symbol) in &row {
-        offsets.extend(std::iter::repeat(*col).take(symbol.len()));
-    }
-    let mut search = 0;
-    while let Some(found) = text[search..].find("http") {
-        let start = search + found;
-        let rest = &text[start..];
-        if rest.starts_with("http://") || rest.starts_with("https://") {
-            let len = rest
-                .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | '<' | '>' | '`'))
-                .unwrap_or(rest.len());
-            let url = rest[..len].trim_end_matches(['.', ',', ')', ']', ';', ':']);
-            let (first, last) = (offsets[start], offsets[start + url.len().max(1) - 1]);
-            if (first..=last).contains(&cell.0) {
-                return Some(url.to_owned());
-            }
-            search = start + len.max(1);
-        } else {
-            search = start + 4;
-        }
-    }
-    None
+    links::link_in_text(&rows, right, usize::from(cell.1), cell.0)
 }
 
 /// One entry of a sidebar or tab menu.
@@ -2298,9 +2299,20 @@ mod tests {
     use super::*;
 
     fn grid_with_row(text: &str) -> Grid {
+        grid_with_rows(&[text])
+    }
+
+    /// A grid of `rows`, each padded with blanks to the longest.
+    fn grid_with_rows(rows: &[&str]) -> Grid {
         use oasis_core::embed::wire::{CellData, FrameData, PaneSurfaceFrame};
-        let cells: Vec<CellData> = text
-            .chars()
+        let width = rows
+            .iter()
+            .map(|row| row.chars().count())
+            .max()
+            .unwrap_or(0);
+        let cells: Vec<CellData> = rows
+            .iter()
+            .flat_map(|row| row.chars().chain(std::iter::repeat(' ')).take(width))
             .map(|c| CellData {
                 symbol: c.into(),
                 fg: 0,
@@ -2316,8 +2328,8 @@ mod tests {
             projection_revision: 1,
             surface_revision: 1,
             frame: FrameData {
-                width: cells.len() as u16,
-                height: 1,
+                width: width as u16,
+                height: rows.len() as u16,
                 cells,
                 cursor: None,
                 hyperlinks: vec![],
@@ -2329,6 +2341,19 @@ mod tests {
             graphics: Default::default(),
         });
         grid
+    }
+
+    #[test]
+    fn browser_pages_and_wrapped_urls_are_found() {
+        let grid = grid_with_row("open chrome://settings/performance now");
+        assert_eq!(
+            url_at(&grid, (9, 0)).as_deref(),
+            Some("chrome://settings/performance")
+        );
+        let grid = grid_with_rows(&["  https://example.org/a-long-path-th", "  at-wraps?q=1"]);
+        let whole = Some("https://example.org/a-long-path-that-wraps?q=1");
+        assert_eq!(url_at(&grid, (10, 0)).as_deref(), whole);
+        assert_eq!(url_at(&grid, (5, 1)).as_deref(), whole);
     }
 
     #[test]
@@ -2390,7 +2415,11 @@ mod tests {
         ];
         assert_eq!(focused_agent(&model, "local", "p1"), Some(Agent::Claude));
         assert_eq!(focused_agent(&model, "ssh:box", "p1"), Some(Agent::Codex));
-        assert_eq!(focused_agent(&model, "local", "p2"), None, "an unknown tool");
+        assert_eq!(
+            focused_agent(&model, "local", "p2"),
+            None,
+            "an unknown tool"
+        );
         assert_eq!(focused_agent(&model, "local", "p9"), None, "a plain shell");
     }
 
@@ -2402,8 +2431,12 @@ mod tests {
         assert!(!retries_on_switch(&EndpointStatus::NotResponding));
         assert!(!retries_on_switch(&EndpointStatus::Online));
         assert!(retries_on_switch(&EndpointStatus::Connecting));
-        assert!(retries_on_switch(&EndpointStatus::Reconnecting("gone".into())));
-        assert!(retries_on_switch(&EndpointStatus::Attention("login".into())));
+        assert!(retries_on_switch(&EndpointStatus::Reconnecting(
+            "gone".into()
+        )));
+        assert!(retries_on_switch(&EndpointStatus::Attention(
+            "login".into()
+        )));
     }
 
     #[test]
