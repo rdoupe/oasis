@@ -408,6 +408,9 @@ impl App {
             return;
         };
         self.view.grab_focus();
+        // Text input that is already on asks for nothing new, and a keyboard the
+        // user dismissed stays down until it is turned on afresh.
+        keyboard.focus_out();
         keyboard.focus_in();
         let shown = keyboard.activate_osk(event);
         debug(|| format!("keyboard asked for, accepted={shown}"));
