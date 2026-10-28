@@ -211,6 +211,7 @@ impl SidebarView {
         for agent in &model.agents {
             let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
             row.append(&dot(agent.status));
+            let mut has_logo = false;
             if let Some(tool) = agent.agent {
                 if let Some(texture) = crate::logos::texture(tool, fg) {
                     let logo = gtk::Image::from_paintable(Some(&texture));
@@ -219,28 +220,10 @@ impl SidebarView {
                     logo.add_css_class("agent-logo");
                     logo.set_tooltip_text(Some(&format!("{tool:?}")));
                     row.append(&logo);
+                    has_logo = true;
                 }
             }
-            // The logo names the tool, so the title line keeps only the space name.
-            let rows: Vec<TokenRow> = agent
-                .rows
-                .iter()
-                .enumerate()
-                .map(|(index, row)| {
-                    if index > 0 {
-                        return row.clone();
-                    }
-                    row.iter()
-                        .filter(|token| {
-                            !matches!(
-                                token.kind,
-                                ResolvedTokenKind::Agent(_) | ResolvedTokenKind::Tab(_)
-                            )
-                        })
-                        .cloned()
-                        .collect()
-                })
-                .collect();
+            let rows = without_agent_name(&agent.rows, has_logo);
             row.append(&token_rows(&rows));
             let list_row = self.push(
                 row.upcast_ref(),
@@ -290,6 +273,39 @@ impl SidebarView {
         targets.push(target);
         row
     }
+}
+
+/// The agent rows to draw beside a logo: the logo names the tool, so its name and
+/// its one-cell mark (`agent_icon`) are left out of every row, and the title line
+/// drops the tab. Rows that end up empty go too.
+fn without_agent_name(rows: &[TokenRow], has_logo: bool) -> Vec<TokenRow> {
+    rows.iter()
+        .enumerate()
+        .map(|(index, row)| {
+            row.iter()
+                .filter_map(|token| match &token.kind {
+                    ResolvedTokenKind::Agent(_) if has_logo => None,
+                    ResolvedTokenKind::Tab(_) if index == 0 => None,
+                    ResolvedTokenKind::Activity(parts) if has_logo => {
+                        let parts: Vec<ActivityPart> = parts
+                            .iter()
+                            .filter(|part| part.kind != ActivityKind::Agent)
+                            .cloned()
+                            .collect();
+                        (!parts.is_empty()).then(|| ResolvedToken {
+                            kind: ResolvedTokenKind::Activity(parts),
+                            style: token.style,
+                        })
+                    }
+                    _ => Some(token.clone()),
+                })
+                .collect::<TokenRow>()
+        })
+        .filter(|row| {
+            row.iter()
+                .any(|token| !matches!(token.kind, ResolvedTokenKind::StateIcon))
+        })
+        .collect()
 }
 
 /// A token row stack: the first row reads as the title, later rows as detail lines.
@@ -420,6 +436,30 @@ mod tests {
             text: String::new(),
             color: SidebarTokenColor::from_rgb(0x12, 0x34, 0x56),
         }
+    }
+
+    #[test]
+    fn a_logo_replaces_the_agent_name_and_mark_in_every_row() {
+        use oasis_core::embed::sidebar::SidebarTokenStyle;
+        let token = |kind| ResolvedToken {
+            kind,
+            style: SidebarTokenStyle::default(),
+        };
+        let rows = vec![
+            vec![
+                token(ResolvedTokenKind::StateIcon),
+                token(ResolvedTokenKind::Activity(vec![part(ActivityKind::Agent, 1, None)])),
+                token(ResolvedTokenKind::Workspace("oasis".into())),
+                token(ResolvedTokenKind::Activity(vec![part(ActivityKind::Subagents, 2, None)])),
+            ],
+            vec![token(ResolvedTokenKind::Agent("Claude".into()))],
+            vec![token(ResolvedTokenKind::TerminalTitle("fix the phone app".into()))],
+        ];
+        let kept = without_agent_name(&rows, true);
+        assert_eq!(kept.len(), 2, "the name-only row goes");
+        assert_eq!(kept[0].len(), 3, "the mark goes, the subagents stay");
+        assert_eq!(kept[1], rows[2]);
+        assert_eq!(without_agent_name(&rows, false).len(), 3, "no logo keeps the name");
     }
 
     #[test]
