@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="20 17 68 68" width="128" height="128">
+  <!-- An oasis in three-quarter view: a round sand island with a pool and a palm. -->
+  <ellipse cx="54" cy="70" rx="30" ry="13" fill="#b9874a"/>
+  <ellipse cx="54" cy="65" rx="30" ry="13" fill="#e0af68"/>
+  <ellipse cx="62" cy="66" rx="12" ry="5" fill="#0db9d7"/>
+  <path d="M43,67 Q49,52 47,36 L51,36 Q53,52 47,67 Z" fill="#a8744a"/>
+  <path d="M49,36 Q38,25 25,33 Q37,35 49,38 Z" fill="#73b14a"/>
+  <path d="M49,36 Q60,25 73,33 Q61,35 49,38 Z" fill="#73b14a"/>
+  <path d="M49,36 Q43,22 32,21 Q41,29 49,37 Z" fill="#9ece6a"/>
+  <path d="M49,36 Q56,21 67,22 Q57,29 49,37 Z" fill="#9ece6a"/>
+</svg>
