@@ -43,8 +43,8 @@ pub fn link_in_text(rows: &[Row], right: u16, row: usize, col: u16) -> Option<St
     // The rows as one run of text, each char with its (row, column); a row that
     // continues the one before drops its indent, and the joins carry no space.
     let mut chars: Vec<(char, (usize, u16))> = Vec::new();
-    for r in first..=last {
-        let mut text = rows[r].iter().peekable();
+    for (r, text) in rows.iter().enumerate().take(last + 1).skip(first) {
+        let mut text = text.iter().peekable();
         if r > first {
             while text.next_if(|(ch, _)| ch.is_whitespace()).is_some() {}
         }
@@ -57,7 +57,13 @@ pub fn link_in_text(rows: &[Row], right: u16, row: usize, col: u16) -> Option<St
             }
         }
     }
+    // The tapped char: on the tapped row, and covering the column (a wide glyph
+    // covers two), so a tap on an indent or past the text finds nothing.
     let tapped = chars.iter().rposition(|(_, at)| *at <= (row, col))?;
+    let (tapped_row, tapped_col) = chars[tapped].1;
+    if tapped_row != row || col - tapped_col > 1 {
+        return None;
+    }
     let mut at = 0;
     while at < chars.len() {
         let Some(body) = scheme_end(&chars, at) else {
@@ -174,6 +180,11 @@ mod tests {
         );
         assert_eq!(link(&[line], 60, 0, 1), None);
         assert_eq!(link(&[line], 60, 0, 34), None);
+        assert_eq!(
+            link(&["https://x.example"], 60, 0, 40),
+            None,
+            "a tap past the text"
+        );
     }
 
     #[test]
@@ -254,6 +265,7 @@ mod tests {
         assert_eq!(link(&lines, 64, 1, 30).as_deref(), Some(whole));
         assert_eq!(link(&lines, 64, 2, 4).as_deref(), Some(whole));
         assert_eq!(link(&lines, 64, 4, 4), None);
+        assert_eq!(link(&lines, 64, 1, 0), None, "a tap on the indent");
     }
 
     #[test]
