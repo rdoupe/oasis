@@ -27,9 +27,13 @@ pub(crate) use super::unix_common::{
 #[cfg(test)]
 mod config_file_tests;
 
+#[cfg(target_os = "linux")]
 mod shutdown;
+#[cfg(target_os = "linux")]
 pub(crate) use shutdown::monitor_host_shutdown;
+#[cfg(target_os = "linux")]
 mod power;
+#[cfg(target_os = "linux")]
 pub(crate) use power::monitor_host_power;
 
 const WSL_MARKER_ENV_VARS: &[&str] = &["WSL_DISTRO_NAME", "WSL_INTEROP"];

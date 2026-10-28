@@ -1265,7 +1265,7 @@ fn source_backed_client_without_direct_support_materializes_exact_pixels() {
     assert!(!server.native_graphics.is_pending(7));
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(any(target_os = "linux", target_os = "android"))]
 #[test]
 fn snapshotted_source_survives_producer_unlink_and_native_ack() {
     use std::os::fd::AsRawFd;

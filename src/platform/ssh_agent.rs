@@ -323,7 +323,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn unestablished_agent_connection_does_not_block_a_live_replacement() {
         use std::os::fd::AsRawFd;
@@ -428,7 +428,7 @@ mod tests {
         fs::remove_dir_all(directory).unwrap();
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[test]
     fn transient_probe_failure_recovers_without_a_socket_change() {
         use std::os::fd::AsRawFd;

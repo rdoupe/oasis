@@ -11,6 +11,7 @@ fn zig_target(target: &str) -> &str {
         "aarch64-unknown-linux-musl" => "aarch64-linux-musl",
         "x86_64-apple-darwin" => "x86_64-macos",
         "aarch64-apple-darwin" => "aarch64-macos",
+        "aarch64-linux-android" => "aarch64-linux-android",
         "aarch64-apple-ios" => "aarch64-ios",
         "aarch64-apple-ios-sim" => "aarch64-ios-simulator",
         "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
@@ -54,6 +55,7 @@ fn main() {
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_ZIG_SYSTEM_DIR");
     println!("cargo:rerun-if-env-changed=ZIG");
     println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_WINDOWS_LIBC");
+    println!("cargo:rerun-if-env-changed=LIBGHOSTTY_VT_ANDROID_LIBC");
 
     let optimize = env::var("LIBGHOSTTY_VT_OPTIMIZE").unwrap_or_else(|_| "ReleaseFast".into());
     let simd = env_bool("LIBGHOSTTY_VT_SIMD").unwrap_or(true);
@@ -83,6 +85,16 @@ fn main() {
         .arg("-Demit-xcframework=false");
     if target.ends_with("windows-msvc") {
         if let Some(libc_file) = env::var_os("LIBGHOSTTY_VT_WINDOWS_LIBC") {
+            println!(
+                "cargo:rerun-if-changed={}",
+                PathBuf::from(&libc_file).display()
+            );
+            command.arg("--libc").arg(libc_file);
+        }
+    }
+    if target.ends_with("-android") {
+        // Zig has no Android libc of its own; the NDK's sysroot supplies it.
+        if let Some(libc_file) = env::var_os("LIBGHOSTTY_VT_ANDROID_LIBC") {
             println!(
                 "cargo:rerun-if-changed={}",
                 PathBuf::from(&libc_file).display()

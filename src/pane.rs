@@ -1404,7 +1404,10 @@ impl TerminalCompressionWake {
 /// Drives libghostty-vt's caller-owned compression after terminal activity settles.
 struct TerminalCompressionTask {
     wake: TerminalCompressionWake,
-    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    #[cfg(all(
+        test,
+        any(target_os = "linux", target_os = "android", target_os = "macos")
+    ))]
     completed_passes: Arc<AtomicU64>,
     handle: tokio::task::AbortHandle,
 }
@@ -1423,9 +1426,15 @@ impl TerminalCompressionTask {
         };
         let task_notify = wake.notify.clone();
         let task_generation = wake.generation.clone();
-        #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+        #[cfg(all(
+            test,
+            any(target_os = "linux", target_os = "android", target_os = "macos")
+        ))]
         let completed_passes = Arc::new(AtomicU64::new(0));
-        #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+        #[cfg(all(
+            test,
+            any(target_os = "linux", target_os = "android", target_os = "macos")
+        ))]
         let task_completed_passes = completed_passes.clone();
         let handle = tokio::spawn(async move {
             run_terminal_compression_task(
@@ -1433,7 +1442,10 @@ impl TerminalCompressionTask {
                 terminal,
                 task_notify,
                 task_generation,
-                #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+                #[cfg(all(
+                    test,
+                    any(target_os = "linux", target_os = "android", target_os = "macos")
+                ))]
                 task_completed_passes,
             )
             .await;
@@ -1441,7 +1453,10 @@ impl TerminalCompressionTask {
         .abort_handle();
         Self {
             wake,
-            #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+            #[cfg(all(
+                test,
+                any(target_os = "linux", target_os = "android", target_os = "macos")
+            ))]
             completed_passes,
             handle,
         }
@@ -1459,7 +1474,10 @@ impl TerminalCompressionTask {
         self.handle.abort();
     }
 
-    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+    #[cfg(all(
+        test,
+        any(target_os = "linux", target_os = "android", target_os = "macos")
+    ))]
     fn completed_passes(&self) -> u64 {
         self.completed_passes.load(Ordering::Acquire)
     }
@@ -1470,9 +1488,11 @@ async fn run_terminal_compression_task(
     terminal: Arc<PaneTerminal>,
     notify: Arc<Notify>,
     generation: Arc<AtomicU64>,
-    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))] completed_passes: Arc<
-        AtomicU64,
-    >,
+    #[cfg(all(
+        test,
+        any(target_os = "linux", target_os = "android", target_os = "macos")
+    ))]
+    completed_passes: Arc<AtomicU64>,
 ) {
     let mut observed_generation = generation.load(Ordering::Acquire);
     let mut activity = loop {
@@ -1555,7 +1575,10 @@ async fn run_terminal_compression_task(
                 TerminalCompressionStep::Compressed(
                     crate::ghostty::TerminalCompressionResult::Complete,
                 ) => {
-                    #[cfg(all(test, any(target_os = "linux", target_os = "macos")))]
+                    #[cfg(all(
+                        test,
+                        any(target_os = "linux", target_os = "android", target_os = "macos")
+                    ))]
                     completed_passes.fetch_add(1, Ordering::Release);
                     loop {
                         notify.notified().await;
@@ -5485,7 +5508,7 @@ mod tests {
         assert!(semaphore.try_acquire_owned().is_ok());
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     #[tokio::test]
     async fn compression_task_rechecks_history_after_a_read() {
         let suffix = "x".repeat(66);
@@ -5517,7 +5540,7 @@ mod tests {
         .unwrap();
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "android", target_os = "macos"))]
     #[tokio::test]
     async fn compressed_scrollback_survives_shrink_and_grow_resize() {
         let suffix = "x".repeat(66);

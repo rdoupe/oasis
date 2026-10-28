@@ -1854,7 +1854,7 @@ command = ["cmd.exe", "/d", "/c", "slot.cmd", "default"]
         }
     }
 
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", target_os = "android"))]
     #[tokio::test]
     async fn plugin_launch_survives_executable_replacement() {
         const CHILD_ROOT: &str = "HERDR_TEST_PLUGIN_REPLACEMENT_ROOT";
@@ -4008,7 +4008,7 @@ command = ["run.bat"]
 
         // Declare only platforms that are NOT the current build target so the
         // invoke is guaranteed to be rejected regardless of which OS this runs on.
-        let excluded_platforms = if cfg!(target_os = "linux") {
+        let excluded_platforms = if cfg!(any(target_os = "linux", target_os = "android")) {
             r#"platforms = ["macos", "windows"]"#
         } else if cfg!(target_os = "macos") {
             r#"platforms = ["linux", "windows"]"#
@@ -4073,7 +4073,7 @@ command = ["act"]
         std::fs::create_dir_all(&root).unwrap();
 
         // Plugin declares all platforms; action declares only the non-current platforms.
-        let excluded_platforms = if cfg!(target_os = "linux") {
+        let excluded_platforms = if cfg!(any(target_os = "linux", target_os = "android")) {
             r#"platforms = ["macos", "windows"]"#
         } else if cfg!(target_os = "macos") {
             r#"platforms = ["linux", "windows"]"#
