@@ -308,7 +308,7 @@ pub(super) fn navigator_rows(
     let mut rows = Vec::new();
 
     for endpoint in endpoints {
-        let stale = endpoint.status != ClientEndpointStatus::Online;
+        let stale = !endpoint.responsive();
         let endpoint_query_matches = !query.is_empty() && text(&endpoint.label);
         let mut endpoint_rows = Vec::new();
         if let Some(snapshot) = endpoint.snapshot.as_deref() {

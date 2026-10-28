@@ -747,6 +747,49 @@ pub(super) fn install_client_shell_snapshot(
     Ok(())
 }
 
+/// Marks the machines whose connection has stopped answering, and sends input held
+/// for the active machine once it answers again. Returns whether the marks changed,
+/// so the caller redraws.
+pub(super) fn sync_unresponsive_endpoints(
+    state: &mut ClientState,
+    endpoints: &mut endpoint::EndpointRegistry,
+    pending_activation: &Option<endpoint::PendingEndpointActivation>,
+    now: std::time::Instant,
+) -> Result<bool, ClientError> {
+    let Some(shell) = state.shell.as_mut() else {
+        return Ok(false);
+    };
+    let changed = shell.set_unresponsive_endpoints(&endpoints.unresponsive(now));
+    if state.held_input.is_empty() || pending_activation.is_some() {
+        return Ok(changed);
+    }
+    let active = endpoints.active_id().clone();
+    // Answering again with a live surface. A remote machine that reconnected must
+    // also be back online with its new snapshot, or the input lands in the gap;
+    // Local's snapshot lives apart from the remote ones.
+    let ready = state.shell.as_ref().is_some_and(|shell| {
+        !shell.endpoint_unresponsive(&active)
+            && (active.is_local() || shell.endpoint_is_online(&active))
+    }) && endpoints.active_surface_available();
+    if !ready {
+        return Ok(changed);
+    }
+    let held = state.held_input.take(&active, now);
+    if !held.is_empty() {
+        tracing::info!(
+            endpoint = %active.storage_key(),
+            generation = endpoints.connection(&active).map(|connection| connection.generation),
+            messages = held.len(),
+            "sending input held while the machine was not responding"
+        );
+    }
+    for message in held {
+        write_to_server(endpoints, &message).map_err(ClientError::ConnectionLost)?;
+        endpoints.input_sent(&active, now);
+    }
+    Ok(changed)
+}
+
 pub(super) fn finish_client_shell_input(
     state: &mut ClientState,
     outcome: shell::ClientShellInput,
@@ -860,6 +903,22 @@ pub(super) fn finish_client_shell_input(
         if pending_activation.is_some() {
             // Pane input and non-focus host effects do not cross the frozen handoff boundary.
             continue;
+        }
+        if super::held_input::is_input(&request) {
+            let active = endpoints.active_id().clone();
+            let now = std::time::Instant::now();
+            // A stalled connection would lose it on reconnect; newer input queues
+            // behind anything already held so it all arrives in order.
+            if state
+                .shell
+                .as_ref()
+                .is_some_and(|shell| shell.endpoint_unresponsive(&active))
+                || state.held_input.holds_for(&active)
+            {
+                state.held_input.hold(active, now, request);
+                continue;
+            }
+            endpoints.input_sent(&active, now);
         }
         write_to_server(endpoints, &request).map_err(ClientError::ConnectionLost)?;
     }

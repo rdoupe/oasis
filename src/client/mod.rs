@@ -29,6 +29,7 @@ mod frame_output;
 #[cfg(test)]
 mod frame_output_tests;
 mod handshake;
+pub(crate) mod held_input;
 mod image_files;
 mod input;
 pub(crate) mod keys;
@@ -488,6 +489,7 @@ async fn run_client_loop(
         remote_image_paste_key: config.remote_image_paste_key,
         redraw_on_focus_gained: config.redraw_on_focus_gained,
         repaint_pending: false,
+        held_input: Default::default(),
         presentation_frozen: false,
         deferred_local_activation: None,
         draw_host_cursor,
@@ -2289,6 +2291,12 @@ async fn run_client_loop(
                     .detached_process_children
                     .retain_mut(|child| child.try_wait().ok().flatten().is_none());
                 write_stream.tick_health(now);
+                let unresponsive_changed = shell_runtime::sync_unresponsive_endpoints(
+                    &mut state,
+                    &mut write_stream,
+                    &pending_activation,
+                    now,
+                )?;
                 for failure in write_stream.take_failures() {
                     if write_stream.connection(&failure.endpoint_id).is_some()
                         && !write_stream.accepts(&failure.endpoint_id, failure.generation)
@@ -2389,7 +2397,8 @@ async fn run_client_loop(
                         outcome.repaint |= notification_repaint
                             | shell.tick_copy_feedback(now)
                             | shell.tick_workspace_highlight(now)
-                            | shell.tick_endpoint_error(now);
+                            | shell.tick_endpoint_error(now)
+                            | unresponsive_changed;
                         let frame = outcome
                             .repaint
                             .then(|| shell.compose(state.reported_size.0, state.reported_size.1))

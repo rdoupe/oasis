@@ -3069,3 +3069,57 @@ fn focusing_the_window_retries_reconnecting_machines() {
     state.handle_raw_events(vec![RawInputEvent::OuterFocusGained]);
     assert!(state.take_machine_retries().contains(&id));
 }
+
+#[test]
+fn a_stalled_active_machine_reads_as_a_connection_problem() {
+    let (mut state, endpoint_id) = state_with_remote();
+    assert!(state.activate_endpoint_projection(&endpoint_id));
+    let mut remote_surface = surface();
+    remote_surface.boot_id = "remote-boot".into();
+    state.set_pane_surface(remote_surface);
+    let compose = |state: &mut ClientShellState| {
+        let frame = state.compose(140, 28).expect("frame");
+        frame
+            .cells
+            .chunks(frame.width as usize)
+            .map(|row| {
+                row.iter()
+                    .map(|cell| cell.symbol.as_str())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    assert!(!compose(&mut state).contains("isn't responding"));
+
+    let stalled = std::collections::HashSet::from([endpoint_id.clone()]);
+    assert!(state.set_unresponsive_endpoints(&stalled));
+    assert!(
+        !state.set_unresponsive_endpoints(&stalled),
+        "no change, no repaint"
+    );
+    assert!(state.endpoint_unresponsive(&endpoint_id));
+    let text = compose(&mut state);
+    assert!(text.contains("isn't responding"), "frame: {text}");
+    assert!(text.contains("◌"), "the sidebar marks the machine: {text}");
+    assert_eq!(
+        state.endpoint_status(&endpoint_id),
+        Some(ClientEndpointStatus::Online),
+        "still connected; only shown as a connection problem"
+    );
+
+    assert!(state.set_unresponsive_endpoints(&std::collections::HashSet::new()));
+    assert!(!compose(&mut state).contains("isn't responding"));
+}
+
+#[test]
+fn only_an_online_machine_reads_as_not_responding() {
+    let (mut state, endpoint_id) = state_with_remote();
+    state.mark_endpoint_disconnected(&endpoint_id);
+    let stalled = std::collections::HashSet::from([endpoint_id.clone()]);
+    state.set_unresponsive_endpoints(&stalled);
+    assert!(
+        !state.endpoint_unresponsive(&endpoint_id),
+        "reconnecting says so itself"
+    );
+}

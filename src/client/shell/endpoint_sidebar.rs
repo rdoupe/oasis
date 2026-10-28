@@ -84,7 +84,7 @@ pub(super) fn render_collapsed(
                 rect.y,
                 rect.width.saturating_sub(1),
                 &format!("{marker}{label}"),
-                Style::default().fg(if endpoint.status == ClientEndpointStatus::Online {
+                Style::default().fg(if endpoint.responsive() {
                     palette.text
                 } else {
                     palette.overlay0
@@ -92,7 +92,7 @@ pub(super) fn render_collapsed(
             );
             let mut status_badge = Rect::default();
             if !endpoint.endpoint_id.is_local() {
-                let (glyph, _, color) = endpoint_status_presentation(endpoint.status, palette);
+                let (glyph, _, color) = endpoint_presentation(endpoint, palette);
                 let width = display_width(glyph).min(rect.width);
                 status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
                 put_right_text(
@@ -150,7 +150,7 @@ pub(super) fn render_collapsed(
                     )),
                 );
             }
-            let stale = endpoint.status != ClientEndpointStatus::Online;
+            let stale = !endpoint.responsive();
             let number = format!(" {}", workspace.number);
             let number_width = super::render::display_width(&number).min(rect.width);
             let dim = if stale {
@@ -483,7 +483,7 @@ pub(super) fn render_expanded(
                     false,
                     palette,
                 );
-                if endpoint.status != ClientEndpointStatus::Online {
+                if !endpoint.responsive() {
                     buffer.set_style(
                         rect,
                         Style::default()
@@ -606,12 +606,8 @@ fn render_endpoint_row(
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
     }
-    let (glyph, state, color) = endpoint_status_presentation(endpoint.status, palette);
-    let state = if endpoint.status == ClientEndpointStatus::Online {
-        ""
-    } else {
-        state
-    };
+    let (glyph, state, color) = endpoint_presentation(endpoint, palette);
+    let state = if endpoint.responsive() { "" } else { state };
     let signal = if auth.required_for(endpoint) {
         "! auth".to_owned()
     } else if endpoint.status == ClientEndpointStatus::Attention {

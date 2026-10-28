@@ -72,6 +72,8 @@ pub(super) struct ClientState {
         Option<(crossterm::event::KeyCode, crossterm::event::KeyModifiers)>,
     pub(super) redraw_on_focus_gained: bool,
     pub(super) repaint_pending: bool,
+    /// Input for a machine that has stopped answering, sent once it answers again.
+    pub(super) held_input: super::held_input::HeldInput,
     /// During a source-off-first handoff the currently blitted frame remains authoritative until
     /// an acknowledged target snapshot/surface pair commits.
     pub(super) presentation_frozen: bool,
@@ -136,6 +138,7 @@ impl ClientState {
             remote_image_paste_key: None,
             redraw_on_focus_gained: false,
             repaint_pending: false,
+            held_input: Default::default(),
             presentation_frozen: false,
             deferred_local_activation: None,
             draw_host_cursor: false,
