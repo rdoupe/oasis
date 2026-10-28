@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use oasis_core::embed::sidebar::{
-    ActivityPart, ResolvedTokenKind, SidebarModel, SidebarPrefs, TokenRow,
+    ActivityKind, ActivityPart, Agent, ResolvedTokenKind, SidebarModel, SidebarPrefs, TokenRow,
 };
 use oasis_core::embed::wire::{
     AgentStatus, ClientKeyCode, ClientKeyKind, ClientMouseKind, ClientMousePosition, Method,
@@ -22,6 +22,8 @@ pub struct Session {
     core: ClientCore,
     endpoints: BTreeMap<String, Endpoint>,
     active: Option<EndpointId>,
+    /// The latest sidebar model: status-only updates still list each machine's spaces.
+    sidebar: Option<SidebarModel>,
     pub grid: Grid,
     pub palette: Palette,
 }
@@ -65,6 +67,7 @@ impl Session {
             core,
             endpoints: BTreeMap::new(),
             active: None,
+            sidebar: None,
             grid: Grid::default(),
             palette: Palette::default(),
         })
@@ -135,11 +138,13 @@ impl Session {
             }
         }
         let mut out = json!({ "surface": surface, "notices": notices });
-        if machines_changed || drained.sidebar.is_some() {
-            out["machines"] = self.machines_json(drained.sidebar.as_ref());
+        let sidebar_changed = drained.sidebar.is_some();
+        if let Some(model) = drained.sidebar {
+            out["agents"] = agents_json(&model);
+            self.sidebar = Some(model);
         }
-        if let Some(model) = &drained.sidebar {
-            out["agents"] = agents_json(model);
+        if machines_changed || sidebar_changed {
+            out["machines"] = self.machines_json();
         }
         if let Some(text) = clipboard {
             out["clipboard"] = Value::String(text);
@@ -153,7 +158,8 @@ impl Session {
             .map_or_else(|| id.as_str().to_owned(), |e| e.label.clone())
     }
 
-    fn machines_json(&self, model: Option<&SidebarModel>) -> Value {
+    fn machines_json(&self) -> Value {
+        let model = self.sidebar.as_ref();
         Value::Array(
             self.endpoints
                 .values()
@@ -180,7 +186,7 @@ impl Session {
                             .map(|space| {
                                 json!({
                                     "id": space.workspace_id,
-                                    "name": rows_text(&space.rows).first().cloned().unwrap_or_default(),
+                                    "name": rows_text(&space.rows, false).first().cloned().unwrap_or_default(),
                                     "status": status_name(space.status),
                                     "focused": space.focused,
                                 })
@@ -358,12 +364,26 @@ fn status_name(status: AgentStatus) -> &'static str {
     }
 }
 
+/// The agents the app draws its own logo for; their name and mark tokens are left
+/// out of the text, as clawmux does.
+fn logo(agent: Option<Agent>) -> Option<&'static str> {
+    Some(match agent? {
+        Agent::Claude => "claude",
+        Agent::Codex => "codex",
+        Agent::Cursor => "cursor",
+        Agent::Grok => "grok",
+        Agent::Gemini => "gemini",
+        _ => return None,
+    })
+}
+
 fn agents_json(model: &SidebarModel) -> Value {
     model
         .agents
         .iter()
         .map(|agent| {
-            let lines = rows_text(&agent.rows);
+            let logo = logo(agent.agent);
+            let lines = rows_text(&agent.rows, logo.is_some());
             json!({
                 "endpoint": agent.endpoint,
                 "machine": agent.machine_label,
@@ -371,6 +391,7 @@ fn agents_json(model: &SidebarModel) -> Value {
                 "space": agent.workspace_id,
                 "status": status_name(agent.status),
                 "agent": agent.agent.map(|a| format!("{a:?}")),
+                "logo": logo,
                 "title": lines.first().cloned().unwrap_or_default(),
                 "detail": lines[1.min(lines.len())..].join("  "),
                 "focused": agent.focused,
@@ -380,12 +401,14 @@ fn agents_json(model: &SidebarModel) -> Value {
         .collect()
 }
 
-/// Each token row as plain text, leaving out the state icon, which the app draws.
-fn rows_text(rows: &[TokenRow]) -> Vec<String> {
+/// Each token row as plain text, in the order the person's sidebar config lays it
+/// out, leaving out the state icon, which the app draws, and with `logo` the
+/// agent's name and mark, which its logo replaces.
+fn rows_text(rows: &[TokenRow], logo: bool) -> Vec<String> {
     rows.iter()
         .map(|row| {
             row.iter()
-                .filter_map(|token| token_text(&token.kind))
+                .filter_map(|token| token_text(&token.kind, logo))
                 .filter(|text| !text.trim().is_empty())
                 .collect::<Vec<_>>()
                 .join(" ")
@@ -394,9 +417,10 @@ fn rows_text(rows: &[TokenRow]) -> Vec<String> {
         .collect()
 }
 
-fn token_text(kind: &ResolvedTokenKind) -> Option<String> {
+fn token_text(kind: &ResolvedTokenKind, logo: bool) -> Option<String> {
     Some(match kind {
         ResolvedTokenKind::StateIcon => return None,
+        ResolvedTokenKind::Agent(_) if logo => return None,
         ResolvedTokenKind::StateText(text)
         | ResolvedTokenKind::Machine(text)
         | ResolvedTokenKind::Workspace(text)
@@ -414,7 +438,8 @@ fn token_text(kind: &ResolvedTokenKind) -> Option<String> {
         },
         ResolvedTokenKind::Activity(parts) => parts
             .iter()
-            .map(|part: &ActivityPart| part.text.clone())
+            .filter(|part: &&ActivityPart| !(logo && part.kind == ActivityKind::Agent))
+            .map(|part| part.text.clone())
             .collect::<Vec<_>>()
             .join(" "),
     })
@@ -431,5 +456,43 @@ mod tests {
         assert_eq!(key_code(0x10C), Some(ClientKeyCode::F(12)));
         assert_eq!(key_code(0x10000 + 'c' as i32), Some(ClientKeyCode::Char('c')));
         assert_eq!(key_code(99), None);
+    }
+
+    #[test]
+    fn a_logo_replaces_the_agent_name_and_mark_but_keeps_the_rest() {
+        use oasis_core::embed::sidebar::{ResolvedToken, SidebarTokenColor, SidebarTokenStyle};
+        let token = |kind| ResolvedToken {
+            kind,
+            style: SidebarTokenStyle::default(),
+        };
+        let mark = ActivityPart {
+            kind: ActivityKind::Agent,
+            count: 1,
+            label: None,
+            text: "✳".into(),
+            color: SidebarTokenColor::from_rgb(0, 0, 0),
+        };
+        let subagents = ActivityPart {
+            kind: ActivityKind::Subagents,
+            count: 2,
+            label: None,
+            text: "2 subagents".into(),
+            color: SidebarTokenColor::from_rgb(0, 0, 0),
+        };
+        let rows = vec![
+            vec![
+                token(ResolvedTokenKind::StateIcon),
+                token(ResolvedTokenKind::Activity(vec![mark.clone()])),
+                token(ResolvedTokenKind::Workspace("oasis".into())),
+                token(ResolvedTokenKind::Activity(vec![subagents])),
+            ],
+            vec![token(ResolvedTokenKind::TerminalTitle("fix the phone app".into()))],
+            vec![token(ResolvedTokenKind::Agent("Claude".into()))],
+        ];
+        assert_eq!(
+            rows_text(&rows, true),
+            vec!["oasis 2 subagents".to_owned(), "fix the phone app".to_owned()]
+        );
+        assert_eq!(rows_text(&rows, false)[0], "✳ oasis 2 subagents");
     }
 }

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Cross-builds OpenSSH's ssh and ssh-keygen for Android, which the app ships as
 # lib*.so files: Oasis reaches saved machines by running `ssh`, and a phone has none.
-# Built without OpenSSL or zlib (ed25519 keys, chacha20/aes-ctr with OpenSSH's own
-# crypto). Patched to read ~ from $HOME, since an app's passwd entry says /data.
+# Built without OpenSSL (ed25519 keys, chacha20/aes-ctr with OpenSSH's own
+# crypto) and against the system zlib, since Oasis asks for compression.
+# Patched to read ~ from $HOME, since an app's passwd entry says /data.
 #
 #   android/openssh/build.sh <aarch64|x86_64> <out-dir>
 set -euo pipefail
@@ -72,7 +73,7 @@ STUB
         cd "$SRC"
         CC="$TOOLS/$HOST$API-clang" AR="$TOOLS/llvm-ar" RANLIB="$TOOLS/llvm-ranlib" \
             CFLAGS="-O2 -fPIE -DHAVE_ATTRIBUTE__SENTINEL__ -include strings.h" LDFLAGS="-pie" \
-            ac_cv_func_bzero=yes ./configure --host="$HOST" --without-openssl --without-zlib \
+            ac_cv_func_bzero=yes ./configure --host="$HOST" --without-openssl \
             --without-pam --without-selinux --without-shadow --disable-strip \
             --disable-lastlog --disable-utmp --disable-utmpx --disable-wtmp --disable-wtmpx \
             --with-privsep-path=/nonexistent --with-xauth=/nonexistent \

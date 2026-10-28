@@ -3,6 +3,10 @@ package app.oasis.mobile
 import android.content.ClipData
 import android.content.ClipboardManager
 import android.content.Context
+import android.net.ConnectivityManager
+import android.net.Network
+import android.net.NetworkCapabilities
+import android.net.NetworkRequest
 import android.os.Handler
 import android.os.Looper
 import android.os.MessageQueue
@@ -32,6 +36,8 @@ data class Agent(
     val space: String,
     val status: String,
     val agent: String?,
+    /** The bundled logo for the agent's tool (`logo_<name>`), when there is one. */
+    val logo: String?,
     val title: String,
     val detail: String,
     val stale: Boolean,
@@ -50,6 +56,8 @@ class Core(private val context: Context) {
     /** Set while ssh is being prepared or the core has not started. */
     val starting = mutableStateOf(true)
     val ctrl = mutableStateOf(false)
+    /** Whether a VPN, normally Tailscale, is up on this phone. */
+    val vpnUp = mutableStateOf(false)
     val alt = mutableStateOf(false)
 
     var handle = 0L
@@ -63,6 +71,40 @@ class Core(private val context: Context) {
     private val ssh = File(home, ".ssh")
     val publicKey: String
         get() = File(ssh, "id_ed25519.pub").takeIf { it.exists() }?.readText()?.trim() ?: ""
+
+    init {
+        val connectivity = context.getSystemService(ConnectivityManager::class.java)
+        vpnUp.value = connectivity.allNetworks.any {
+            connectivity.getNetworkCapabilities(it)?.hasTransport(NetworkCapabilities.TRANSPORT_VPN) == true
+        }
+        val request = NetworkRequest.Builder()
+            .addTransportType(NetworkCapabilities.TRANSPORT_VPN)
+            .removeCapability(NetworkCapabilities.NET_CAPABILITY_NOT_VPN)
+            .build()
+        connectivity.registerNetworkCallback(
+            request,
+            object : ConnectivityManager.NetworkCallback() {
+                override fun onAvailable(network: Network) {
+                    main.post {
+                        vpnUp.value = true
+                        // Machines that waited for Tailscale connect now, not at the next retry.
+                        machines.value.filter { it.status != "online" }.forEach(::retry)
+                    }
+                }
+
+                override fun onLost(network: Network) {
+                    main.post { vpnUp.value = false }
+                }
+            },
+        )
+    }
+
+    /** A machine out of reach because it is on the tailnet and no VPN is up. */
+    fun waitsForTailscale(machine: Machine): Boolean {
+        if (machine.status == "online" || vpnUp.value) return false
+        val target = prefs.machines.firstOrNull { it.label == machine.label }?.target ?: return false
+        return isTailnetHost(target.substringAfter('@'))
+    }
 
     /** Prepares ssh off the main thread, then starts the core with this geometry. */
     fun start(geometry: () -> IntArray) {
@@ -118,7 +160,9 @@ class Core(private val context: Context) {
 
     private fun drain() {
         if (handle == 0L) return
-        val out = JSONObject(Native.drain(handle))
+        val raw = Native.drain(handle)
+        if (BuildConfig.DEBUG && (raw.contains("\"machines\"") || raw.contains("\"agents\""))) Log.d(TAG, raw)
+        val out = JSONObject(raw)
         if (out.optBoolean("surface")) terminal?.setFrame(Native.frame(handle))
         out.optJSONArray("machines")?.let { machines.value = parseMachines(it) }
         out.optJSONArray("agents")?.let { agents.value = parseAgents(it) }
@@ -161,6 +205,9 @@ class Core(private val context: Context) {
             link.delete()
             Os.symlink("$libs/$lib", link.path)
         }
+        val config = File(home, ".config/oasis")
+        config.mkdirs()
+        File(config, "config.toml").writeText(SIDEBAR_CONFIG)
         ssh.mkdirs()
         File(ssh, "config").writeText(
             """
@@ -207,6 +254,37 @@ class Core(private val context: Context) {
 
     companion object {
         const val TAG = "oasis"
+        const val TAILSCALE = "com.tailscale.ipn"
+
+        /**
+         * The agent rows the desktop Oasis config lays out: the state, the agent's
+         * mark (a logo here), the space and background work, then the agent's own
+         * session title, e.g. Claude's summary of the conversation.
+         */
+        val SIDEBAR_CONFIG = """
+            |# Written by the Oasis app at each start.
+            |[ui]
+            |status_indicators = "symbols"
+            |agent_panel_sort = "spaces"
+            |
+            |[ui.sidebar.agents]
+            |rows = [["state_icon", "machine", "workspace", "background"], ["agent"]]
+            |
+            |[ui.sidebar.agents.rows_by_agent]
+            |claude = [["state_icon", "agent_icon", "workspace", "background"], ["terminal_title_stripped"]]
+            |codex = [["state_icon", "agent_icon", "workspace", "background"], ["terminal_title_stripped"]]
+            |cursor = [["state_icon", "agent_icon", "workspace", "background"], ["terminal_title_stripped"]]
+            |opencode = [["state_icon", "agent_icon", "workspace", "background"], ["terminal_title_stripped"]]
+            |""".trimMargin()
+
+        /** A MagicDNS name, or an address in the ranges Tailscale assigns (its CGNAT IPv4 block and its ULA IPv6 prefix). */
+        fun isTailnetHost(host: String): Boolean {
+            val h = host.trim().trimEnd('.').lowercase().removeSurrounding("[", "]")
+            if (h.endsWith(".ts.net")) return true
+            if (h.startsWith("fd7a:115c:a1e0:")) return true
+            val octets = h.split('.').mapNotNull { it.toIntOrNull() }
+            return octets.size == 4 && h.count { it == '.' } == 3 && octets[0] == 100 && octets[1] in 64..127
+        }
 
         fun parseMachines(array: JSONArray) = (0 until array.length()).map {
             val m = array.getJSONObject(it)
@@ -232,6 +310,7 @@ class Core(private val context: Context) {
                 space = a.getString("space"),
                 status = a.getString("status"),
                 agent = if (a.isNull("agent")) null else a.getString("agent"),
+                logo = if (a.isNull("logo")) null else a.getString("logo"),
                 title = a.getString("title"),
                 detail = a.getString("detail"),
                 stale = a.optBoolean("stale"),

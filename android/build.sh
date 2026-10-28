@@ -40,6 +40,14 @@ for style in Regular Bold; do
     fi
 done
 
+# Agent logos (Lobe Icons, MIT, app/logos), single-color marks in the theme's text color.
+LOGOS=$GEN/res/drawable-nodpi
+mkdir -p "$LOGOS"
+for name in claude:claude-color codex:openai cursor:cursor grok:grok gemini:gemini-color; do
+    sed 's/currentColor/#c0caf5/g' "$HERE/app/logos/${name#*:}.svg" \
+        | rsvg-convert -w 144 -h 144 -o "$LOGOS/logo_${name%%:*}.png"
+done
+
 cd "$HERE"
 TASK=assemble$(echo "${VARIANT:0:1}" | tr a-z A-Z)${VARIANT:1}
 gradle --quiet "$TASK"

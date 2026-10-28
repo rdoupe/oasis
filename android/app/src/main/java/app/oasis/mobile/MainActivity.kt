@@ -179,7 +179,7 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
 
     fun openAgent(agent: Agent) {
         core.openAgent(agent)
-        screen = Screen.Terminal(agentName(agent), "${agent.machine} · ${agent.title}", agent)
+        screen = Screen.Terminal(agent.detail.ifBlank { agent.title }, "${agent.machine} · ${agent.title}", agent)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -213,8 +213,6 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
     }
 }
 
-private fun agentName(agent: Agent) = agent.agent ?: "Agent"
-
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun AgentsScreen(
@@ -241,9 +239,13 @@ private fun AgentsScreen(
                 modifier = Modifier.padding(24.dp),
             )
         }
+        val offTailnet = machines.filter { core.waitsForTailscale(it) }
+        if (offTailnet.isNotEmpty()) TailscaleBanner(offTailnet)
         LazyColumn(Modifier.fillMaxSize(), contentPadding = androidx.compose.foundation.layout.PaddingValues(bottom = 24.dp)) {
             for (machine in machines) {
-                item(key = "m:" + machine.id) { MachineHeader(machine) { core.retry(machine) } }
+                item(key = "m:" + machine.id) {
+                    MachineHeader(machine, waitsForTailscale = machine in offTailnet) { core.retry(machine) }
+                }
                 val mine = agents.filter { it.endpoint == machine.id }
                 val spaceOrder = machine.spaces.map { it.id }
                 val bySpace = mine.groupBy { it.space }
@@ -274,19 +276,53 @@ private fun StatusDot(status: String, size: Int = 12) {
     Box(Modifier.size(size.dp).alpha(pulse).clip(CircleShape).background(statusColor(status)))
 }
 
+/** Shown while machines on the tailnet are out of reach because Tailscale is off. */
 @Composable
-private fun MachineHeader(machine: Machine, onRetry: () -> Unit) {
+private fun TailscaleBanner(machines: List<Machine>) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val names = machines.joinToString(" and ") { it.label }
+    Column(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Raised)
+            .padding(16.dp),
+    ) {
+        Text("Tailscale is off", color = Foreground, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Text(
+            "$names ${if (machines.size == 1) "is" else "are"} on your tailnet. Turn Tailscale on and Oasis reconnects by itself.",
+            color = Dim,
+            fontSize = 15.sp,
+            modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
+        )
+        val launch = context.packageManager.getLaunchIntentForPackage(Core.TAILSCALE)
+        Button(onClick = {
+            context.startActivity(
+                launch ?: android.content.Intent(
+                    android.content.Intent.ACTION_VIEW,
+                    android.net.Uri.parse("market://details?id=${Core.TAILSCALE}"),
+                ),
+            )
+        }) { Text(if (launch != null) "Open Tailscale" else "Get Tailscale") }
+    }
+}
+
+@Composable
+private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 18.dp, bottom = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(machine.status, 10)
             Spacer(Modifier.width(10.dp))
             Text(machine.label.uppercase(), color = Dim, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
             Spacer(Modifier.weight(1f))
-            if (machine.status == "attention" || machine.status == "reconnecting") {
+            if (!waitsForTailscale && (machine.status == "attention" || machine.status == "reconnecting")) {
                 IconButton(onClick = onRetry) { Icon(Icons.Default.Refresh, "Retry", tint = Dim) }
             }
         }
-        if (machine.detail.isNotBlank() && machine.status != "online") {
+        if (waitsForTailscale) {
+            Text("Waiting for Tailscale", color = Dim, fontSize = 13.sp)
+        } else if (machine.detail.isNotBlank() && machine.status != "online") {
             Text(machine.detail, color = statusColor(machine.status), fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
@@ -311,6 +347,22 @@ private fun SpaceRow(space: Space, empty: Boolean, onClick: () -> Unit) {
     }
 }
 
+/** The agent tool's logo, or nothing when the app has none for it. */
+@Composable
+private fun AgentLogo(agent: Agent, size: Int = 22) {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    val id = remember(agent.logo) {
+        agent.logo?.let { context.resources.getIdentifier("logo_$it", "drawable", context.packageName) } ?: 0
+    }
+    if (id != 0) {
+        androidx.compose.foundation.Image(
+            androidx.compose.ui.res.painterResource(id),
+            contentDescription = agent.agent,
+            modifier = Modifier.size(size.dp),
+        )
+    }
+}
+
 @Composable
 private fun AgentCard(agent: Agent, onClick: () -> Unit) {
     Row(
@@ -325,18 +377,25 @@ private fun AgentCard(agent: Agent, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         StatusDot(agent.status)
-        Spacer(Modifier.width(14.dp))
+        Spacer(Modifier.width(12.dp))
+        AgentLogo(agent)
+        if (agent.logo != null) Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(agentName(agent), color = Foreground, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+                Text(
+                    agent.title,
+                    color = Foreground,
+                    fontSize = 16.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false),
+                )
                 Spacer(Modifier.width(8.dp))
-                Text(statusWord(agent.status), color = statusColor(agent.status), fontSize = 14.sp)
-            }
-            if (agent.title.isNotBlank()) {
-                Text(agent.title, color = Foreground, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(statusWord(agent.status), color = statusColor(agent.status), fontSize = 13.sp, maxLines = 1)
             }
             if (agent.detail.isNotBlank()) {
-                Text(agent.detail, color = Dim, fontSize = 14.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
+                Text(agent.detail, color = Dim, fontSize = 15.sp, maxLines = 2, overflow = TextOverflow.Ellipsis)
             }
         }
     }
@@ -363,9 +422,16 @@ private fun TerminalScreen(
                     live?.let {
                         StatusDot(it.status, 10)
                         Spacer(Modifier.width(10.dp))
+                        AgentLogo(it, 20)
+                        if (it.logo != null) Spacer(Modifier.width(10.dp))
                     }
                     Column {
-                        Text(screen.title, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(
+                            live?.let { it.detail.ifBlank { it.title } } ?: screen.title,
+                            fontSize = 17.sp,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                         Text(
                             live?.let { "${it.machine} · ${it.title}" } ?: screen.subtitle,
                             fontSize = 13.sp,
