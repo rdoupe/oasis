@@ -10,6 +10,7 @@ mod drawer;
 mod grid;
 mod keys;
 mod logos;
+mod quick;
 mod sidebar;
 mod termview;
 mod theme;

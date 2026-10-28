@@ -91,6 +91,18 @@ impl SidebarView {
             }
         });
         view.list.add_controller(click);
+        // A long press is a finger's right-click: it opens the row's menu.
+        let hold = gtk::GestureLongPress::new();
+        hold.set_touch_only(true);
+        let weak = Rc::downgrade(&view);
+        hold.connect_pressed(move |gesture, _, y| {
+            let Some(view) = weak.upgrade() else { return };
+            if let Some(row) = view.list.row_at_y(y as i32) {
+                gesture.set_state(gtk::EventSequenceState::Claimed);
+                view.fire(&row, gtk::gdk::BUTTON_SECONDARY);
+            }
+        });
+        view.list.add_controller(hold);
         view
     }
 

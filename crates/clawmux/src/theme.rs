@@ -220,6 +220,13 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .touch .clawmux-tabs .tab-pill {{ min-height: 38px; }}
 .touch .clawmux-tabs button.tab-add {{ min-width: 44px; min-height: 38px; }}
 popover.touch-menu button {{ min-width: 72px; min-height: 44px; font-size: 1.15em; }}
+popover.touch-menu box.vertical button {{ min-width: 180px; min-height: 48px; }}
+.clawmux-tabs button.pane-close {{ background: none; border: none; box-shadow: none; min-height: 38px; min-width: 44px; padding: 0 12px; border-radius: 6px; color: alpha({fg}, 0.7); }}
+.clawmux-tabs button.pane-close:hover {{ background: alpha({red}, 0.18); color: {fg}; }}
+.clawmux-quick {{ background: {sidebar}; padding: 4px 6px; border-bottom: 1px solid {raised}; }}
+.clawmux-quick button {{ min-height: 40px; min-width: 64px; padding: 0 14px; border-radius: 8px; font-weight: 600; }}
+window.clawmux-confirm .confirm-message {{ font-size: 1.15em; }}
+window.clawmux-confirm button {{ min-height: 52px; min-width: 120px; font-size: 1.1em; border-radius: 10px; }}
 .clawmux-sidebar row.heading-row {{ padding: 0; margin: 0; }}
 .clawmux-sidebar separator.section-divider {{ background: {raised}; min-height: 1px; margin: 10px 12px 2px; }}
 .clawmux-sidebar row.heading-row:hover {{ background: transparent; }}

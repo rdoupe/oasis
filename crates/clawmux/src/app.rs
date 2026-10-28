@@ -50,6 +50,11 @@ pub struct App {
     browser: Rc<crate::browser::Panel>,
     notification_pane: RefCell<Option<String>>,
     tabs: gtk::Box,
+    /// Touch buttons for the focused pane's agent (interrupt, background, send now).
+    quick: gtk::Box,
+    quick_actions: RefCell<Vec<crate::quick::QuickAction>>,
+    /// Closes the focused pane, in the touch layout's tab bar.
+    pane_close: gtk::Button,
     banner: gtk::Revealer,
     banner_label: gtk::Label,
     /// The bar that says the active machine has stopped answering; kept apart from
@@ -137,9 +142,20 @@ impl App {
         header.add_css_class("clawmux-tabs");
         tabs.set_hexpand(true);
         let drawer = Drawer::new(&sidebar.root, &main);
+        let pane_close = gtk::Button::with_label("✕ Pane");
+        pane_close.add_css_class("pane-close");
+        pane_close.set_focusable(false);
+        pane_close.set_tooltip_text(Some("Close this pane"));
+        pane_close.set_valign(gtk::Align::Center);
+        pane_close.set_visible(false);
         header.append(&drawer.button);
         header.append(&tabs);
+        header.append(&pane_close);
+        let quick = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        quick.add_css_class("clawmux-quick");
+        quick.set_visible(false);
         main.append(&header);
+        main.append(&quick);
         main.append(&stall);
         main.append(&banner);
         main.append(&view);
@@ -164,6 +180,9 @@ impl App {
             browser: Rc::new(crate::browser::Panel::default()),
             notification_pane: RefCell::new(None),
             tabs,
+            quick,
+            quick_actions: RefCell::new(Vec::new()),
+            pane_close,
             banner,
             banner_label,
             stall,
@@ -261,6 +280,13 @@ impl App {
         self.wire_mouse();
         self.wire_theme_monitor();
 
+        let app = self.clone();
+        self.pane_close.connect_clicked(move |_| {
+            if let Some(id) = app.focused_pane_id() {
+                app.confirm_close_pane(&id);
+            }
+        });
+
         let show_pane = gio::SimpleAction::new("show-pane", Some(glib::VariantTy::STRING));
         let app = self.clone();
         show_pane.connect_activate(move |_, param| {
@@ -272,37 +298,141 @@ impl App {
         self.application.add_action(&show_pane);
     }
 
-    fn space_menu(self: &Rc<Self>, row: &gtk::ListBoxRow, workspace_id: &str, _x: f64, _y: f64) {
-        let popover = gtk::Popover::new();
-        let items = gtk::Box::new(gtk::Orientation::Vertical, 2);
-        let make = |label: &str| {
+    /// A menu of actions beside `anchor`: right-click on a desktop, a long press on a
+    /// touchscreen, where its buttons are sized for fingers. It hangs off the window, not
+    /// the anchor, so a sidebar or tab bar rebuilt underneath doesn't take it away.
+    /// Where `anchor` is, for a menu; taken before anything rebuilds the anchor away.
+    fn anchor_rect(&self, anchor: &impl IsA<gtk::Widget>) -> gdk::Rectangle {
+        anchor
+            .compute_bounds(&self.drawer.root)
+            .map(|b| {
+                gdk::Rectangle::new(
+                    b.x() as i32,
+                    b.y() as i32,
+                    (b.width() as i32).max(1),
+                    (b.height() as i32).max(1),
+                )
+            })
+            .unwrap_or_else(|| gdk::Rectangle::new(0, 0, 1, 1))
+    }
+
+    fn menu(self: &Rc<Self>, rect: gdk::Rectangle, items: Vec<MenuItem>) {
+        let parent = &self.drawer.root;
+        let column = gtk::Box::new(gtk::Orientation::Vertical, 2);
+        let popover = gtk::Popover::builder()
+            .child(&column)
+            .pointing_to(&rect)
+            .build();
+        if self.drawer.touch_layout() {
+            popover.add_css_class("touch-menu");
+        }
+        for (label, action) in items {
             let button = gtk::Button::with_label(label);
             button.add_css_class("flat");
-            items.append(&button);
-            button
-        };
-        let rename = make("Rename");
-        let new_tab = make("New tab");
-        let close = make("Close");
-        popover.set_child(Some(&items));
-        popover.set_parent(row);
-        let (app, id, pop) = (self.clone(), workspace_id.to_owned(), popover.clone());
-        rename.connect_clicked(move |_| {
-            pop.popdown();
-            app.rename_workspace(&id);
-        });
-        let (app, id, pop) = (self.clone(), workspace_id.to_owned(), popover.clone());
-        new_tab.connect_clicked(move |_| {
-            pop.popdown();
-            app.request("tab.create", json!({ "workspace_id": id, "focus": true }));
-        });
-        let (app, id, pop) = (self.clone(), workspace_id.to_owned(), popover.clone());
-        close.connect_clicked(move |_| {
-            pop.popdown();
-            app.confirm_close_workspace(&id);
-        });
+            if let Some(child) = button.child() {
+                child.set_halign(gtk::Align::Start);
+            }
+            let menu = popover.downgrade();
+            button.connect_clicked(move |_| {
+                if let Some(menu) = menu.upgrade() {
+                    menu.popdown();
+                }
+                action();
+            });
+            column.append(&button);
+        }
         popover.connect_closed(|popover| popover.unparent());
+        popover.set_parent(parent);
         popover.popup();
+    }
+
+    fn space_menu(self: &Rc<Self>, rect: gdk::Rectangle, workspace_id: &str) {
+        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        let (id1, id2, id3) = (
+            workspace_id.to_owned(),
+            workspace_id.to_owned(),
+            workspace_id.to_owned(),
+        );
+        self.menu(
+            rect,
+            vec![
+                ("Rename", Box::new(move || a.rename_workspace(&id1))),
+                (
+                    "New tab",
+                    Box::new(move || {
+                        b.request("tab.create", json!({ "workspace_id": id2, "focus": true }));
+                        b.drawer.close();
+                    }),
+                ),
+                ("Close", Box::new(move || c.confirm_close_workspace(&id3))),
+            ],
+        );
+    }
+
+    fn tab_menu(self: &Rc<Self>, rect: gdk::Rectangle, tab_id: &str, workspace_id: &str) {
+        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        let (id1, ws, id3) = (
+            tab_id.to_owned(),
+            workspace_id.to_owned(),
+            tab_id.to_owned(),
+        );
+        self.menu(
+            rect,
+            vec![
+                ("Rename tab", Box::new(move || a.rename_tab(&id1))),
+                (
+                    "New tab",
+                    Box::new(move || {
+                        b.request("tab.create", json!({ "workspace_id": ws, "focus": true }));
+                    }),
+                ),
+                ("Close tab", Box::new(move || c.confirm_close_tab(&id3))),
+            ],
+        );
+    }
+
+    fn agent_menu(self: &Rc<Self>, rect: gdk::Rectangle, pane_id: &str) {
+        let (a, b, c) = (self.clone(), self.clone(), self.clone());
+        let (id1, id2, id3) = (pane_id.to_owned(), pane_id.to_owned(), pane_id.to_owned());
+        self.menu(
+            rect,
+            vec![
+                (
+                    "Go to agent",
+                    Box::new(move || {
+                        a.request("pane.focus", json!({ "pane_id": id1 }));
+                        a.drawer.close();
+                    }),
+                ),
+                ("Rename pane", Box::new(move || b.rename_pane(&id2))),
+                ("Close pane", Box::new(move || c.confirm_close_pane(&id3))),
+            ],
+        );
+    }
+
+    fn machine_menu(self: &Rc<Self>, rect: gdk::Rectangle, endpoint: &str) {
+        let (a, b) = (self.clone(), self.clone());
+        let (id1, id2) = (endpoint.to_owned(), endpoint.to_owned());
+        self.menu(
+            rect,
+            vec![
+                ("Switch to", Box::new(move || a.switch_machine_str(&id1))),
+                (
+                    "Reconnect now",
+                    Box::new(move || {
+                        let id = b
+                            .machines
+                            .borrow()
+                            .iter()
+                            .find(|machine| machine.id.as_str() == id2)
+                            .map(|machine| machine.id.clone());
+                        if let (Some(id), Some(conn)) = (id, b.conn.borrow().as_ref()) {
+                            conn.retry(&id);
+                        }
+                    }),
+                ),
+            ],
+        );
     }
 
     fn wire_mouse(self: &Rc<Self>) {
@@ -870,6 +1000,7 @@ impl App {
             self.sidebar.render(model, &active, &stalled, fg);
         }
         self.update_status();
+        self.update_touch_controls();
         let snapshot = self.snapshot.borrow();
         let Some(snapshot) = snapshot.as_ref() else {
             while let Some(child) = self.tabs.first_child() {
@@ -980,7 +1111,85 @@ impl App {
             _ => {}
         });
         pill.add_controller(click);
+
+        // A long press opens the tab's menu, as a right-click would on a desktop.
+        let hold = gtk::GestureLongPress::new();
+        hold.set_touch_only(true);
+        let (app, id, ws, p) = (
+            self.clone(),
+            tab.tab_id.clone(),
+            tab.workspace_id.clone(),
+            pill.downgrade(),
+        );
+        hold.connect_pressed(move |gesture, _, _| {
+            gesture.set_state(gtk::EventSequenceState::Claimed);
+            if let Some(pill) = p.upgrade() {
+                app.tab_menu(app.anchor_rect(&pill), &id, &ws);
+            }
+        });
+        pill.add_controller(hold);
+        let right = gtk::GestureClick::new();
+        right.set_button(gdk::BUTTON_SECONDARY);
+        let (app, id, ws, p) = (
+            self.clone(),
+            tab.tab_id.clone(),
+            tab.workspace_id.clone(),
+            pill.downgrade(),
+        );
+        right.connect_pressed(move |_, _, _, _| {
+            if let Some(pill) = p.upgrade() {
+                app.tab_menu(app.anchor_rect(&pill), &id, &ws);
+            }
+        });
+        pill.add_controller(right);
         pill
+    }
+
+    /// The quick-action strip and the close-pane button, shown in the touch layout
+    /// for the focused pane.
+    fn update_touch_controls(self: &Rc<Self>) {
+        let touch = self.drawer.touch_layout();
+        let pane = self.focused_pane_id();
+        self.pane_close.set_visible(touch && pane.is_some());
+        let agent = match (touch, pane.as_deref(), self.model.borrow().as_ref()) {
+            (true, Some(pane), Some(model)) => {
+                let active = self
+                    .conn
+                    .borrow()
+                    .as_ref()
+                    .map(|conn| conn.active().as_str().to_owned())
+                    .unwrap_or_default();
+                focused_agent(model, &active, pane)
+            }
+            _ => None,
+        };
+        let actions = agent.map(crate::quick::for_agent).unwrap_or_default();
+        if *self.quick_actions.borrow() == actions {
+            return;
+        }
+        while let Some(child) = self.quick.first_child() {
+            self.quick.remove(&child);
+        }
+        for action in &actions {
+            let button = gtk::Button::with_label(action.label());
+            button.set_focusable(false);
+            button.set_tooltip_text(Some(action.tooltip()));
+            let (app, action) = (self.clone(), *action);
+            button.connect_clicked(move |_| app.quick_action(action));
+            self.quick.append(&button);
+        }
+        self.quick.set_visible(!actions.is_empty());
+        self.quick_actions.replace(actions);
+    }
+
+    fn quick_action(&self, action: crate::quick::QuickAction) {
+        let Some(pane_id) = self.focused_pane_id() else {
+            return;
+        };
+        if let Some(conn) = self.conn.borrow().as_ref() {
+            conn.pane_input(&pane_id, action.events());
+        }
+        self.view.set_selection(None);
     }
 
     fn update_status(&self) {
@@ -997,14 +1206,22 @@ impl App {
             KeyMode::Navigate => Some("NAVIGATE"),
             KeyMode::Copy => Some("COPY"),
         };
+        // Fingers don't use the leader key, so the touch layout leaves its hint out.
+        let touch = self.drawer.touch_layout();
         let mut markup = String::from("🌴 oasis");
-        match mode {
-            Some(mode) => markup.push_str(&format!(
-                "  <span background=\"{}\" foreground=\"{}\" weight=\"bold\"> {mode} </span>  {leader}",
-                theme.accent.css(),
-                theme.sidebar.css()
-            )),
-            None => markup.push_str(&format!(" · leader: {leader}")),
+        match (mode, touch) {
+            (Some(mode), _) => {
+                markup.push_str(&format!(
+                    "  <span background=\"{}\" foreground=\"{}\" weight=\"bold\"> {mode} </span>",
+                    theme.accent.css(),
+                    theme.sidebar.css()
+                ));
+                if !touch {
+                    markup.push_str(&format!("  {leader}"));
+                }
+            }
+            (None, false) => markup.push_str(&format!(" · leader: {leader}")),
+            (None, true) => {}
         }
         self.sidebar.status.set_markup(&markup);
     }
@@ -1308,18 +1525,12 @@ impl App {
             }
             KeybindAction::RenamePane => {
                 if let Some(id) = pane {
-                    let app = self.clone();
-                    self.prompt("Rename pane", "", move |label| {
-                        app.request("pane.rename", json!({ "pane_id": id, "label": label }));
-                    });
+                    self.rename_pane(&id);
                 }
             }
             KeybindAction::ClosePane => {
                 if let Some(id) = pane {
-                    let app = self.clone();
-                    self.confirm("Close this pane?", move || {
-                        app.request("pane.close", json!({ "pane_id": id }));
-                    });
+                    self.confirm_close_pane(&id);
                 }
             }
             KeybindAction::ToggleSidebar => self.drawer.toggle(),
@@ -1353,16 +1564,28 @@ impl App {
     // ----- sidebar -----
 
     fn on_sidebar(self: &Rc<Self>, target: &Target, row: Option<&gtk::ListBoxRow>, button: u32) {
+        // Switching machines rebuilds the sidebar, so a menu's place is taken first.
+        let menu_at = (button == gdk::BUTTON_SECONDARY)
+            .then(|| row.map(|row| self.anchor_rect(row)))
+            .flatten();
         match target {
-            Target::Machine { endpoint } => self.switch_machine_str(endpoint),
+            Target::Machine { endpoint } => {
+                if button == gdk::BUTTON_SECONDARY {
+                    if let Some(rect) = menu_at {
+                        self.machine_menu(rect, endpoint);
+                    }
+                    return;
+                }
+                self.switch_machine_str(endpoint);
+            }
             Target::Space {
                 endpoint,
                 workspace_id,
             } => {
                 self.switch_machine_str(endpoint);
                 if button == gdk::BUTTON_SECONDARY {
-                    if let Some(row) = row {
-                        self.space_menu(row, workspace_id, 0.0, 0.0);
+                    if let Some(rect) = menu_at {
+                        self.space_menu(rect, workspace_id);
                     }
                     return;
                 }
@@ -1371,6 +1594,12 @@ impl App {
             }
             Target::Agent { endpoint, pane_id } => {
                 self.switch_machine_str(endpoint);
+                if button == gdk::BUTTON_SECONDARY {
+                    if let Some(rect) = menu_at {
+                        self.agent_menu(rect, pane_id);
+                    }
+                    return;
+                }
                 self.request("pane.focus", json!({ "pane_id": pane_id }));
                 self.drawer.close();
             }
@@ -1497,6 +1726,20 @@ impl App {
         });
     }
 
+    fn rename_pane(self: &Rc<Self>, pane_id: &str) {
+        let current = self
+            .snapshot
+            .borrow()
+            .as_ref()
+            .and_then(|s| s.panes.iter().find(|p| p.pane_id == pane_id))
+            .and_then(|p| p.label.clone())
+            .unwrap_or_default();
+        let (app, id) = (self.clone(), pane_id.to_owned());
+        self.prompt("Rename pane", &current, move |label| {
+            app.request("pane.rename", json!({ "pane_id": id, "label": label }));
+        });
+    }
+
     fn prompt(self: &Rc<Self>, title: &str, initial: &str, done: impl Fn(String) + 'static) {
         let dialog = gtk::Window::builder()
             .transient_for(&self.window)
@@ -1535,20 +1778,69 @@ impl App {
         entry.grab_focus();
     }
 
+    /// Asks Yes or No before closing something, with buttons big enough for a finger.
     fn confirm(self: &Rc<Self>, message: &str, action: impl FnOnce() + 'static) {
-        let dialog = gtk::AlertDialog::builder()
-            .message(message)
-            .buttons(["Cancel", "Close"])
-            .cancel_button(0)
-            .default_button(1)
+        let dialog = gtk::Window::builder()
+            .transient_for(&self.window)
             .modal(true)
+            .title("clawmux")
+            .default_width(380)
+            .resizable(false)
             .build();
-        let app = self.clone();
-        dialog.choose(Some(&self.window), gio::Cancellable::NONE, move |result| {
-            if result == Ok(1) {
+        dialog.add_css_class("clawmux-confirm");
+        let body = gtk::Box::new(gtk::Orientation::Vertical, 18);
+        body.set_margin_top(22);
+        body.set_margin_bottom(20);
+        body.set_margin_start(22);
+        body.set_margin_end(22);
+        let label = gtk::Label::new(Some(message));
+        label.set_wrap(true);
+        label.set_xalign(0.0);
+        label.add_css_class("confirm-message");
+        body.append(&label);
+        let buttons = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+        buttons.set_homogeneous(true);
+        let no = gtk::Button::with_label("No");
+        let yes = gtk::Button::with_label("Yes");
+        yes.add_css_class("destructive-action");
+        buttons.append(&no);
+        buttons.append(&yes);
+        body.append(&buttons);
+        dialog.set_child(Some(&body));
+        let action = Rc::new(Cell::new(Some(action)));
+        let d = dialog.clone();
+        yes.connect_clicked(move |_| {
+            if let Some(action) = action.take() {
                 action();
             }
+            d.close();
+        });
+        let d = dialog.clone();
+        no.connect_clicked(move |_| d.close());
+        let keys = gtk::EventControllerKey::new();
+        let d = dialog.clone();
+        keys.connect_key_pressed(move |_, keyval, _, _| {
+            if keyval == gdk::Key::Escape {
+                d.close();
+                return glib::Propagation::Stop;
+            }
+            glib::Propagation::Proceed
+        });
+        dialog.add_controller(keys);
+        let app = self.clone();
+        dialog.connect_close_request(move |_| {
             app.view.grab_focus();
+            glib::Propagation::Proceed
+        });
+        dialog.set_default_widget(Some(&yes));
+        dialog.present();
+        yes.grab_focus();
+    }
+
+    fn confirm_close_pane(self: &Rc<Self>, pane_id: &str) {
+        let (app, id) = (self.clone(), pane_id.to_owned());
+        self.confirm("Close this pane?", move || {
+            app.request("pane.close", json!({ "pane_id": id }));
         });
     }
 
@@ -1903,6 +2195,22 @@ fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
     None
 }
 
+/// One entry of a sidebar or tab menu.
+type MenuItem = (&'static str, Box<dyn Fn()>);
+
+/// The agent running in the focused pane of the active machine, if any.
+fn focused_agent(
+    model: &SidebarModel,
+    active: &str,
+    pane_id: &str,
+) -> Option<oasis_core::embed::sidebar::Agent> {
+    model
+        .agents
+        .iter()
+        .find(|agent| agent.endpoint == active && agent.pane_id == pane_id)
+        .and_then(|agent| agent.agent)
+}
+
 /// The bar across the terminal while the active machine has stopped answering.
 fn stall_message(machine: &str) -> String {
     format!(
@@ -2057,6 +2365,33 @@ mod tests {
         );
         assert_eq!(link_url(&grid, (6, 0)), None, "a tap off any link");
         assert_eq!(link_url(&grid, (99, 0)), None, "a tap past the row");
+    }
+
+    #[test]
+    fn quick_actions_follow_the_agent_in_the_focused_pane_of_the_active_machine() {
+        use oasis_core::embed::sidebar::{Agent, AgentEntry};
+        let entry = |endpoint: &str, pane: &str, agent| AgentEntry {
+            endpoint: endpoint.into(),
+            machine_label: endpoint.into(),
+            pane_id: pane.into(),
+            workspace_id: "w1".into(),
+            status: AgentStatus::Working,
+            mode: None,
+            agent,
+            focused: false,
+            stale: false,
+            rows: vec![],
+        };
+        let mut model = SidebarModel::default();
+        model.agents = vec![
+            entry("local", "p1", Some(Agent::Claude)),
+            entry("ssh:box", "p1", Some(Agent::Codex)),
+            entry("local", "p2", None),
+        ];
+        assert_eq!(focused_agent(&model, "local", "p1"), Some(Agent::Claude));
+        assert_eq!(focused_agent(&model, "ssh:box", "p1"), Some(Agent::Codex));
+        assert_eq!(focused_agent(&model, "local", "p2"), None, "an unknown tool");
+        assert_eq!(focused_agent(&model, "local", "p9"), None, "a plain shell");
     }
 
     #[test]
