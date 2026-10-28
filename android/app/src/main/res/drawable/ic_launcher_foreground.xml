@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- A ring with a prompt caret inside: the oasis terminal. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <path
+        android:pathData="M54,30a24,24 0,1 1,0 48a24,24 0,1 1,0 -48z"
+        android:strokeWidth="5"
+        android:strokeColor="#7aa2f7"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M44,46l9,8l-9,8"
+        android:strokeWidth="4.5"
+        android:strokeColor="#9ece6a"
+        android:strokeLineCap="round"
+        android:strokeLineJoin="round"
+        android:fillColor="#00000000" />
+    <path
+        android:pathData="M56,63h10"
+        android:strokeWidth="4.5"
+        android:strokeColor="#c0caf5"
+        android:strokeLineCap="round" />
+</vector>

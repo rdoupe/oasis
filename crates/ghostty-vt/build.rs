@@ -12,6 +12,7 @@ fn zig_target(target: &str) -> &str {
         "x86_64-apple-darwin" => "x86_64-macos",
         "aarch64-apple-darwin" => "aarch64-macos",
         "aarch64-linux-android" => "aarch64-linux-android",
+        "x86_64-linux-android" => "x86_64-linux-android",
         "aarch64-apple-ios" => "aarch64-ios",
         "aarch64-apple-ios-sim" => "aarch64-ios-simulator",
         "x86_64-pc-windows-msvc" => "x86_64-windows-msvc",
