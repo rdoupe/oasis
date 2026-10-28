@@ -12,6 +12,8 @@ pub use crate::client::core::{
 /// Semantic input for a pane, sent with [`ClientCore::pane_input`].
 pub use crate::protocol::ClientPaneInputEvent as PaneInput;
 
+pub mod links;
+
 /// Decoders for the colors and styles packed into [`wire::CellData`].
 ///
 /// The packing is part of the generation-1 surface codec: these helpers only
