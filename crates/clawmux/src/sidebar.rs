@@ -127,6 +127,7 @@ impl SidebarView {
         self: &Rc<Self>,
         model: &SidebarModel,
         active_endpoint: &str,
+        stalled: &[String],
         fg: crate::theme::Rgb,
     ) {
         self.list.remove_all();
@@ -134,39 +135,52 @@ impl SidebarView {
         let agents_first = self.agents_first.get();
         let has_agents = !model.agents.is_empty();
         if agents_first && has_agents {
-            self.agent_rows(model, active_endpoint, fg, &mut targets);
+            self.agent_rows(model, active_endpoint, stalled, fg, &mut targets);
             self.divider(&mut targets);
         }
-        self.space_rows(model, active_endpoint, &mut targets);
+        self.space_rows(model, active_endpoint, stalled, &mut targets);
         if !agents_first && has_agents {
             self.divider(&mut targets);
-            self.agent_rows(model, active_endpoint, fg, &mut targets);
+            self.agent_rows(model, active_endpoint, stalled, fg, &mut targets);
         }
         self.targets.replace(targets);
     }
 
     /// The machines and their spaces, under a SPACES heading when there is one machine.
+    /// A machine that stopped answering says so in yellow.
     fn space_rows(
         self: &Rc<Self>,
         model: &SidebarModel,
         active_endpoint: &str,
+        stalled: &[String],
         targets: &mut Vec<Option<Target>>,
     ) {
         let several = model.machines.len() > 1;
         if !several {
-            self.heading("SPACES", targets);
+            let row = self.heading("SPACES", targets);
+            if model
+                .machines
+                .first()
+                .is_some_and(|machine| stalled.contains(&machine.id))
+            {
+                if let Some(heading) = row.child() {
+                    let line = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+                    row.set_child(None::<&gtk::Widget>);
+                    heading.set_hexpand(true);
+                    line.append(&heading);
+                    line.append(&not_responding_label());
+                    row.set_child(Some(&line));
+                }
+            }
         }
         for machine in &model.machines {
             if several {
                 if machine.id != model.machines[0].id {
                     self.divider(targets);
                 }
+                let not_responding = stalled.contains(&machine.id);
                 let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-                row.append(&dot(if machine.online {
-                    AgentStatus::Done
-                } else {
-                    AgentStatus::Blocked
-                }));
+                row.append(&dot(machine_dot(machine.online, not_responding)));
                 let label = gtk::Label::new(Some(if machine.local {
                     "this machine"
                 } else {
@@ -176,6 +190,9 @@ impl SidebarView {
                 label.set_hexpand(true);
                 label.add_css_class("machine");
                 row.append(&label);
+                if not_responding {
+                    row.append(&not_responding_label());
+                }
                 let list_row = self.push(
                     row.upcast_ref(),
                     targets,
@@ -242,6 +259,7 @@ impl SidebarView {
         &self,
         model: &SidebarModel,
         active_endpoint: &str,
+        stalled: &[String],
         fg: crate::theme::Rgb,
         targets: &mut Vec<Option<Target>>,
     ) {
@@ -274,7 +292,7 @@ impl SidebarView {
             if agent.focused && agent.endpoint == active_endpoint {
                 list_row.add_css_class("focused");
             }
-            if agent.stale {
+            if agent.stale || stalled.contains(&agent.endpoint) {
                 list_row.add_css_class("stale");
             }
         }
@@ -288,13 +306,14 @@ impl SidebarView {
         row.add_css_class("heading-row");
     }
 
-    fn heading(&self, text: &str, targets: &mut Vec<Option<Target>>) {
+    fn heading(&self, text: &str, targets: &mut Vec<Option<Target>>) -> gtk::ListBoxRow {
         let label = gtk::Label::new(Some(text));
         label.set_xalign(0.0);
         label.add_css_class("heading");
         let row = self.push(label.upcast_ref(), targets, None);
         row.set_activatable(false);
         row.add_css_class("heading-row");
+        row
     }
 
     fn push(
@@ -310,6 +329,24 @@ impl SidebarView {
         targets.push(target);
         row
     }
+}
+
+/// A machine's dot: green online, yellow when connected but not answering, red offline.
+fn machine_dot(online: bool, not_responding: bool) -> AgentStatus {
+    if not_responding {
+        AgentStatus::Working
+    } else if online {
+        AgentStatus::Done
+    } else {
+        AgentStatus::Blocked
+    }
+}
+
+fn not_responding_label() -> gtk::Label {
+    let label = gtk::Label::new(Some("◌ not responding"));
+    label.add_css_class("not-responding");
+    label.set_halign(gtk::Align::End);
+    label
 }
 
 /// The agent rows to draw beside a logo: the logo names the tool, so its name and
@@ -473,6 +510,13 @@ mod tests {
             text: String::new(),
             color: SidebarTokenColor::from_rgb(0x12, 0x34, 0x56),
         }
+    }
+
+    #[test]
+    fn a_machine_that_stopped_answering_shows_yellow_not_red() {
+        assert_eq!(machine_dot(false, true), AgentStatus::Working);
+        assert_eq!(machine_dot(true, false), AgentStatus::Done);
+        assert_eq!(machine_dot(false, false), AgentStatus::Blocked);
     }
 
     #[test]

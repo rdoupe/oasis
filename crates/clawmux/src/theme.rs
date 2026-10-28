@@ -208,6 +208,8 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-tabs button.tab-add {{ background: none; border: none; box-shadow: none; min-height: 0; padding: 1px 8px; border-radius: 6px; color: alpha({fg}, 0.55); }}
 .clawmux-tabs button.tab-add:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
 .clawmux-banner {{ background: {raised}; color: {fg}; padding: 6px 12px; }}
+.clawmux-stall {{ background: alpha({yellow}, 0.16); color: {yellow}; padding: 6px 12px; font-weight: 600; border-bottom: 1px solid alpha({yellow}, 0.4); }}
+.clawmux-sidebar .not-responding {{ color: {yellow}; font-size: 0.86em; font-weight: 600; margin-right: 10px; }}
 .clawmux-tabs button.sidebar-toggle {{ background: none; border: none; box-shadow: none; min-height: 0; padding: 1px 9px; border-radius: 6px; color: alpha({fg}, 0.6); }}
 .clawmux-tabs button.sidebar-toggle:hover {{ background: alpha({fg}, 0.07); color: {fg}; }}
 .clawmux-scrim {{ background: alpha(black, 0.45); }}

@@ -52,6 +52,10 @@ pub struct App {
     tabs: gtk::Box,
     banner: gtk::Revealer,
     banner_label: gtk::Label,
+    /// The bar that says the active machine has stopped answering; kept apart from
+    /// the banner so a passing notice doesn't clear it.
+    stall: gtk::Revealer,
+    stall_label: gtk::Label,
     banner_timer: RefCell<Option<glib::SourceId>>,
     theme: RefCell<Theme>,
     css: gtk::CssProvider,
@@ -119,6 +123,15 @@ impl App {
             .transition_duration(120)
             .child(&banner_label)
             .build();
+        let stall_label = gtk::Label::new(None);
+        stall_label.set_xalign(0.0);
+        stall_label.set_wrap(true);
+        stall_label.add_css_class("clawmux-stall");
+        let stall = gtk::Revealer::builder()
+            .transition_type(gtk::RevealerTransitionType::SlideDown)
+            .transition_duration(120)
+            .child(&stall_label)
+            .build();
         let main = gtk::Box::new(gtk::Orientation::Vertical, 0);
         let header = gtk::Box::new(gtk::Orientation::Horizontal, 0);
         header.add_css_class("clawmux-tabs");
@@ -127,6 +140,7 @@ impl App {
         header.append(&drawer.button);
         header.append(&tabs);
         main.append(&header);
+        main.append(&stall);
         main.append(&banner);
         main.append(&view);
         window.set_child(Some(&drawer.root));
@@ -152,6 +166,8 @@ impl App {
             tabs,
             banner,
             banner_label,
+            stall,
+            stall_label,
             banner_timer: RefCell::new(None),
             theme: RefCell::new(theme),
             css,
@@ -723,8 +739,14 @@ impl App {
         let Some(machine) = machines.iter().find(|m| m.id == active) else {
             return;
         };
+        if machine.status == EndpointStatus::NotResponding {
+            self.stall_label.set_text(&stall_message(&machine.label));
+            self.stall.set_reveal_child(true);
+        } else {
+            self.stall.set_reveal_child(false);
+        }
         match &machine.status {
-            EndpointStatus::Online => self.hide_banner(),
+            EndpointStatus::Online | EndpointStatus::NotResponding => self.hide_banner(),
             EndpointStatus::Connecting => {
                 self.show_banner(&format!("connecting to {}…", machine.label), None)
             }
@@ -805,17 +827,14 @@ impl App {
         let Some(conn) = self.conn.borrow().clone() else {
             return;
         };
-        let (online, snapshot) = {
+        let (retry, snapshot) = {
             let machines = self.machines.borrow();
             let Some(machine) = machines.iter().find(|m| &m.id == id) else {
                 return;
             };
-            (
-                machine.status == EndpointStatus::Online,
-                machine.snapshot.clone(),
-            )
+            (retries_on_switch(&machine.status), machine.snapshot.clone())
         };
-        if !online {
+        if retry {
             conn.retry(id);
         }
         conn.set_active(id);
@@ -847,7 +866,8 @@ impl App {
             .unwrap_or_default();
         if let Some(model) = self.model.borrow().as_ref() {
             let fg = self.theme.borrow().foreground;
-            self.sidebar.render(model, &active, fg);
+            let stalled = self.stalled_machines();
+            self.sidebar.render(model, &active, &stalled, fg);
         }
         self.update_status();
         let snapshot = self.snapshot.borrow();
@@ -889,6 +909,16 @@ impl App {
             .map(|w| format!("{} — clawmux", w.label))
             .unwrap_or_else(|| "clawmux".into());
         self.window.set_title(Some(&title));
+    }
+
+    /// The ids of machines that are connected but have stopped answering.
+    fn stalled_machines(&self) -> Vec<String> {
+        self.machines
+            .borrow()
+            .iter()
+            .filter(|machine| machine.status == EndpointStatus::NotResponding)
+            .map(|machine| machine.id.as_str().to_owned())
+            .collect()
     }
 
     /// One tab as a gliff-style pill: the label, and a slot that shows the tab's agent
@@ -1873,6 +1903,22 @@ fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
     None
 }
 
+/// The bar across the terminal while the active machine has stopped answering.
+fn stall_message(machine: &str) -> String {
+    format!(
+        "◌ {machine} isn't responding · the connection has stalled · what you type is sent once it answers"
+    )
+}
+
+/// Whether switching to a machine should retry it now: not when it is online, nor when
+/// it is still connected and only waiting on a stalled network.
+fn retries_on_switch(status: &EndpointStatus) -> bool {
+    !matches!(
+        status,
+        EndpointStatus::Online | EndpointStatus::NotResponding
+    )
+}
+
 /// Bindings that move between spaces or agents, which span every connected machine.
 fn spans_machines(action: KeybindAction) -> bool {
     matches!(
@@ -2011,6 +2057,18 @@ mod tests {
         );
         assert_eq!(link_url(&grid, (6, 0)), None, "a tap off any link");
         assert_eq!(link_url(&grid, (99, 0)), None, "a tap past the row");
+    }
+
+    #[test]
+    fn a_stalled_machine_is_named_in_its_bar_and_not_retried() {
+        let message = stall_message("server");
+        assert!(message.starts_with("◌ server isn't responding"));
+        assert!(message.ends_with("what you type is sent once it answers"));
+        assert!(!retries_on_switch(&EndpointStatus::NotResponding));
+        assert!(!retries_on_switch(&EndpointStatus::Online));
+        assert!(retries_on_switch(&EndpointStatus::Connecting));
+        assert!(retries_on_switch(&EndpointStatus::Reconnecting("gone".into())));
+        assert!(retries_on_switch(&EndpointStatus::Attention("login".into())));
     }
 
     #[test]
