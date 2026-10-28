@@ -53,6 +53,40 @@ pub(super) fn render_lifecycle_banner(
     rect
 }
 
+/// A full-width bar across the top of the pane area while the active machine has
+/// stopped answering, so a frozen screen reads as the connection, not the app.
+pub(super) fn render_unresponsive_bar(
+    buffer: &mut Buffer,
+    area: Rect,
+    label: &str,
+    palette: &Palette,
+) -> Rect {
+    if area.is_empty() {
+        return Rect::default();
+    }
+    let rect = Rect::new(area.x, area.y, area.width, 1);
+    Clear.render(rect, buffer);
+    buffer.set_style(rect, Style::default().bg(palette.surface0));
+    super::render::put_text(
+        buffer,
+        rect.x.saturating_add(1),
+        rect.y,
+        rect.width.saturating_sub(2),
+        &unresponsive_text(label),
+        Style::default()
+            .fg(palette.yellow)
+            .bg(palette.surface0)
+            .add_modifier(Modifier::BOLD),
+    );
+    rect
+}
+
+pub(super) fn unresponsive_text(label: &str) -> String {
+    format!(
+        "◌ {label} isn't responding · the connection has stalled · what you type is sent once it answers"
+    )
+}
+
 pub(super) fn render_notice(
     buffer: &mut Buffer,
     area: Rect,

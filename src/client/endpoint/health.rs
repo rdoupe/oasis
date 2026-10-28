@@ -2,6 +2,12 @@ use std::time::{Duration, Instant};
 
 pub(super) const HEARTBEAT_INTERVAL: Duration = Duration::from_secs(5);
 pub(super) const HEARTBEAT_TIMEOUT: Duration = Duration::from_secs(10);
+/// A server answers a probe at once, so one left unanswered this long means the
+/// connection has stalled: the person is told before the transport gives up.
+pub(super) const STALL_AFTER: Duration = Duration::from_secs(2);
+/// Input this long after anything arrived probes at once instead of waiting for
+/// the quiet interval, so a stall shows soon after the person types.
+const INPUT_PROBE_AFTER: Duration = Duration::from_secs(1);
 // Match the remote setup allowance without extending established transport health checks.
 const INITIAL_SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(60);
 
@@ -66,6 +72,25 @@ impl EndpointHealth {
         }
     }
 
+    /// Whether a probe has gone unanswered for [`STALL_AFTER`].
+    pub(super) fn stalled(&self, now: Instant) -> bool {
+        (self.ready || self.last_received.is_some())
+            && self
+                .ping_sent_at
+                .is_some_and(|sent_at| now.saturating_duration_since(sent_at) >= STALL_AFTER)
+    }
+
+    /// Input went out: probe now if the connection has been quiet, so a stall
+    /// under the person's typing shows within seconds.
+    pub(super) fn input_sent(&mut self, now: Instant) {
+        if self.ping_sent_at.is_none()
+            && now.saturating_duration_since(self.last_received.unwrap_or(self.connected_at))
+                >= INPUT_PROBE_AFTER
+        {
+            self.probe_due = true;
+        }
+    }
+
     pub(super) fn ping_sent(&mut self, now: Instant) {
         self.probe_due = false;
         self.ping_sent_at = Some(now);
@@ -107,6 +132,34 @@ mod tests {
             health.action(now + Duration::from_secs(60)),
             HealthAction::Expired
         );
+    }
+
+    #[test]
+    fn an_unanswered_probe_reads_as_stalled_until_anything_arrives() {
+        let now = Instant::now();
+        let mut health = EndpointHealth::new(now);
+        health.ready();
+        health.ping_sent(now);
+        assert!(!health.stalled(now + STALL_AFTER - Duration::from_millis(1)));
+        assert!(health.stalled(now + STALL_AFTER));
+        health.received(now + STALL_AFTER);
+        assert!(!health.stalled(now + STALL_AFTER));
+    }
+
+    #[test]
+    fn input_on_a_quiet_connection_probes_at_once() {
+        let now = Instant::now();
+        let mut health = EndpointHealth::new(now);
+        health.ready();
+        health.received(now);
+        health.input_sent(now + Duration::from_millis(500));
+        assert_eq!(
+            health.action(now + Duration::from_millis(500)),
+            HealthAction::None,
+            "just heard from"
+        );
+        health.input_sent(now + INPUT_PROBE_AFTER);
+        assert_eq!(health.action(now + INPUT_PROBE_AFTER), HealthAction::Ping);
     }
 
     #[test]

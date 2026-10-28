@@ -198,6 +198,31 @@ impl EndpointRegistry {
         }
     }
 
+    /// Connections whose last probe has gone unanswered; see `health::STALL_AFTER`.
+    pub(crate) fn unresponsive(&self, now: Instant) -> std::collections::HashSet<ClientEndpointId> {
+        self.connections
+            .iter()
+            .filter(|(_, connection)| {
+                connection
+                    .health
+                    .as_ref()
+                    .is_some_and(|health| health.stalled(now))
+            })
+            .map(|(endpoint_id, _)| endpoint_id.clone())
+            .collect()
+    }
+
+    /// Records input sent to an endpoint, probing it if it has been quiet.
+    pub(crate) fn input_sent(&mut self, endpoint_id: &ClientEndpointId, now: Instant) {
+        if let Some(health) = self
+            .connections
+            .get_mut(endpoint_id)
+            .and_then(|connection| connection.health.as_mut())
+        {
+            health.input_sent(now);
+        }
+    }
+
     pub(crate) fn mark_ready(&mut self, endpoint_id: &ClientEndpointId, generation: u64) {
         if let Some(health) = self
             .connections

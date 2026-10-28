@@ -26,7 +26,9 @@ use std::time::{Duration, Instant};
 const MAX_QUEUED_EVENTS: usize = 1024;
 /// How often connection health is checked while a remote machine is connected.
 /// Local connections have no health check, so a Local-only core never ticks.
-const HEALTH_TICK: Duration = Duration::from_millis(2500);
+/// Often enough that a stalled machine reads as not responding within a few
+/// seconds; a probe is one small message.
+const HEALTH_TICK: Duration = Duration::from_secs(1);
 /// How long the core waits for a Local server it started to open its socket.
 const LOCAL_START_TIMEOUT: Duration = Duration::from_secs(5);
 /// How long a close stays hidden without an answer before it is put back,
@@ -121,6 +123,10 @@ pub enum EndpointStatus {
     /// Failing in a way a person must fix, such as a version or generation
     /// mismatch, or ssh refusing the login.
     Attention(String),
+    /// Connected, but the machine has stopped answering: the network has
+    /// stalled. Pane input waits and is sent once it answers; if it never
+    /// does, the transport gives up and the status becomes `Reconnecting`.
+    NotResponding,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -818,6 +824,12 @@ struct CoreLoop {
     next_internal_request: u64,
     focused: bool,
     next_health_tick: Option<Instant>,
+    /// The last status published per endpoint, before any "not responding".
+    statuses: HashMap<ClientEndpointId, EndpointStatus>,
+    /// Online endpoints whose connection has stopped answering.
+    unresponsive: std::collections::HashSet<ClientEndpointId>,
+    /// Pane input for unresponsive endpoints, sent once they answer.
+    held_input: super::held_input::HeldInput,
     /// Endpoint order for the sidebar: Local first, then saved machines.
     order: Vec<ClientEndpointId>,
     sidebar: Option<CoreSidebar>,
@@ -947,6 +959,9 @@ impl CoreLoop {
             next_internal_request: 1,
             focused: true,
             next_health_tick: None,
+            statuses: HashMap::new(),
+            unresponsive: std::collections::HashSet::new(),
+            held_input: Default::default(),
             order,
             sidebar,
         }
@@ -997,7 +1012,9 @@ impl CoreLoop {
                 Some(event) = self.reader_rx.recv() => self.reader_event(event),
                 _ = sleep_until(deadline) => {
                     if self.next_health_tick.is_some_and(|tick| tick <= Instant::now()) {
-                        self.registry.tick_health(Instant::now());
+                        let now = Instant::now();
+                        self.registry.tick_health(now);
+                        self.sync_unresponsive(now);
                         self.schedule_health();
                     }
                     self.expire_closes();
@@ -1151,7 +1168,73 @@ impl CoreLoop {
         }
     }
 
+    /// Reports online endpoints that stopped answering as `NotResponding`, and
+    /// back to `Online` with their held input sent once they answer.
+    fn sync_unresponsive(&mut self, now: Instant) {
+        let stalled: std::collections::HashSet<ClientEndpointId> = self
+            .registry
+            .unresponsive(now)
+            .into_iter()
+            .filter(|id| self.statuses.get(id) == Some(&EndpointStatus::Online))
+            .collect();
+        for id in stalled
+            .difference(&self.unresponsive)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            let label = self.label(&id);
+            self.shared.publish(|outbox| {
+                outbox
+                    .endpoint(&EndpointId::from_client(&id), &label)
+                    .status = Some(EndpointStatus::NotResponding);
+            });
+            self.sidebar_online(&id, false);
+        }
+        for id in self
+            .unresponsive
+            .difference(&stalled)
+            .cloned()
+            .collect::<Vec<_>>()
+        {
+            if self.statuses.get(&id) == Some(&EndpointStatus::Online) {
+                let label = self.label(&id);
+                self.shared.publish(|outbox| {
+                    outbox
+                        .endpoint(&EndpointId::from_client(&id), &label)
+                        .status = Some(EndpointStatus::Online);
+                });
+                self.sidebar_online(&id, true);
+            }
+        }
+        self.unresponsive = stalled;
+        self.send_held_input(now);
+    }
+
+    fn send_held_input(&mut self, now: Instant) {
+        if self.held_input.is_empty() {
+            return;
+        }
+        let ready: Vec<ClientEndpointId> = self
+            .statuses
+            .iter()
+            .filter(|(id, status)| {
+                **status == EndpointStatus::Online && !self.unresponsive.contains(*id)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in ready {
+            for message in self.held_input.take(&id, now) {
+                let _ = self.registry.send_to(&id, &message);
+                self.registry.input_sent(&id, now);
+            }
+        }
+    }
+
     fn publish_status(&mut self, id: &ClientEndpointId, status: EndpointStatus) {
+        self.statuses.insert(id.clone(), status.clone());
+        if status != EndpointStatus::Online {
+            self.unresponsive.remove(id);
+        }
         let label = self.label(id);
         let online = status == EndpointStatus::Online;
         let status = match (&status, id.is_local(), &self.local_start_error) {
@@ -1554,10 +1637,18 @@ impl CoreLoop {
                 events,
             } => {
                 if let Some(endpoint_id) = self.client_id(&endpoint) {
-                    let _ = self.registry.send_to(
-                        &endpoint_id,
-                        &ClientMessage::ClientShellPaneInput { pane_id, events },
-                    );
+                    let now = Instant::now();
+                    let message = ClientMessage::ClientShellPaneInput { pane_id, events };
+                    // A stalled connection would lose it on reconnect; newer input
+                    // queues behind anything already held so it arrives in order.
+                    if self.unresponsive.contains(&endpoint_id)
+                        || self.held_input.holds_for(&endpoint_id)
+                    {
+                        self.held_input.hold(endpoint_id, now, message);
+                    } else {
+                        let _ = self.registry.send_to(&endpoint_id, &message);
+                        self.registry.input_sent(&endpoint_id, now);
+                    }
                 }
             }
             Command::SetActive(endpoint) => {

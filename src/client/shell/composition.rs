@@ -459,8 +459,18 @@ impl ClientShellState {
             .find(|endpoint| endpoint.endpoint_id == self.active_endpoint_id)
             .filter(|endpoint| endpoint.status != ClientEndpointStatus::Online)
             .map(|endpoint| (endpoint.label.clone(), endpoint.status));
+        let active_unresponsive = self
+            .endpoints
+            .iter()
+            .find(|endpoint| {
+                endpoint.endpoint_id == self.active_endpoint_id
+                    && endpoint.status == ClientEndpointStatus::Online
+                    && endpoint.unresponsive
+            })
+            .map(|endpoint| endpoint.label.clone());
         if has_config_diagnostic
             || active_lifecycle.is_some()
+            || active_unresponsive.is_some()
             || self.visible_endpoint_notice.is_some()
             || self.visible_notification.is_some()
         {
@@ -479,6 +489,14 @@ impl ClientShellState {
                     &self.config.palette,
                     |rect| occlusion.cover(rect),
                 );
+            }
+            if let Some(label) = active_unresponsive.as_deref() {
+                occlusion.cover(endpoint_notices::render_unresponsive_bar(
+                    &mut composed,
+                    layout.pane_surface,
+                    label,
+                    &self.config.palette,
+                ));
             }
             let lifecycle_offset = active_lifecycle.as_ref().map_or(0, |(label, status)| {
                 occlusion.cover(endpoint_notices::render_lifecycle_banner(

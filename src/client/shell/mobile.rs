@@ -586,7 +586,7 @@ fn mobile_items(
         items.push(MobileItem::section("machines", palette));
         for endpoint in endpoints {
             let background = palette.panel_bg;
-            let (symbol, state, color) = endpoint_status_presentation(endpoint.status, palette);
+            let (symbol, state, color) = super::endpoints::endpoint_presentation(endpoint, palette);
             items.push(MobileItem {
                 lines: vec![
                     Line::from(vec![

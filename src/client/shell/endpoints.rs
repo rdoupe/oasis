@@ -23,6 +23,16 @@ pub(crate) struct ClientShellEndpoint {
     pub(crate) agent_view_projection_supported: bool,
     pub(crate) methods: Option<HashSet<String>>,
     pub(super) remote_activity: super::remote_activity::EndpointRemoteActivity,
+    /// Online, but its connection has stopped answering: shown as a connection
+    /// problem until anything arrives or the transport gives up.
+    pub(crate) unresponsive: bool,
+}
+
+impl ClientShellEndpoint {
+    /// Online and answering: what the sidebar draws at full strength.
+    pub(crate) fn responsive(&self) -> bool {
+        self.status == ClientEndpointStatus::Online && !self.unresponsive
+    }
 }
 
 pub(super) struct MachineHit {
@@ -92,6 +102,7 @@ impl ClientShellState {
                 remote_activity: previous
                     .map(|endpoint| endpoint.remote_activity.clone())
                     .unwrap_or_default(),
+                unresponsive: previous.is_some_and(|endpoint| endpoint.unresponsive),
             });
         }
 
@@ -269,6 +280,28 @@ impl ClientShellState {
             .iter()
             .find(|endpoint| &endpoint.endpoint_id == endpoint_id)
             .is_some_and(|endpoint| endpoint.snapshot.is_some())
+    }
+
+    /// Marks which online machines have stopped answering; true when that changed
+    /// what is shown.
+    pub(crate) fn set_unresponsive_endpoints(
+        &mut self,
+        unresponsive: &HashSet<ClientEndpointId>,
+    ) -> bool {
+        let mut changed = false;
+        for endpoint in &mut self.endpoints {
+            let now = endpoint.status == ClientEndpointStatus::Online
+                && unresponsive.contains(&endpoint.endpoint_id);
+            changed |= endpoint.unresponsive != now;
+            endpoint.unresponsive = now;
+        }
+        changed
+    }
+
+    pub(crate) fn endpoint_unresponsive(&self, endpoint_id: &ClientEndpointId) -> bool {
+        self.endpoints
+            .iter()
+            .any(|endpoint| &endpoint.endpoint_id == endpoint_id && endpoint.unresponsive)
     }
 
     pub(crate) fn endpoint_is_online(&self, endpoint_id: &ClientEndpointId) -> bool {
@@ -722,6 +755,19 @@ impl ClientShellState {
     }
 }
 
+/// How a machine's state reads in the sidebar: its status, or "not responding"
+/// while an online machine's connection has stopped answering.
+pub(super) fn endpoint_presentation(
+    endpoint: &ClientShellEndpoint,
+    palette: &Palette,
+) -> (&'static str, &'static str, ratatui::style::Color) {
+    if endpoint.status == ClientEndpointStatus::Online && endpoint.unresponsive {
+        ("◌", "not responding", palette.yellow)
+    } else {
+        endpoint_status_presentation(endpoint.status, palette)
+    }
+}
+
 pub(super) fn endpoint_status_presentation(
     status: ClientEndpointStatus,
     palette: &Palette,
@@ -749,5 +795,6 @@ pub(super) fn local_endpoint() -> ClientShellEndpoint {
         agent_view_projection_supported: false,
         methods: None,
         remote_activity: Default::default(),
+        unresponsive: false,
     }
 }
