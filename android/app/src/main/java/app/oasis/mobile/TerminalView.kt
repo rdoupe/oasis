@@ -27,6 +27,7 @@ import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
+import android.widget.Toast
 import androidx.core.content.res.ResourcesCompat
 import java.nio.ByteBuffer
 import kotlin.math.abs
@@ -343,18 +344,28 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
     }
 
     /** Opens a link the bridge found under a tap; false when nothing can handle it. */
+    /** Opens a tapped link in the app that handles it. A link nothing on the phone will
+     *  open (Chrome refuses `chrome://` pages from other apps) is copied instead, to
+     *  paste into the browser's address bar. */
     private fun openLink(link: String): Boolean {
         val uri = Uri.parse(link)
-        if (uri.scheme?.lowercase() !in setOf("http", "https", "mailto")) return false
-        val intent = Intent(Intent.ACTION_VIEW, uri).addCategory(Intent.CATEGORY_BROWSABLE)
+        val web = uri.scheme?.lowercase() in setOf("http", "https", "mailto")
+        val intent = Intent(Intent.ACTION_VIEW, uri)
+        if (web) intent.addCategory(Intent.CATEGORY_BROWSABLE)
         if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-        return try {
-            context.startActivity(intent)
-            performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
-            true
+        performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
+        try {
+            if (uri.scheme?.lowercase() != "chrome") {
+                context.startActivity(intent)
+                return true
+            }
         } catch (_: ActivityNotFoundException) {
-            false
+        } catch (_: SecurityException) {
         }
+        context.getSystemService(ClipboardManager::class.java)
+            .setPrimaryClip(ClipData.newPlainText("link", link))
+        Toast.makeText(context, "Copied $link: paste it in the browser's address bar", Toast.LENGTH_LONG).show()
+        return true
     }
 
     fun toggleKeyboard() {

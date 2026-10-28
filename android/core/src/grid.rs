@@ -1,6 +1,7 @@
 //! The pane-area cell grid the server renders, kept in sync from the core's full
 //! surfaces and coalesced patches.
 
+use oasis_core::embed::links;
 use oasis_core::embed::wire::{
     CellData, CursorState, PaneSurfaceFrame, PaneSurfacePane, PaneSurfacePatchRow,
 };
@@ -139,110 +140,44 @@ impl Grid {
     }
 
     /// The link under a cell, for a tap to open: the cell's OSC 8 hyperlink, or a
-    /// plain http(s) URL written in the text across that cell, kept inside the pane's
-    /// columns and followed across rows it wraps over. Only web and mail links are returned.
+    /// link written in the text across that cell, kept inside the pane's columns and
+    /// followed across rows it wraps over. Local `file:` links are not returned: they
+    /// name files on the pane's machine, not on the phone.
     pub fn link_at(&self, col: u16, row: u16) -> Option<String> {
+        let phone_openable = |target: &str| {
+            links::openable(target) && !target.to_ascii_lowercase().starts_with("file:")
+        };
         let cell = self.cell(col, row)?;
         if let Some(index) = cell.hyperlink {
             if let Some(target) = self.hyperlinks.get(index as usize) {
-                if openable(target) {
+                if phone_openable(target) {
                     return Some(target.clone());
                 }
             }
         }
         let (left, right) = self.pane_columns(col, row);
         let right = right.min(self.width.saturating_sub(1));
-        // A row whose text runs to the pane's right edge most likely wraps onto the
-        // next, so a URL is read across such rows (a few at most).
-        let wraps = |r: u16| {
-            self.cell(right, r)
-                .is_some_and(|cell| cell.skip || !cell.symbol.trim().is_empty())
-        };
-        let mut first = row;
-        while first > 0 && row - first < 8 && wraps(first - 1) {
-            first -= 1;
-        }
-        let mut last = row;
-        while last + 1 < self.height && last - row < 8 && wraps(last) {
-            last += 1;
-        }
-        // The text, with the (row, column) each char starts at; a wide glyph's
+        // The pane's text, each char with the column it starts at; a wide glyph's
         // trailing skip cell belongs to the char before it.
-        let mut chars: Vec<(char, (u16, u16))> = Vec::new();
-        for r in first..=last {
-            for c in left..=right {
-                let Some(cell) = self.cell(c, r) else { break };
-                if cell.skip {
-                    continue;
+        let rows: Vec<links::Row> = (0..self.height)
+            .map(|r| {
+                let mut chars = Vec::new();
+                for c in left..=right {
+                    let Some(cell) = self.cell(c, r) else { break };
+                    if cell.skip {
+                        continue;
+                    }
+                    if cell.symbol.is_empty() {
+                        chars.push((' ', c));
+                    } else {
+                        chars.extend(cell.symbol.chars().map(|ch| (ch, c)));
+                    }
                 }
-                if cell.symbol.is_empty() {
-                    chars.push((' ', (r, c)));
-                } else {
-                    chars.extend(cell.symbol.chars().map(|ch| (ch, (r, c))));
-                }
-            }
-        }
-        let tapped = chars.iter().rposition(|(_, at)| *at <= (row, col))?;
-        let starts_with = |at: usize, scheme: &str| {
-            scheme.chars().enumerate().all(|(i, want)| {
                 chars
-                    .get(at + i)
-                    .is_some_and(|(ch, _)| ch.to_ascii_lowercase() == want)
             })
-        };
-        let mut at = 0;
-        while at < chars.len() {
-            let Some(scheme) = ["https://", "http://"]
-                .into_iter()
-                .find(|scheme| starts_with(at, scheme))
-            else {
-                at += 1;
-                continue;
-            };
-            let mut end = at;
-            while end < chars.len() && url_char(chars[end].0) {
-                end += 1;
-            }
-            let url = trim_url(&chars[at..end].iter().map(|(ch, _)| ch).collect::<String>());
-            let len = url.chars().count();
-            if len > scheme.len() && (at..at + len).contains(&tapped) {
-                return Some(url);
-            }
-            at = end.max(at + 1);
-        }
-        None
+            .collect();
+        links::link_in_text(&rows, right, row as usize, col).filter(|link| phone_openable(link))
     }
-}
-
-fn openable(target: &str) -> bool {
-    let lower = target.to_ascii_lowercase();
-    ["http://", "https://", "mailto:"]
-        .iter()
-        .any(|scheme| lower.starts_with(scheme) && lower.len() > scheme.len())
-}
-
-fn url_char(ch: char) -> bool {
-    !ch.is_whitespace() && !ch.is_control() && !matches!(ch, '"' | '\'' | '<' | '>' | '`' | '│')
-}
-
-/// Drops sentence punctuation after a URL and a closing bracket it never opened.
-fn trim_url(url: &str) -> String {
-    let mut url = url.to_string();
-    while let Some(last) = url.chars().last() {
-        let unbalanced = |open: char, close: char| {
-            last == close && url.matches(close).count() > url.matches(open).count()
-        };
-        if matches!(last, '.' | ',' | ';' | ':' | '!' | '?')
-            || unbalanced('(', ')')
-            || unbalanced('[', ']')
-            || unbalanced('{', '}')
-        {
-            url.pop();
-        } else {
-            break;
-        }
-    }
-    url
 }
 
 #[cfg(test)]
@@ -350,9 +285,26 @@ mod tests {
 
     #[test]
     fn a_row_that_stops_short_of_the_edge_does_not_join_the_next() {
-        let g = grid(&["https://a.example  ", "next"]);
+        let g = grid(&["https://a.example    ", "next"]);
         assert_eq!(g.link_at(3, 0).as_deref(), Some("https://a.example"));
         assert_eq!(g.link_at(1, 1), None);
+    }
+
+    #[test]
+    fn a_browser_settings_link_is_found() {
+        let g = grid(&["open chrome://settings/performance now"]);
+        assert_eq!(g.link_at(9, 0).as_deref(), Some("chrome://settings/performance"));
+    }
+
+    #[test]
+    fn a_url_an_app_wrapped_with_an_indent_is_found_whole() {
+        let g = grid(&[
+            "  https://example.org/a-long-path-th",
+            "  at-wraps?q=1",
+        ]);
+        let whole = Some("https://example.org/a-long-path-that-wraps?q=1");
+        assert_eq!(g.link_at(10, 0).as_deref(), whole);
+        assert_eq!(g.link_at(5, 1).as_deref(), whole);
     }
 
     #[test]
