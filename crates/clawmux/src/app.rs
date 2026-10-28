@@ -215,6 +215,13 @@ impl App {
                 app.view.grab_focus();
                 app.retry_waiting_machines();
             }
+            if let Some(keyboard) = app.keyboard.borrow().as_ref() {
+                if active {
+                    keyboard.focus_in();
+                } else {
+                    keyboard.focus_out();
+                }
+            }
             if let Some(conn) = app.conn.borrow().as_ref() {
                 conn.focus(active);
             }
@@ -329,6 +336,7 @@ impl App {
                     let state = gesture.current_event_state();
                     app.mouse_down(gdk::BUTTON_PRIMARY, sx, sy, state);
                     app.mouse_up(sx, sy, state);
+                    app.show_keyboard(gesture.current_event());
                 }
                 return;
             }
@@ -348,7 +356,9 @@ impl App {
     /// On a touchscreen: bigger touch targets, the on-screen keyboard, and pinch to
     /// resize the font.
     fn wire_touch(self: &Rc<Self>) {
-        if !crate::touch::has_touchscreen() {
+        let touch = crate::touch::has_touchscreen();
+        debug(|| format!("touchscreen={touch}"));
+        if !touch {
             return;
         }
         self.drawer.set_touch(true);
@@ -380,6 +390,18 @@ impl App {
             }
         });
         self.view.add_controller(pinch);
+    }
+
+    /// Asks the touch shell for its on-screen keyboard, as a tap on a text field does;
+    /// a tap brings it back after it was dismissed.
+    fn show_keyboard(&self, event: Option<gdk::Event>) {
+        let Some(keyboard) = self.keyboard.borrow().clone() else {
+            return;
+        };
+        self.view.grab_focus();
+        keyboard.focus_in();
+        let shown = keyboard.activate_osk(event);
+        debug(|| format!("keyboard asked for, accepted={shown}"));
     }
 
     fn wire_theme_monitor(self: &Rc<Self>) {
