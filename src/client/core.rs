@@ -1154,6 +1154,11 @@ impl CoreLoop {
                     },
                 );
                 self.schedule_health();
+                // Recorded like any other status: a stall is only reported for
+                // an endpoint known to be online, and held input waits for it.
+                self.statuses
+                    .insert(endpoint_id.clone(), EndpointStatus::Online);
+                self.unresponsive.remove(&endpoint_id);
                 let label = self.label(&endpoint_id);
                 self.shared.publish(|outbox| {
                     let pending = outbox.endpoint(&EndpointId::from_client(&endpoint_id), &label);
@@ -1196,7 +1201,11 @@ impl CoreLoop {
             .cloned()
             .collect::<Vec<_>>()
         {
-            if self.statuses.get(&id) == Some(&EndpointStatus::Online) {
+            // Still connected and answering again; a connection the health
+            // check just dropped is reported by its failure instead.
+            if self.statuses.get(&id) == Some(&EndpointStatus::Online)
+                && self.registry.connection(&id).is_some()
+            {
                 let label = self.label(&id);
                 self.shared.publish(|outbox| {
                     outbox
@@ -1301,9 +1310,12 @@ impl CoreLoop {
 
     fn handle_failures(&mut self) {
         for failure in self.registry.take_failures() {
-            if !self
-                .registry
-                .accepts(&failure.endpoint_id, failure.generation)
+            // A failure removes its connection, so only a newer connection that
+            // replaced it makes the failure stale (as the TUI client checks).
+            if self.registry.connection(&failure.endpoint_id).is_some()
+                && !self
+                    .registry
+                    .accepts(&failure.endpoint_id, failure.generation)
             {
                 continue;
             }
