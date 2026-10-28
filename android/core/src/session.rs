@@ -4,7 +4,7 @@
 use std::collections::BTreeMap;
 
 use oasis_core::embed::sidebar::{
-    ActivityKind, ActivityPart, Agent, ResolvedTokenKind, SidebarModel, SidebarPrefs, TokenRow,
+    ActivityKind, ActivityPart, Agent, CloseTarget, ResolvedTokenKind, SidebarModel, SidebarPrefs, TokenRow,
 };
 use oasis_core::embed::wire::{
     AgentStatus, ClientKeyCode, ClientKeyKind, ClientMouseKind, ClientMousePosition, Method,
@@ -169,6 +169,9 @@ impl Session {
                         EndpointStatus::Online => ("online", String::new()),
                         EndpointStatus::Reconnecting(why) => ("reconnecting", why.clone()),
                         EndpointStatus::Attention(why) => ("attention", why.clone()),
+                        // Connected, but the machine stopped answering; pane input
+                        // waits in the core and goes out once it answers.
+                        EndpointStatus::NotResponding => ("not_responding", String::new()),
                     };
                     let mut machine = json!({
                         "id": endpoint.id.as_str(),
@@ -213,6 +216,16 @@ impl Session {
         }
     }
 
+    /// The machine whose surface is shown.
+    pub fn active_endpoint(&self) -> Option<&str> {
+        self.active.as_ref().map(EndpointId::as_str)
+    }
+
+    /// The pane typing goes to on the shown machine.
+    pub fn focused_pane(&self) -> Option<&str> {
+        self.grid.focused_pane().map(|pane| pane.pane_id.as_str())
+    }
+
     pub fn retry(&self, endpoint: &str) {
         if let Some(id) = self.endpoint(endpoint) {
             self.core.retry(&id);
@@ -220,8 +233,16 @@ impl Session {
     }
 
     /// Sends one API operation to a machine, e.g. `("pane.focus", {"pane_id": ...})`.
+    /// The server only takes them from a client showing its surface, so the
+    /// machine becomes the shown one first.
     pub fn request(&mut self, endpoint: &str, method: &str, params: Value) -> Result<(), String> {
         let id = self.endpoint(endpoint).ok_or("unknown machine")?;
+        self.activate(endpoint);
+        if let Some(target) = close_target(method, &params) {
+            // Hidden at once, as on the desktop, and back if the machine refuses.
+            self.core.close(&id, target);
+            return Ok(());
+        }
         let method: Method =
             serde_json::from_value(json!({ "method": method, "params": params }))
                 .map_err(|error| format!("{method}: {error}"))?;
@@ -231,12 +252,10 @@ impl Session {
 
     /// Shows an agent: its machine's surface, with its pane focused there.
     pub fn open_pane(&mut self, endpoint: &str, pane_id: &str) {
-        self.activate(endpoint);
         let _ = self.request(endpoint, "pane.focus", json!({ "pane_id": pane_id }));
     }
 
     pub fn open_space(&mut self, endpoint: &str, workspace_id: &str) {
-        self.activate(endpoint);
         let _ = self.request(
             endpoint,
             "workspace.focus",
@@ -327,6 +346,17 @@ impl Session {
             let _ = self.request(active.as_str(), "pane.focus", json!({ "pane_id": pane_id }));
         }
     }
+}
+
+/// What a `pane.close`, `tab.close` or `workspace.close` request closes.
+fn close_target(method: &str, params: &Value) -> Option<CloseTarget> {
+    let id = |key: &str| params.get(key).and_then(Value::as_str).map(str::to_owned);
+    Some(match method {
+        "pane.close" => CloseTarget::Pane(id("pane_id")?),
+        "tab.close" => CloseTarget::Tab(id("tab_id")?),
+        "workspace.close" => CloseTarget::Workspaces(vec![id("workspace_id")?]),
+        _ => return None,
+    })
 }
 
 /// The Kotlin key codes: named keys below 0x100, `0x100 + n` for F`n`, and a
@@ -520,6 +550,36 @@ mod tests {
         assert_eq!(key_code(0x10C), Some(ClientKeyCode::F(12)));
         assert_eq!(key_code(0x10000 + 'c' as i32), Some(ClientKeyCode::Char('c')));
         assert_eq!(key_code(99), None);
+    }
+
+    /// The app's pane and space menus send these; each must parse as the core's
+    /// API method so the request is not dropped.
+    #[test]
+    fn the_menu_requests_parse_as_api_methods() {
+        for (method, params) in [
+            ("pane.close", json!({ "pane_id": "p_1" })),
+            ("pane.rename", json!({ "pane_id": "p_1", "label": "review" })),
+            ("tab.create", json!({ "workspace_id": "w_1", "focus": true })),
+            ("workspace.rename", json!({ "workspace_id": "w_1", "label": "oasis" })),
+            ("workspace.close", json!({ "workspace_id": "w_1" })),
+        ] {
+            let parsed: Result<Method, _> =
+                serde_json::from_value(json!({ "method": method, "params": params }));
+            assert!(parsed.is_ok(), "{method}: {parsed:?}");
+        }
+        let wrong: Result<Method, _> = serde_json::from_value(
+            json!({ "method": "workspace.rename", "params": { "workspace_id": "w_1", "name": "x" } }),
+        );
+        assert!(wrong.is_err(), "a misnamed field is caught");
+        assert_eq!(
+            close_target("pane.close", &json!({ "pane_id": "p_1" })),
+            Some(CloseTarget::Pane("p_1".into()))
+        );
+        assert_eq!(
+            close_target("workspace.close", &json!({ "workspace_id": "w_1" })),
+            Some(CloseTarget::Workspaces(vec!["w_1".into()]))
+        );
+        assert_eq!(close_target("pane.rename", &json!({ "pane_id": "p_1" })), None);
     }
 
     #[test]

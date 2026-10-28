@@ -189,6 +189,29 @@ class Core(private val context: Context) {
         terminal?.setFrame(Native.frame(handle))
     }
 
+    /**
+     * Sends one API operation, e.g. `("pane.close", {"pane_id": ...})`. The core
+     * reports a failed one as a notice; one it cannot send is shown here.
+     */
+    fun request(endpoint: String, method: String, params: Map<String, Any>) {
+        if (handle == 0L) return
+        Native.request(handle, endpoint, method, JSONObject(params).toString())?.let { notice.value = it }
+    }
+
+    /** The shown machine and its focused pane, which is what the terminal screen shows. */
+    fun focusedPane(): Pair<String, String>? {
+        if (handle == 0L) return null
+        val endpoint = Native.activeMachine(handle) ?: return null
+        val pane = Native.focusedPane(handle) ?: return null
+        return endpoint to pane
+    }
+
+    /** Keys for the pane as they are, without the armed Ctrl or Alt from the key row. */
+    fun keys(vararg keys: Pair<Int, Int>) {
+        if (handle == 0L) return
+        for ((code, modifiers) in keys) Native.key(handle, code, modifiers)
+    }
+
     /** Retries a machine, recording its host key first in case that was the problem. */
     fun retry(machine: Machine) {
         val saved = prefs.machines.firstOrNull { it.label == machine.label }

@@ -201,3 +201,21 @@ pub extern "system" fn Java_app_oasis_mobile_Native_linkAt(mut env: JNIEnv, _cla
         None => std::ptr::null_mut(),
     }
 }
+
+/// The machine whose surface is shown, or null.
+#[no_mangle]
+pub extern "system" fn Java_app_oasis_mobile_Native_activeMachine(mut env: JNIEnv, _class: JClass, handle: jlong) -> jstring {
+    match unsafe { session(handle) }.active_endpoint() {
+        Some(id) => new_string(&mut env, id),
+        None => std::ptr::null_mut(),
+    }
+}
+
+/// The focused pane on the shown machine, or null.
+#[no_mangle]
+pub extern "system" fn Java_app_oasis_mobile_Native_focusedPane(mut env: JNIEnv, _class: JClass, handle: jlong) -> jstring {
+    match unsafe { session(handle) }.focused_pane() {
+        Some(pane) => new_string(&mut env, pane),
+        None => std::ptr::null_mut(),
+    }
+}

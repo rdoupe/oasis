@@ -16,6 +16,7 @@ import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -38,12 +39,16 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -71,6 +76,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.text.font.FontWeight
@@ -84,13 +91,14 @@ private val Raised = Color(0xFF24283B)
 private val Foreground = Color(0xFFC0CAF5)
 private val Dim = Color(0xFF7A82A8)
 private val Accent = Color(0xFF7AA2F7)
+private val Yellow = Color(0xFFE0AF68)
 
 private fun statusColor(status: String) = when (status) {
     "working" -> Color(0xFFE0AF68)
     "blocked" -> Color(0xFFF7768E)
     "done" -> Color(0xFF9ECE6A)
     "online" -> Color(0xFF9ECE6A)
-    "connecting", "reconnecting" -> Color(0xFFE0AF68)
+    "connecting", "reconnecting", "not_responding" -> Yellow
     "attention" -> Color(0xFFF7768E)
     else -> Color(0xFF565F89)
 }
@@ -105,7 +113,8 @@ private fun statusWord(status: String) = when (status) {
 
 sealed interface Screen {
     data object Agents : Screen
-    data class Terminal(val title: String, val subtitle: String, val agent: Agent?) : Screen
+    /** A pane on `endpoint`: an agent's, or the focused one in a space. */
+    data class Terminal(val title: String, val subtitle: String, val agent: Agent?, val endpoint: String) : Screen
     data object Settings : Screen
 }
 
@@ -180,7 +189,7 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
 
     fun openAgent(agent: Agent) {
         core.openAgent(agent)
-        screen = Screen.Terminal(agent.title, "${agent.machine} · ${spaceName(core, agent)}", agent)
+        screen = Screen.Terminal(agent.title, "${agent.machine} · ${spaceName(core, agent)}", agent, agent.endpoint)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -190,7 +199,13 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
                 onAgent = ::openAgent,
                 onSpace = { machine, space ->
                     core.openSpace(machine, space)
-                    screen = Screen.Terminal(space.name, machine.label, null)
+                    screen = Screen.Terminal(space.name, machine.label, null, machine.id)
+                },
+                onNewTab = { machine, space ->
+                    // A focused new tab brings its space to the surface too; a
+                    // workspace.focus as well would be refused while this one runs.
+                    core.request(machine.id, "tab.create", mapOf("workspace_id" to space.id, "focus" to true))
+                    screen = Screen.Terminal(space.name, machine.label, null, machine.id)
                 },
                 onSettings = { screen = Screen.Settings },
             )
@@ -220,11 +235,14 @@ private fun AgentsScreen(
     core: Core,
     onAgent: (Agent) -> Unit,
     onSpace: (Machine, Space) -> Unit,
+    onNewTab: (Machine, Space) -> Unit,
     onSettings: () -> Unit,
 ) {
     val machines by core.machines
     val agents by core.agents
     val starting by core.starting
+    var ask by remember { mutableStateOf<Ask?>(null) }
+    ask?.let { AskDialog(it) { ask = null } }
     Column(Modifier.fillMaxSize().systemBarsPadding()) {
         TopAppBar(
             title = { Text("Oasis", fontWeight = FontWeight.SemiBold) },
@@ -247,8 +265,31 @@ private fun AgentsScreen(
             // which is also the order swiping in the terminal follows.
             if (agents.isNotEmpty()) {
                 item(key = "agents") { SectionHeader("Agents") }
-                items(agents, key = { "a:" + it.endpoint + it.pane }) {
-                    AgentCard(it, place = "${it.machine} · ${spaceName(core, it)}".trimEnd(' ', '·')) { onAgent(it) }
+                items(agents, key = { "a:" + it.endpoint + it.pane }) { agent ->
+                    var menu by remember { mutableStateOf(false) }
+                    // A machine that stopped answering may have moved on: its agents look stale.
+                    val stalled = machines.any { it.id == agent.endpoint && it.status == "not_responding" }
+                    Box {
+                        AgentCard(
+                            agent,
+                            place = "${agent.machine} · ${spaceName(core, agent)}".trimEnd(' ', '·'),
+                            stale = agent.stale || stalled,
+                            onLongClick = { menu = true },
+                        ) { onAgent(agent) }
+                        LongPressMenu(menu, { menu = false }) {
+                            item("Open") { onAgent(agent) }
+                            item("Rename") {
+                                ask = Ask.Rename("Rename this pane", agent.title) { label ->
+                                    core.request(agent.endpoint, "pane.rename", mapOf("pane_id" to agent.pane, "label" to label))
+                                }
+                            }
+                            item("Close") {
+                                ask = Ask.Confirm("Close this pane?", "${agent.title} and what runs in it stop.") {
+                                    core.request(agent.endpoint, "pane.close", mapOf("pane_id" to agent.pane))
+                                }
+                            }
+                        }
+                    }
                 }
             }
             for (machine in machines) {
@@ -257,7 +298,26 @@ private fun AgentsScreen(
                 }
                 val counts = agents.filter { it.endpoint == machine.id }.groupingBy { it.space }.eachCount()
                 items(machine.spaces, key = { "s:" + machine.id + it.id }) { space ->
-                    SpaceRow(space, counts[space.id] ?: 0) { onSpace(machine, space) }
+                    var menu by remember { mutableStateOf(false) }
+                    val name = space.name.ifBlank { "space" }
+                    Box {
+                        SpaceRow(space, counts[space.id] ?: 0, onLongClick = { menu = true }) { onSpace(machine, space) }
+                        LongPressMenu(menu, { menu = false }) {
+                            item("New tab") {
+                                onNewTab(machine, space)
+                            }
+                            item("Rename space") {
+                                ask = Ask.Rename("Rename this space", space.name) { label ->
+                                    core.request(machine.id, "workspace.rename", mapOf("workspace_id" to space.id, "label" to label))
+                                }
+                            }
+                            item("Close space") {
+                                ask = Ask.Confirm("Close this space?", "$name and every pane in it close.") {
+                                    core.request(machine.id, "workspace.close", mapOf("workspace_id" to space.id))
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -326,6 +386,10 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
             StatusDot(machine.status, 10)
             Spacer(Modifier.width(10.dp))
             Text(machine.label.uppercase(), color = Dim, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            if (machine.status == "not_responding" && !waitsForTailscale) {
+                Spacer(Modifier.width(10.dp))
+                Text("◌ not responding", color = Yellow, fontSize = 13.sp)
+            }
             Spacer(Modifier.weight(1f))
             if (!waitsForTailscale && (machine.status == "attention" || machine.status == "reconnecting")) {
                 IconButton(onClick = onRetry) { Icon(Icons.Default.Refresh, "Retry", tint = Dim) }
@@ -340,10 +404,10 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
 }
 
 @Composable
-private fun SpaceRow(space: Space, agents: Int, onClick: () -> Unit) {
+private fun SpaceRow(space: Space, agents: Int, onLongClick: () -> Unit, onClick: () -> Unit) {
     val empty = agents == 0
     Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().longPressable(onClick, onLongClick).padding(horizontal = 20.dp, vertical = 10.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -381,16 +445,16 @@ private fun AgentLogo(agent: Agent, size: Int = 22) {
 }
 
 @Composable
-private fun AgentCard(agent: Agent, place: String, onClick: () -> Unit) {
+private fun AgentCard(agent: Agent, place: String, stale: Boolean, onLongClick: () -> Unit, onClick: () -> Unit) {
     Row(
         Modifier
             .fillMaxWidth()
             .padding(horizontal = 12.dp, vertical = 4.dp)
             .clip(RoundedCornerShape(14.dp))
             .background(Raised)
-            .clickable(onClick = onClick)
+            .longPressable(onClick, onLongClick)
             .padding(horizontal = 14.dp, vertical = 12.dp)
-            .alpha(if (agent.stale) 0.5f else 1f),
+            .alpha(if (stale) 0.5f else 1f),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         StatusDot(agent.status)
@@ -427,6 +491,83 @@ private fun AgentCard(agent: Agent, place: String, onClick: () -> Unit) {
     }
 }
 
+/** A tap does `onClick`; a long press buzzes and does `onLongClick`, e.g. opens a menu. */
+@Composable
+private fun Modifier.longPressable(onClick: () -> Unit, onLongClick: () -> Unit): Modifier {
+    val haptic = LocalHapticFeedback.current
+    return combinedClickable(
+        onClick = onClick,
+        onLongClick = {
+            haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+            onLongClick()
+        },
+    )
+}
+
+private class MenuItems {
+    val items = mutableListOf<Pair<String, () -> Unit>>()
+    fun item(label: String, action: () -> Unit) {
+        items += label to action
+    }
+}
+
+/** The menu a long press opens, under the row it was pressed on. */
+@Composable
+private fun LongPressMenu(open: Boolean, dismiss: () -> Unit, build: MenuItems.() -> Unit) {
+    DropdownMenu(open, dismiss, containerColor = Raised) {
+        for ((label, action) in MenuItems().apply(build).items) {
+            DropdownMenuItem(
+                text = { Text(label, fontSize = 16.sp) },
+                onClick = {
+                    dismiss()
+                    action()
+                },
+            )
+        }
+    }
+}
+
+/** A question a menu asks before it acts. */
+private sealed interface Ask {
+    data class Confirm(val title: String, val text: String, val yes: () -> Unit) : Ask
+    data class Rename(val title: String, val current: String, val rename: (String) -> Unit) : Ask
+}
+
+@Composable
+private fun AskDialog(ask: Ask, dismiss: () -> Unit) {
+    when (ask) {
+        is Ask.Confirm -> AlertDialog(
+            onDismissRequest = dismiss,
+            title = { Text(ask.title) },
+            text = { Text(ask.text, color = Dim) },
+            confirmButton = {
+                TextButton(onClick = {
+                    dismiss()
+                    ask.yes()
+                }) { Text("Yes") }
+            },
+            dismissButton = { TextButton(onClick = dismiss) { Text("No") } },
+            containerColor = Raised,
+        )
+        is Ask.Rename -> {
+            var name by remember { mutableStateOf(ask.current) }
+            AlertDialog(
+                onDismissRequest = dismiss,
+                title = { Text(ask.title) },
+                text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text("Name") }) },
+                confirmButton = {
+                    TextButton(enabled = name.isNotBlank(), onClick = {
+                        dismiss()
+                        ask.rename(name.trim())
+                    }) { Text("Rename") }
+                },
+                dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+                containerColor = Raised,
+            )
+        }
+    }
+}
+
 /** Background work as the desktop shows it: colored Nerd Font icons with counts or schedules. */
 @Composable
 private fun ActivityIcons(parts: List<Activity>) {
@@ -459,7 +600,24 @@ private fun TerminalScreen(
     onSwipe: (Int) -> Unit,
 ) {
     terminal.onSwipe = onSwipe
-    val live = screen.agent?.let { a -> core.agents.value.firstOrNull { it.endpoint == a.endpoint && it.pane == a.pane } }
+    val agents by core.agents
+    val machines by core.machines
+    val live = screen.agent?.let { a -> agents.firstOrNull { it.endpoint == a.endpoint && it.pane == a.pane } }
+    // The agent in the focused pane, also when the screen was opened from a space.
+    val shown = live ?: core.focusedPane()?.let { (endpoint, pane) -> agents.firstOrNull { it.endpoint == endpoint && it.pane == pane } }
+    val machine = machines.firstOrNull { it.id == (live?.endpoint ?: screen.endpoint) }
+    var closing by remember { mutableStateOf(false) }
+    if (closing) {
+        AskDialog(
+            Ask.Confirm("Close this pane?", "${shown?.title ?: "The shell"} and what runs in it stop.") {
+                val (endpoint, pane) = core.focusedPane()
+                    ?: screen.agent?.let { it.endpoint to it.pane }
+                    ?: return@Confirm
+                core.request(endpoint, "pane.close", mapOf("pane_id" to pane))
+                onBack()
+            },
+        ) { closing = false }
+    }
     Column(Modifier.fillMaxSize().systemBarsPadding().imePadding()) {
         TopAppBar(
             navigationIcon = {
@@ -493,10 +651,12 @@ private fun TerminalScreen(
             actions = {
                 IconButton(onClick = { terminal.paste() }) { Icon(Icons.Default.ContentPaste, "Paste") }
                 IconButton(onClick = { terminal.toggleKeyboard() }) { Icon(Icons.Default.Keyboard, "Keyboard") }
+                IconButton(onClick = { closing = true }) { Icon(Icons.Default.Close, "Close pane") }
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Background),
             expandedHeight = 56.dp,
         )
+        if (machine?.status == "not_responding") StalledBar(machine.label)
         AndroidView(
             factory = {
                 (terminal.parent as? ViewGroup)?.removeView(terminal)
@@ -504,7 +664,55 @@ private fun TerminalScreen(
             },
             modifier = Modifier.weight(1f).fillMaxWidth(),
         )
+        shown?.let { AgentActions(core, it) }
         ExtraKeys(core, terminal)
+    }
+}
+
+/** Under the top bar while the pane's machine has stopped answering. */
+@Composable
+private fun StalledBar(machine: String) {
+    Text(
+        "◌ $machine isn't responding · the connection has stalled · what you type is sent once it answers",
+        color = Background,
+        fontSize = 13.sp,
+        modifier = Modifier.fillMaxWidth().background(Yellow).padding(horizontal = 14.dp, vertical = 6.dp),
+    )
+}
+
+/**
+ * The agent's own keys, as buttons. Claude Code: Esc interrupts, Ctrl+B sends a
+ * running command to the background, Ctrl+X Ctrl+S sends queued messages now (its
+ * Ctrl+Enter, spelled so every terminal delivers it), Shift+Tab cycles the mode.
+ */
+@Composable
+private fun AgentActions(core: Core, agent: Agent) {
+    val claude = agent.agent == "Claude"
+    Row(
+        Modifier.fillMaxWidth().background(Background).horizontalScroll(rememberScrollState()).padding(horizontal = 8.dp, vertical = 4.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        ActionChip("Interrupt") { core.keys(Keys.ESC to 0) }
+        if (claude) {
+            ActionChip("Background") { core.keys(Keys.char('b'.code) to Keys.CTRL) }
+            ActionChip("Send now") { core.keys(Keys.char('x'.code) to Keys.CTRL, Keys.char('s'.code) to Keys.CTRL) }
+            ActionChip("Mode") { core.keys(Keys.BACK_TAB to 0) }
+        }
+    }
+}
+
+@Composable
+private fun ActionChip(label: String, onClick: () -> Unit) {
+    Box(
+        Modifier
+            .height(36.dp)
+            .clip(RoundedCornerShape(18.dp))
+            .background(Accent.copy(alpha = 0.18f))
+            .clickable(onClick = onClick)
+            .padding(horizontal = 14.dp),
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(label, color = Foreground, fontSize = 14.sp)
     }
 }
 
