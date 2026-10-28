@@ -258,6 +258,9 @@ fn transcript_for_session(session_id: &str) -> Option<PathBuf> {
 /// and no record yet is running. Claude keeps a finished one's row on screen
 /// with its timer stopped; one that died with an earlier process never
 /// finishes, but its row is gone, so callers cap the screen's row count.
+/// A stopped subagent never finishes either, and its finished row stays on
+/// screen, so one quiet for a while is checked against the session's own
+/// notice that it was stopped.
 fn unfinished_subagents(transcript: &Path) -> Option<u16> {
     let dir = transcript.with_extension("").join("subagents");
     let entries = match std::fs::read_dir(&dir) {
@@ -286,7 +289,46 @@ fn unfinished_subagents(transcript: &Path) -> Option<u16> {
             started.insert(id.to_owned());
         }
     }
-    Some(u16::try_from(started.difference(&finished).count()).unwrap_or(u16::MAX))
+    let mut unfinished: Vec<&String> = started.difference(&finished).collect();
+    let quiet: Vec<&String> = unfinished
+        .iter()
+        .copied()
+        .filter(|id| is_quiet(&dir.join(format!("{id}.jsonl"))))
+        .collect();
+    if !quiet.is_empty() {
+        if let Ok(session) = std::fs::read(transcript) {
+            unfinished.retain(|id| !(quiet.contains(id) && was_stopped(&session, id)));
+        }
+    }
+    Some(u16::try_from(unfinished.len()).unwrap_or(u16::MAX))
+}
+
+/// A running subagent writes its transcript as it works; one this quiet may
+/// have been stopped.
+const SUBAGENT_QUIET: Duration = Duration::from_secs(60);
+
+fn is_quiet(subagent: &Path) -> bool {
+    std::fs::metadata(subagent)
+        .and_then(|metadata| metadata.modified())
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_none_or(|elapsed| elapsed >= SUBAGENT_QUIET)
+}
+
+/// Whether the session recorded that the subagent `agent-<id>` was stopped
+/// or failed: its task notice says so.
+fn was_stopped(session: &[u8], file_id: &str) -> bool {
+    let Some(id) = file_id.strip_prefix("agent-") else {
+        return false;
+    };
+    let needle = format!("<task-id>{id}</task-id>");
+    memchr::memmem::find_iter(session, needle.as_bytes()).any(|at| {
+        let notice = &session[at..session.len().min(at + 1024)];
+        let notice = memchr::memmem::find(notice, b"</task-notification>")
+            .map_or(notice, |end| &notice[..end]);
+        memchr::memmem::find(notice, b"<status>killed</status>").is_some()
+            || memchr::memmem::find(notice, b"<status>failed</status>").is_some()
+    })
 }
 
 fn loop_label(status: LoopStatus) -> String {
@@ -388,6 +430,57 @@ mod tests {
         )
         .unwrap();
         assert_eq!(unfinished_subagents(&path), Some(1));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn a_stopped_subagent_is_not_unfinished_once_quiet() {
+        let path = temp_transcript("stopped");
+        let dir = path.with_extension("").join("subagents");
+        std::fs::create_dir_all(&dir).unwrap();
+        for id in ["a1", "a2"] {
+            std::fs::write(
+                dir.join(format!("agent-{id}.meta.json")),
+                r#"{"agentType":"general-purpose","requestShape":"background"}"#,
+            )
+            .unwrap();
+            std::fs::write(dir.join(format!("agent-{id}.jsonl")), "{}\n").unwrap();
+        }
+        // The notice as a stock Claude Code 2.1.310 session records a stop.
+        std::fs::write(
+            &path,
+            concat!(
+                r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n"#,
+                r#"<task-id>a1</task-id>\n<tool-use-id>toolu_1</tool-use-id>\n"#,
+                r#"<status>killed</status>\n<summary>Agent \"x\" was stopped by Claude</summary>\n"#,
+                r#"</task-notification>"}"#,
+                "\n",
+                r#"{"type":"queue-operation","operation":"enqueue","content":"<task-notification>\n"#,
+                r#"<task-id>a2</task-id>\n<tool-use-id>toolu_2</tool-use-id>\n"#,
+                r#"<status>completed</status>\n</task-notification>"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        assert_eq!(
+            unfinished_subagents(&path),
+            Some(2),
+            "a subagent still writing is not checked"
+        );
+        let past = std::time::SystemTime::now() - SUBAGENT_QUIET * 2;
+        for id in ["a1", "a2"] {
+            std::fs::File::options()
+                .write(true)
+                .open(dir.join(format!("agent-{id}.jsonl")))
+                .unwrap()
+                .set_modified(past)
+                .unwrap();
+        }
+        assert_eq!(
+            unfinished_subagents(&path),
+            Some(1),
+            "only the stopped one; a completed notice can precede a resume"
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
