@@ -318,8 +318,16 @@ impl App {
         id: String,
         params: PaneLinkActivateParams,
     ) -> String {
+        let parsed_pane_id = self
+            .parse_pane_id(&params.pane_id)
+            .map(|(_, pane_id)| pane_id);
         match self.read_checked_pane_link(&id, &params, "resolution", |runtime, col, row| {
-            runtime.link_regions_at(col, row, crate::app::actions::url_byte_range)
+            match parsed_pane_id {
+                Some(pane_id) => {
+                    crate::app::actions::link_regions_at_runtime_cell(runtime, pane_id, col, row)
+                }
+                None => runtime.link_regions_at(col, row, crate::app::actions::url_byte_range),
+            }
         }) {
             Ok((_, regions)) => encode_success(id, ResponseResult::PaneLinkResolved { regions }),
             Err(error) => error,
