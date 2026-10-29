@@ -2080,9 +2080,19 @@ impl App {
             .next()
             .unwrap_or_default()
             .to_ascii_lowercase();
-        // Web and browser pages open in the browser window; other schemes (mailto,
-        // vscode, …) go to the app the desktop has for them.
-        let opened = if matches!(scheme.as_str(), "http" | "https" | "chrome" | "about") {
+        // Browsers drop their own pages (chrome://settings) when another app opens
+        // them, so those are copied for the address bar.
+        if links::browser_internal_page(&url) {
+            self.view.clipboard().set_text(&url);
+            self.show_banner(
+                &format!("copied {url}: browsers open their own pages only from the address bar, so paste it there"),
+                Some(5),
+            );
+            return true;
+        }
+        // Web pages open in the browser window; other schemes (mailto, vscode, …)
+        // go to the app the desktop has for them.
+        let opened = if matches!(scheme.as_str(), "http" | "https" | "about") {
             self.browser.open(&url)
         } else {
             gio::AppInfo::launch_default_for_uri(&url, gio::AppLaunchContext::NONE)
