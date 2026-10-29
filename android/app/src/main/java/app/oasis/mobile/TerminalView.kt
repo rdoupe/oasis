@@ -344,9 +344,17 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
     }
 
     /** Opens a link the bridge found under a tap; false when nothing can handle it. */
-    /** Opens a tapped link in the app that handles it. A link nothing on the phone will
-     *  open (Chrome refuses `chrome://` pages from other apps) is copied instead, to
-     *  paste into the browser's address bar. */
+    /** A browser's own page (`chrome://settings`, `about:config`): browsers open these
+     *  only from their address bar and refuse them from other apps. */
+    private fun browserPage(uri: Uri): Boolean {
+        val scheme = uri.scheme?.lowercase() ?: return false
+        return scheme in setOf("chrome", "chromium", "edge", "brave", "vivaldi", "opera") ||
+            (scheme == "about" && !uri.schemeSpecificPart.equals("blank", ignoreCase = true))
+    }
+
+    /** Opens a tapped link in the app that handles it. A browser's own page, or a link
+     *  nothing on the phone will open, is copied instead, to paste into the browser's
+     *  address bar. */
     private fun openLink(link: String): Boolean {
         val uri = Uri.parse(link)
         val web = uri.scheme?.lowercase() in setOf("http", "https", "mailto")
@@ -355,7 +363,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         if (context !is android.app.Activity) intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
         performHapticFeedback(HapticFeedbackConstants.VIRTUAL_KEY)
         try {
-            if (uri.scheme?.lowercase() != "chrome") {
+            if (!browserPage(uri)) {
                 context.startActivity(intent)
                 return true
             }
