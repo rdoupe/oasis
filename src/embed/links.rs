@@ -20,6 +20,17 @@ const EDGE_SLACK: u16 = 2;
 /// The link written in `rows` across the cell at `row`, `col`. `right` is the
 /// pane's last text column.
 pub fn link_in_text(rows: &[Row], right: u16, row: usize, col: u16) -> Option<String> {
+    link_cells_in_text(rows, right, row, col).map(|(url, _)| url)
+}
+
+/// Like [`link_in_text`], with the (row, column) each char of the link starts
+/// at, for underlining it across the rows it wraps over.
+pub fn link_cells_in_text(
+    rows: &[Row],
+    right: u16,
+    row: usize,
+    col: u16,
+) -> Option<(String, Vec<(usize, u16)>)> {
     rows.get(row)?;
     let wraps = |r: usize| {
         let reaches_edge = rows[r]
@@ -43,8 +54,8 @@ pub fn link_in_text(rows: &[Row], right: u16, row: usize, col: u16) -> Option<St
     // The rows as one run of text, each char with its (row, column); a row that
     // continues the one before drops its indent, and the joins carry no space.
     let mut chars: Vec<(char, (usize, u16))> = Vec::new();
-    for (r, text) in rows.iter().enumerate().take(last + 1).skip(first) {
-        let mut text = text.iter().peekable();
+    for (r, row_text) in rows.iter().enumerate().take(last + 1).skip(first) {
+        let mut text = row_text.iter().peekable();
         if r > first {
             while text.next_if(|(ch, _)| ch.is_whitespace()).is_some() {}
         }
@@ -77,11 +88,24 @@ pub fn link_in_text(rows: &[Row], right: u16, row: usize, col: u16) -> Option<St
         let url = trim_url(&chars[at..end].iter().map(|(ch, _)| ch).collect::<String>());
         let len = url.chars().count();
         if len > body - at && (at..at + len).contains(&tapped) {
-            return Some(url);
+            let cells = chars[at..at + len].iter().map(|(_, at)| *at).collect();
+            return Some((url, cells));
         }
         at = end.max(at + 1);
     }
     None
+}
+
+/// Whether `url` is one of a browser's own pages (`chrome://settings`, `edge://flags`,
+/// `about:config`). Browsers open these only from their own address bar and drop
+/// them when another app asks, so a front end copies such a link instead.
+pub fn browser_internal_page(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    ["chrome", "chromium", "edge", "brave", "vivaldi", "opera"].contains(&scheme.as_str())
+        || (scheme == "about" && !rest.eq_ignore_ascii_case("blank"))
 }
 
 /// Whether an OSC 8 hyperlink target is one to open: it names a scheme, and not
@@ -90,7 +114,9 @@ pub fn openable(target: &str) -> bool {
     let Some((scheme, rest)) = target.split_once(':') else {
         return false;
     };
-    valid_scheme(scheme)
+    // A one-letter "scheme" is a Windows drive (`C:\…`), not a link.
+    scheme.len() >= 2
+        && valid_scheme(scheme)
         && !rest.is_empty()
         && !["javascript", "data", "vbscript"]
             .iter()
@@ -100,23 +126,27 @@ pub fn openable(target: &str) -> bool {
 /// Where the body of a link starting at `at` begins, after its `scheme://`,
 /// `mailto:` or `about:`; none when no link starts there.
 fn scheme_end(chars: &[(char, (usize, u16))], at: usize) -> Option<usize> {
-    if at > 0 && chars[at - 1].0.is_ascii_alphanumeric() {
+    let before = at.checked_sub(1).map(|i| chars[i].0);
+    scheme_len(before, chars[at..].iter().map(|(ch, _)| *ch)).map(|len| at + len)
+}
+
+/// The length in chars of the `scheme://`, `mailto:` or `about:` that `text`
+/// starts with, when a link starts there; `before` is the char ahead of it.
+pub fn scheme_len(before: Option<char>, text: impl IntoIterator<Item = char>) -> Option<usize> {
+    if before.is_some_and(|ch| ch.is_ascii_alphanumeric()) {
         return None;
     }
-    let mut end = at;
-    while end < chars.len() && is_scheme_char(chars[end].0, end == at) {
-        end += 1;
+    let mut text = text.into_iter().peekable();
+    let mut scheme = String::new();
+    while let Some(ch) = text.next_if(|&ch| is_scheme_char(ch, scheme.is_empty())) {
+        scheme.push(ch.to_ascii_lowercase());
     }
-    let scheme: String = chars[at..end]
-        .iter()
-        .map(|(ch, _)| ch.to_ascii_lowercase())
-        .collect();
-    let colon = chars.get(end).is_some_and(|(ch, _)| *ch == ':');
-    let slashes = (1..=2).all(|i| chars.get(end + i).is_some_and(|(ch, _)| *ch == '/'));
-    if colon && slashes && scheme.len() >= 2 {
-        Some(end + 3)
-    } else if colon && (scheme == "mailto" || scheme == "about") {
-        Some(end + 1)
+    text.next_if_eq(&':')?;
+    let slashes = text.next_if_eq(&'/').is_some() && text.next_if_eq(&'/').is_some();
+    if slashes && scheme.len() >= 2 {
+        Some(scheme.len() + 3)
+    } else if scheme == "mailto" || scheme == "about" {
+        Some(scheme.len() + 1)
     } else {
         None
     }
@@ -291,6 +321,16 @@ mod tests {
     }
 
     #[test]
+    fn browser_pages_are_told_apart_from_web_pages() {
+        assert!(browser_internal_page("chrome://settings/performance"));
+        assert!(browser_internal_page("Edge://flags"));
+        assert!(browser_internal_page("about:config"));
+        assert!(!browser_internal_page("about:blank"));
+        assert!(!browser_internal_page("https://example.com"));
+        assert!(!browser_internal_page("mailto:a@b.example"));
+    }
+
+    #[test]
     fn hyperlink_targets_that_run_code_are_not_opened() {
         assert!(openable("https://example.com"));
         assert!(openable("chrome://settings"));
@@ -299,5 +339,30 @@ mod tests {
         assert!(!openable("DATA:text/html,x"));
         assert!(!openable("no scheme here"));
         assert!(!openable("https:"));
+        assert!(!openable("C:\\Windows"), "a drive letter");
+    }
+
+    #[test]
+    fn a_scheme_is_measured_where_a_link_starts() {
+        assert_eq!(scheme_len(None, "chrome://x".chars()), Some(9));
+        assert_eq!(scheme_len(Some('('), "https://x".chars()), Some(8));
+        assert_eq!(scheme_len(Some(' '), "mailto:a@b".chars()), Some(7));
+        assert_eq!(
+            scheme_len(Some('x'), "https://x".chars()),
+            None,
+            "inside a word"
+        );
+        assert_eq!(scheme_len(None, "note: x".chars()), None);
+        assert_eq!(scheme_len(None, "x://y".chars()), None);
+    }
+
+    #[test]
+    fn a_wrapped_link_reports_where_each_char_sits() {
+        let lines = ["see https://ex", "  ample.com"];
+        let (url, cells) = link_cells_in_text(&rows(&lines), 14, 1, 4).unwrap();
+        assert_eq!(url, "https://example.com");
+        assert_eq!(cells.first(), Some(&(0, 4)));
+        assert_eq!(cells[10], (1, 2));
+        assert_eq!(cells.last(), Some(&(1, 10)));
     }
 }

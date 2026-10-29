@@ -724,6 +724,21 @@ impl ClientShellState {
                     Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
                         url: Some(url),
                         handled: false,
+                    }) if crate::embed::links::browser_internal_page(&url) && target_visible => {
+                        // Browsers drop their own pages when another app opens them,
+                        // so the link is copied for the address bar instead.
+                        self.url_click_consumes_until_up = completed_before_release;
+                        self.set_endpoint_error(format!(
+                            "copied {url}: browsers open their own pages only from the address bar, so paste it there"
+                        ));
+                        (
+                            true,
+                            vec![ClientShellAction::ClipboardWrite(url.into_bytes())],
+                        )
+                    }
+                    Ok(crate::api::schema::ResponseResult::PaneLinkActivated {
+                        url: Some(url),
+                        handled: false,
                     }) if crate::app::actions::safe_web_url(&url).is_some() && target_visible => {
                         self.url_click_consumes_until_up = completed_before_release;
                         (false, vec![ClientShellAction::OpenSafeWebUrl(url)])

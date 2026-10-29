@@ -1051,8 +1051,21 @@ pub(super) fn url_from_link_target(target: crate::ghostty::LinkTarget) -> Option
     }
 }
 
+/// Schemes the system opener may be handed: web pages, mail, and a browser's
+/// own pages (`chrome://settings`, `about:config`). Other schemes launch
+/// arbitrary local handlers, so they open only when a plugin claims them, and
+/// `file:` only through [`safe_local_open_target`] for a local pane.
+const OPENABLE_SCHEMES: &[&str] = &[
+    "http", "https", "mailto", "about", "chrome", "chromium", "edge", "brave", "vivaldi", "opera",
+];
+
 pub(crate) fn safe_web_url(url: &str) -> Option<&str> {
-    (url.starts_with("http://") || url.starts_with("https://")).then_some(url)
+    let (scheme, _) = url.split_once(':')?;
+    (crate::embed::links::openable(url)
+        && OPENABLE_SCHEMES
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed)))
+    .then_some(url)
 }
 
 /// Resolves the clicked link target to a safe web URL or, failing that, an
@@ -1066,8 +1079,9 @@ pub(super) fn link_or_local_path_at_runtime_cell(
     match runtime.link_target_at(col, row) {
         Some(crate::ghostty::LinkTarget::Uri(uri)) => Some(uri),
         Some(crate::ghostty::LinkTarget::Text { text, clicked_byte }) => {
-            url_at_byte(&text, clicked_byte)
-                .map(str::to_owned)
+            wrapped_link_at_runtime_cell(runtime, pane_id, col, row)
+                .map(|(url, _)| url)
+                .or_else(|| url_at_byte(&text, clicked_byte).map(str::to_owned))
                 .or_else(|| {
                     local_path_at_runtime_cell(
                         runtime,
@@ -1080,6 +1094,99 @@ pub(super) fn link_or_local_path_at_runtime_cell(
         }
         None => local_path_at_runtime_cell(runtime, pane_id, col, row, None),
     }
+}
+
+/// The text of each viewport row, read separately so rows an app wrapped
+/// itself can be joined.
+fn visible_rows(runtime: &crate::terminal::TerminalRuntime, pane_id: PaneId) -> Vec<String> {
+    let (height, width) = runtime.current_size();
+    let metrics = runtime.scroll_metrics();
+    (0..height)
+        .map(|viewport_row| {
+            let absolute = crate::selection::absolute_row_for_viewport(viewport_row, metrics);
+            runtime
+                .extract_selection(&crate::selection::Selection::line_range(
+                    pane_id,
+                    absolute,
+                    absolute,
+                    width.saturating_sub(1),
+                ))
+                .unwrap_or_default()
+                .replace('\n', " ")
+        })
+        .collect()
+}
+
+/// The link written in the viewport text under the clicked cell, read on across
+/// rows it wraps over (by the terminal, or by an app that wraps its own output
+/// with an indent), with the screen regions it covers. Only links
+/// [`safe_web_url`] accepts are returned.
+fn wrapped_link_at_runtime_cell(
+    runtime: &crate::terminal::TerminalRuntime,
+    pane_id: PaneId,
+    col: u16,
+    row: u16,
+) -> Option<(String, Vec<crate::api::schema::PaneLinkRegion>)> {
+    let (height, width) = runtime.current_size();
+    if row >= height || col >= width {
+        return None;
+    }
+    wrapped_link_in_rows(&visible_rows(runtime, pane_id), width, col, row)
+}
+
+fn wrapped_link_in_rows(
+    rows: &[String],
+    width: u16,
+    col: u16,
+    row: u16,
+) -> Option<(String, Vec<crate::api::schema::PaneLinkRegion>)> {
+    let cells = rows.iter().map(|row| text_cells(row)).collect::<Vec<_>>();
+    let text_rows = cells
+        .iter()
+        .map(|row| row.iter().map(|cell| (cell.ch, cell.start_col)).collect())
+        .collect::<Vec<crate::embed::links::Row>>();
+    let (url, at) = crate::embed::links::link_cells_in_text(
+        &text_rows,
+        width.saturating_sub(1),
+        usize::from(row),
+        col,
+    )?;
+    safe_web_url(&url)?;
+    let mut regions: Vec<crate::api::schema::PaneLinkRegion> = Vec::new();
+    for (link_row, start_col) in at {
+        let end_col = cells[link_row]
+            .iter()
+            .find(|cell| cell.start_col == start_col)
+            .map_or(start_col, |cell| cell.end_col);
+        let link_row = u16::try_from(link_row).ok()?;
+        match regions.last_mut() {
+            Some(region) if region.row == link_row => region.end_col = end_col,
+            _ => regions.push(crate::api::schema::PaneLinkRegion {
+                row: link_row,
+                start_col,
+                end_col,
+            }),
+        }
+    }
+    Some((url, regions))
+}
+
+/// The screen regions of the link under a hovered cell: an app-wrapped link
+/// across all its rows, else the link in Ghostty's soft-wrap-joined line.
+pub(crate) fn link_regions_at_runtime_cell(
+    runtime: &crate::terminal::TerminalRuntime,
+    pane_id: PaneId,
+    col: u16,
+    row: u16,
+) -> Vec<crate::api::schema::PaneLinkRegion> {
+    let text = matches!(
+        runtime.link_target_at(col, row),
+        Some(crate::ghostty::LinkTarget::Text { .. })
+    );
+    text.then(|| wrapped_link_at_runtime_cell(runtime, pane_id, col, row))
+        .flatten()
+        .map(|(_, regions)| regions)
+        .unwrap_or_else(|| runtime.link_regions_at(col, row, url_byte_range))
 }
 
 /// Resolves an existing local file or directory under the clicked viewport cell.
@@ -1103,21 +1210,7 @@ fn local_path_at_runtime_cell(
         .foreground_cwd()
         .or_else(|| runtime.cwd())
         .unwrap_or_default();
-    let metrics = runtime.scroll_metrics();
-    let rows = (0..height)
-        .map(|viewport_row| {
-            let absolute = crate::selection::absolute_row_for_viewport(viewport_row, metrics);
-            runtime
-                .extract_selection(&crate::selection::Selection::line_range(
-                    pane_id,
-                    absolute,
-                    absolute,
-                    width.saturating_sub(1),
-                ))
-                .unwrap_or_default()
-                .replace('\n', " ")
-        })
-        .collect::<Vec<_>>();
+    let rows = visible_rows(runtime, pane_id);
     let visible_text = rows.join("\n");
     let clicked_row = usize::from(row);
     resolved_table_path_at_visible_cell(&visible_text, clicked_row, col, &cwd)
@@ -1526,8 +1619,9 @@ fn byte_index_after_cell(row: &str, cell_idx: usize) -> usize {
 fn url_span_at_column(cells: &[TextCell], clicked_idx: usize) -> Option<CellSpan> {
     let mut start = 0;
     while start < cells.len() {
-        if starts_with_chars(&cells[start..], "http://")
-            || starts_with_chars(&cells[start..], "https://")
+        let before = start.checked_sub(1).map(|idx| cells[idx].ch);
+        if crate::embed::links::scheme_len(before, cells[start..].iter().map(|cell| cell.ch))
+            .is_some()
         {
             let mut end = start;
             while end + 1 < cells.len() && !cells[end + 1].ch.is_whitespace() {
@@ -1625,13 +1719,6 @@ fn is_escaped(cells: &[TextCell], idx: usize) -> bool {
         cursor -= 1;
     }
     slashes % 2 == 1
-}
-
-fn starts_with_chars(cells: &[TextCell], prefix: &str) -> bool {
-    prefix
-        .chars()
-        .enumerate()
-        .all(|(idx, expected)| cells.get(idx).is_some_and(|cell| cell.ch == expected))
 }
 
 fn is_word_separator(ch: char) -> bool {
@@ -2920,6 +3007,86 @@ mod tests {
             None
         );
         assert_eq!(selected_url("open file:///tmp/report", "file"), None);
+        assert_eq!(
+            selected_url("see chrome://settings/performance.", "settings"),
+            Some("chrome://settings/performance")
+        );
+        assert_eq!(
+            selected_url("mail mailto:a@b.example now", "a@b"),
+            Some("mailto:a@b.example")
+        );
+    }
+
+    #[test]
+    fn safe_web_url_opens_web_and_browser_pages_only() {
+        for url in [
+            "https://example.com",
+            "chrome://settings/performance",
+            "about:config",
+            "mailto:a@b.example",
+        ] {
+            assert_eq!(safe_web_url(url), Some(url), "{url}");
+        }
+        for url in [
+            "file:///etc/passwd",
+            "FILE:///etc/passwd",
+            "javascript:alert(1)",
+            "data:text/html,x",
+            "C:\\Windows\\notepad.exe",
+            "vscode://file/x",
+            "obsidian://open?vault=meta",
+            "plain text",
+        ] {
+            assert_eq!(safe_web_url(url), None, "{url}");
+        }
+    }
+
+    #[test]
+    fn an_app_wrapped_link_opens_whole_and_underlines_every_row() {
+        // Claude Code wraps a long URL itself, indenting each continuation row.
+        let rows = [
+            "  https://claude.ai/oauth/authorize?client_id=9d1c&code=true&cha",
+            "  llenge_method=S256&scope=user",
+            "",
+            "  Paste the code here.",
+        ]
+        .map(str::to_owned);
+        let whole = "https://claude.ai/oauth/authorize?client_id=9d1c&code=true&challenge_method=S256&scope=user";
+        let region = |row, start_col, end_col| crate::api::schema::PaneLinkRegion {
+            row,
+            start_col,
+            end_col,
+        };
+        for (col, row) in [(10, 0), (5, 1)] {
+            let (url, regions) = wrapped_link_in_rows(&rows, 65, col, row).unwrap();
+            assert_eq!(url, whole);
+            assert_eq!(regions, vec![region(0, 2, 63), region(1, 2, 30)]);
+        }
+        assert!(wrapped_link_in_rows(&rows, 65, 4, 3).is_none());
+        assert!(
+            wrapped_link_in_rows(&rows, 80, 5, 1).is_none(),
+            "a row well short of the edge does not wrap"
+        );
+    }
+
+    #[test]
+    fn a_wrapped_link_region_covers_wide_glyphs() {
+        let rows = ["see https://example.com/路径".to_owned()];
+        let (_, regions) = wrapped_link_in_rows(&rows, 80, 6, 0).unwrap();
+        assert_eq!(
+            regions,
+            vec![crate::api::schema::PaneLinkRegion {
+                row: 0,
+                start_col: 4,
+                end_col: 27,
+            }]
+        );
+    }
+
+    #[test]
+    fn a_wrapped_file_link_is_left_to_local_path_resolution() {
+        let rows = ["open file:///tmp/report".to_owned()];
+        assert!(wrapped_link_in_rows(&rows, 80, 8, 0).is_none());
     }
 
     #[test]
