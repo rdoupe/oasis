@@ -195,6 +195,8 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-sidebar row.focused {{ background: {raised}; box-shadow: inset 3px 0 0 {accent}; }}
 .clawmux-sidebar .meta {{ color: {dim}; font-size: 0.86em; }}
 .clawmux-sidebar .number {{ color: {dim}; font-feature-settings: "tnum"; min-width: 1.2em; }}
+.clawmux-text-size {{ color: {dim}; font-size: 0.86em; padding: 6px 14px; border-top: 1px solid {raised}; }}
+.touch .clawmux-text-size button {{ min-width: 52px; min-height: 40px; font-size: 1.1em; }}
 .clawmux-status {{ color: {dim}; font-size: 0.82em; padding: 8px 14px; border-top: 1px solid {raised}; }}
 .clawmux-tabs {{ background: {sidebar}; padding: 3px 6px; border-bottom: 1px solid {raised}; font-size: 0.85em; }}
 .clawmux-tabs .tab-pill {{ border-radius: 6px; color: alpha({fg}, 0.6); }}
@@ -254,23 +256,43 @@ window.clawmux-confirm button {{ min-height: 52px; min-width: 120px; font-size: 
     }
 }
 
-/// The size picked with ctrl+-/ctrl+=, kept across restarts; absent means the theme's.
+thread_local! {
+    /// Whether a touchscreen window is upright; it keeps a font size of its own.
+    static PORTRAIT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Records whether the window is portrait, for the font size; true when that changed.
+pub fn set_portrait(portrait: bool) -> bool {
+    PORTRAIT.with(|cell| cell.replace(portrait) != portrait)
+}
+
+/// The size picked with the sidebar's text buttons, a pinch or ctrl+-/ctrl+=, kept
+/// across restarts; absent means the theme's. Portrait keeps its own.
 fn font_size_path() -> PathBuf {
+    font_size_file(PORTRAIT.with(|cell| cell.get()))
+}
+
+fn font_size_file(portrait: bool) -> PathBuf {
     std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home().join(".local/state"))
-        .join("clawmux/font-size")
+        .join(if portrait {
+            "clawmux/font-size-portrait"
+        } else {
+            "clawmux/font-size"
+        })
 }
 
+/// The saved size; portrait falls back to the landscape one until it has its own.
 fn load_font_size() -> Option<f64> {
-    let size: f64 = std::fs::read_to_string(font_size_path())
-        .ok()?
-        .trim()
-        .parse()
-        .ok()?;
-    (MIN_FONT_SIZE..=MAX_FONT_SIZE)
-        .contains(&size)
-        .then_some(size)
+    let read = |path: PathBuf| -> Option<f64> {
+        let size: f64 = std::fs::read_to_string(path).ok()?.trim().parse().ok()?;
+        (MIN_FONT_SIZE..=MAX_FONT_SIZE)
+            .contains(&size)
+            .then_some(size)
+    };
+    let portrait = PORTRAIT.with(|cell| cell.get());
+    (portrait.then(|| read(font_size_file(true))).flatten()).or_else(|| read(font_size_file(false)))
 }
 
 pub const MIN_FONT_SIZE: f64 = 5.0;

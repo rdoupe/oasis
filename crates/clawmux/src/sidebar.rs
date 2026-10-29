@@ -39,6 +39,10 @@ pub struct SidebarView {
     pub root: gtk::Box,
     list: gtk::ListBox,
     pub status: gtk::Label,
+    /// Text size − / + / reset, for the terminal.
+    pub text_smaller: gtk::Button,
+    pub text_bigger: gtk::Button,
+    pub text_reset: gtk::Button,
     targets: RefCell<Vec<Option<Target>>>,
     handler: RefCell<Option<Handler>>,
     /// Agents above the spaces, as the touch drawer shows them; a wide window keeps
@@ -62,15 +66,35 @@ impl SidebarView {
         status.set_xalign(0.0);
         status.set_use_markup(true);
         status.add_css_class("clawmux-status");
+        let text_size = gtk::Box::new(gtk::Orientation::Horizontal, 6);
+        text_size.add_css_class("clawmux-text-size");
+        let label = gtk::Label::new(Some("Text size"));
+        label.set_xalign(0.0);
+        label.set_hexpand(true);
+        text_size.append(&label);
+        let button = |text: &str, tip: &str| {
+            let button = gtk::Button::with_label(text);
+            button.set_focusable(false);
+            button.set_tooltip_text(Some(tip));
+            text_size.append(&button);
+            button
+        };
+        let text_smaller = button("A−", "Smaller text (ctrl+-)");
+        let text_bigger = button("A+", "Bigger text (ctrl+=)");
+        let text_reset = button("Reset", "Back to the default text size (ctrl+0)");
         let root = gtk::Box::new(gtk::Orientation::Vertical, 0);
         root.add_css_class("clawmux-sidebar");
         root.set_size_request(260, -1);
         root.append(&scroller);
+        root.append(&text_size);
         root.append(&status);
         let view = Rc::new(Self {
             root,
             list,
             status,
+            text_smaller,
+            text_bigger,
+            text_reset,
             targets: RefCell::new(Vec::new()),
             handler: RefCell::new(None),
             agents_first: Cell::new(false),

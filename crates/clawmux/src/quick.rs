@@ -19,6 +19,13 @@ pub enum QuickAction {
     SendNow,
     /// Shift+Tab: cycles the permission mode.
     CycleMode,
+    /// Up and Down move through a question's choices, and Select (enter) picks one.
+    Up,
+    Down,
+    Select,
+    /// Brings up the on-screen keyboard, which stays down while an agent asks a
+    /// question so the question keeps the whole terminal.
+    Keyboard,
 }
 
 impl QuickAction {
@@ -28,6 +35,10 @@ impl QuickAction {
             Self::Interrupt => "Interrupt",
             Self::SendNow => "Send now",
             Self::CycleMode => "⇧Tab mode",
+            Self::Up => "↑",
+            Self::Down => "↓",
+            Self::Select => "Select ⏎",
+            Self::Keyboard => "⌨ Type",
         }
     }
 
@@ -37,6 +48,10 @@ impl QuickAction {
             Self::Interrupt => "Stop the agent (esc)",
             Self::SendNow => "Send the waiting message now (ctrl+x ctrl+s)",
             Self::CycleMode => "Cycle the permission mode (shift+tab)",
+            Self::Up => "Previous choice (up)",
+            Self::Down => "Next choice (down)",
+            Self::Select => "Pick this choice (enter)",
+            Self::Keyboard => "Show the keyboard to type an answer",
         }
     }
 
@@ -45,6 +60,11 @@ impl QuickAction {
         let ctrl = |c| Key {
             code: KeyCode::Char(c),
             modifiers: KeyModifiers::CONTROL,
+            text: None,
+        };
+        let plain = |code| Key {
+            code,
+            modifiers: KeyModifiers::empty(),
             text: None,
         };
         match self {
@@ -62,6 +82,10 @@ impl QuickAction {
                 modifiers: KeyModifiers::SHIFT,
                 text: None,
             }],
+            Self::Up => vec![plain(KeyCode::Up)],
+            Self::Down => vec![plain(KeyCode::Down)],
+            Self::Select => vec![plain(KeyCode::Enter)],
+            Self::Keyboard => Vec::new(),
         }
     }
 
@@ -71,8 +95,18 @@ impl QuickAction {
 }
 
 /// The quick actions for an agent: Claude Code gets its own keys; other agents share
-/// Esc to interrupt and Shift+Tab, which most of them use for their mode.
-pub fn for_agent(agent: Agent) -> Vec<QuickAction> {
+/// Esc to interrupt and Shift+Tab, which most of them use for their mode. An agent
+/// waiting on an answer gets the keys that pick one, and a way to type one.
+pub fn for_agent(agent: Agent, waiting: bool) -> Vec<QuickAction> {
+    if waiting {
+        return vec![
+            QuickAction::Up,
+            QuickAction::Down,
+            QuickAction::Select,
+            QuickAction::Interrupt,
+            QuickAction::Keyboard,
+        ];
+    }
     match agent {
         Agent::Claude => vec![
             QuickAction::Interrupt,
@@ -111,7 +145,10 @@ mod tests {
         );
         assert_eq!(
             codes(QuickAction::SendNow),
-            vec![(ClientKeyCode::Char('x'), ctrl), (ClientKeyCode::Char('s'), ctrl)]
+            vec![
+                (ClientKeyCode::Char('x'), ctrl),
+                (ClientKeyCode::Char('s'), ctrl)
+            ]
         );
         assert_eq!(codes(QuickAction::Interrupt), vec![(ClientKeyCode::Esc, 0)]);
         assert_eq!(
@@ -122,11 +159,31 @@ mod tests {
 
     #[test]
     fn only_claude_code_gets_background_and_send_now() {
-        assert!(for_agent(Agent::Claude).contains(&QuickAction::SendNow));
-        assert!(for_agent(Agent::Claude).contains(&QuickAction::Background));
-        let codex = for_agent(Agent::Codex);
+        assert!(for_agent(Agent::Claude, false).contains(&QuickAction::SendNow));
+        assert!(for_agent(Agent::Claude, false).contains(&QuickAction::Background));
+        let codex = for_agent(Agent::Codex, false);
         assert!(codex.contains(&QuickAction::Interrupt));
         assert!(!codex.contains(&QuickAction::SendNow));
         assert!(!codex.contains(&QuickAction::Background));
+    }
+
+    #[test]
+    fn an_agent_waiting_on_an_answer_gets_the_keys_that_pick_one() {
+        for agent in [Agent::Claude, Agent::Codex] {
+            let actions = for_agent(agent, true);
+            assert_eq!(
+                actions,
+                vec![
+                    QuickAction::Up,
+                    QuickAction::Down,
+                    QuickAction::Select,
+                    QuickAction::Interrupt,
+                    QuickAction::Keyboard,
+                ]
+            );
+        }
+        assert_eq!(codes(QuickAction::Up), vec![(ClientKeyCode::Up, 0)]);
+        assert_eq!(codes(QuickAction::Select), vec![(ClientKeyCode::Enter, 0)]);
+        assert!(codes(QuickAction::Keyboard).is_empty());
     }
 }

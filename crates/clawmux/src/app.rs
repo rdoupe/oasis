@@ -198,6 +198,7 @@ impl App {
         });
         app.wire();
         app.wire_touch();
+        app.wire_text_size();
         app.update_status();
         app
     }
@@ -509,7 +510,11 @@ impl App {
                     let state = gesture.current_event_state();
                     app.mouse_down(gdk::BUTTON_PRIMARY, sx, sy, state);
                     app.mouse_up(sx, sy, state);
-                    app.show_keyboard(gesture.current_event());
+                    // While an agent asks a question its keys are in the strip, and
+                    // the keyboard comes up only from ⌨ Type.
+                    if !app.agent_is_asking() {
+                        app.show_keyboard(gesture.current_event());
+                    }
                 }
                 return;
             }
@@ -684,6 +689,21 @@ impl App {
         debug(|| format!("keyboard asked for, accepted={shown}"));
     }
 
+    /// Puts the on-screen keyboard away.
+    fn hide_keyboard(&self) {
+        if let Some(keyboard) = self.keyboard.borrow().as_ref() {
+            keyboard.focus_out();
+            debug(|| "keyboard put away for a question".to_owned());
+        }
+    }
+
+    /// Whether the focused agent is waiting on an answer (its question keys are shown).
+    fn agent_is_asking(&self) -> bool {
+        self.quick_actions
+            .borrow()
+            .contains(&crate::quick::QuickAction::Keyboard)
+    }
+
     fn wire_theme_monitor(self: &Rc<Self>) {
         // Omarchy swaps the `current` theme directory when the theme changes.
         let dir = crate::theme::theme_dir();
@@ -708,6 +728,22 @@ impl App {
             });
         });
         self._monitor.replace(Some(monitor));
+    }
+
+    /// The sidebar's text size buttons.
+    fn wire_text_size(self: &Rc<Self>) {
+        let app = self.clone();
+        self.sidebar
+            .text_smaller
+            .connect_clicked(move |_| app.zoom_font(Some(-1.0)));
+        let app = self.clone();
+        self.sidebar
+            .text_bigger
+            .connect_clicked(move |_| app.zoom_font(Some(1.0)));
+        let app = self.clone();
+        self.sidebar
+            .text_reset
+            .connect_clicked(move |_| app.zoom_font(None));
     }
 
     /// Steps the terminal font by `zoom` points, or with `None` returns to the theme's size.
@@ -754,8 +790,14 @@ impl App {
     fn fit_sidebar(self: &Rc<Self>) {
         let app = self.clone();
         glib::idle_add_local_once(move || {
-            app.drawer.fit(app.window.width(), app.window.height());
+            let (width, height) = (app.window.width(), app.window.height());
+            app.drawer.fit(width, height);
             app.sync_sidebar_order();
+            // A touchscreen keeps one text size upright and another on its side.
+            let touch = app.keyboard.borrow().is_some();
+            if touch && width > 0 && crate::theme::set_portrait(height > width) {
+                app.reload_theme();
+            }
         });
     }
 
@@ -1164,9 +1206,19 @@ impl App {
             }
             _ => None,
         };
-        let actions = agent.map(crate::quick::for_agent).unwrap_or_default();
+        let actions = agent
+            .map(|(agent, waiting)| crate::quick::for_agent(agent, waiting))
+            .unwrap_or_default();
         if *self.quick_actions.borrow() == actions {
             return;
+        }
+        // A question the agent just asked gets the whole terminal: the on-screen
+        // keyboard would take a third of it and push the question off the top.
+        let asking = |actions: &[crate::quick::QuickAction]| {
+            actions.contains(&crate::quick::QuickAction::Keyboard)
+        };
+        if asking(&actions) && !asking(&self.quick_actions.borrow()) {
+            self.hide_keyboard();
         }
         while let Some(child) = self.quick.first_child() {
             self.quick.remove(&child);
@@ -1184,6 +1236,10 @@ impl App {
     }
 
     fn quick_action(&self, action: crate::quick::QuickAction) {
+        if action == crate::quick::QuickAction::Keyboard {
+            self.show_keyboard(None);
+            return;
+        }
         let Some(pane_id) = self.focused_pane_id() else {
             return;
         };
@@ -2210,16 +2266,17 @@ fn url_at(grid: &Grid, cell: (u16, u16)) -> Option<String> {
 type MenuItem = (&'static str, Box<dyn Fn()>);
 
 /// The agent running in the focused pane of the active machine, if any.
+/// The agent in the focused pane, and whether it is waiting on an answer.
 fn focused_agent(
     model: &SidebarModel,
     active: &str,
     pane_id: &str,
-) -> Option<oasis_core::embed::sidebar::Agent> {
+) -> Option<(oasis_core::embed::sidebar::Agent, bool)> {
     model
         .agents
         .iter()
         .find(|agent| agent.endpoint == active && agent.pane_id == pane_id)
-        .and_then(|agent| agent.agent)
+        .and_then(|agent| Some((agent.agent?, agent.status == AgentStatus::Blocked)))
 }
 
 /// The bar across the terminal while the active machine has stopped answering.
@@ -2420,11 +2477,21 @@ mod tests {
         let mut model = SidebarModel::default();
         model.agents = vec![
             entry("local", "p1", Some(Agent::Claude)),
-            entry("ssh:box", "p1", Some(Agent::Codex)),
+            AgentEntry {
+                status: AgentStatus::Blocked,
+                ..entry("ssh:box", "p1", Some(Agent::Codex))
+            },
             entry("local", "p2", None),
         ];
-        assert_eq!(focused_agent(&model, "local", "p1"), Some(Agent::Claude));
-        assert_eq!(focused_agent(&model, "ssh:box", "p1"), Some(Agent::Codex));
+        assert_eq!(
+            focused_agent(&model, "local", "p1"),
+            Some((Agent::Claude, false))
+        );
+        assert_eq!(
+            focused_agent(&model, "ssh:box", "p1"),
+            Some((Agent::Codex, true)),
+            "waiting on an answer"
+        );
         assert_eq!(
             focused_agent(&model, "local", "p2"),
             None,
