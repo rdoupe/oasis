@@ -897,11 +897,19 @@ pub(super) fn finish_client_shell_input(
             }
             continue;
         }
-        if !active_endpoint_online {
-            continue;
-        }
         if pending_activation.is_some() {
             // Pane input and non-focus host effects do not cross the frozen handoff boundary.
+            continue;
+        }
+        if !active_endpoint_online {
+            // Typing into a machine that is reconnecting waits for it, like input
+            // for one that stopped answering, instead of being lost.
+            if super::held_input::is_input(&request) {
+                let active = endpoints.active_id().clone();
+                state
+                    .held_input
+                    .hold(active, std::time::Instant::now(), request);
+            }
             continue;
         }
         if super::held_input::is_input(&request) {
@@ -1035,5 +1043,81 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn input_typed_while_the_machine_reconnects_arrives_once_it_is_back() {
+        #[derive(Clone)]
+        struct Capture(std::sync::Arc<std::sync::Mutex<Vec<ClientMessage>>>);
+
+        impl endpoint::EndpointTransport for Capture {
+            fn send(&mut self, message: &ClientMessage) -> std::io::Result<()> {
+                self.0.lock().unwrap().push(message.clone());
+                Ok(())
+            }
+        }
+
+        let sent = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut endpoints = endpoint::EndpointRegistry::new(
+            Capture(std::sync::Arc::default()),
+            1,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+        );
+        let (shell, remote) = crate::client::shell::tests::endpoints::state_with_remote();
+        endpoints.insert(
+            remote.clone(),
+            Capture(sent.clone()),
+            2,
+            endpoint::EndpointNegotiation::new(Vec::new(), Vec::new()),
+            true,
+        );
+        assert!(endpoints.set_active(&remote));
+        let mut state = ClientState::test_new();
+        state.shell = Some(shell);
+        let shell = state.shell.as_mut().unwrap();
+        shell.set_endpoint_status(&remote, endpoint::ClientEndpointStatus::Reconnecting);
+        assert!(!shell.endpoint_is_online(&remote));
+        let typed = |text: &str| ClientMessage::ClientShellPaneInput {
+            pane_id: "pane_1".into(),
+            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                text.into(),
+            )],
+        };
+        let mut pending_activation = None;
+        let mut endpoint_commands = endpoint_commands::EndpointCommands::default();
+        let mut prefix_input_source = crate::platform::RealPrefixInputSource::default();
+        let mut scheduled_activation = None;
+        for text in ["ls ", "-la"] {
+            finish_client_shell_input(
+                &mut state,
+                shell::ClientShellInput {
+                    requests: vec![typed(text)],
+                    ..Default::default()
+                },
+                None,
+                &mut endpoints,
+                &mut pending_activation,
+                &mut endpoint_commands,
+                &mut prefix_input_source,
+                &mut scheduled_activation,
+            )
+            .unwrap();
+        }
+        let now = std::time::Instant::now();
+        sync_unresponsive_endpoints(&mut state, &mut endpoints, &None, now).unwrap();
+        assert!(
+            sent.lock().unwrap().is_empty(),
+            "nothing goes to a machine that is away"
+        );
+        assert!(state.held_input.holds_for(&remote));
+
+        let shell = state.shell.as_mut().unwrap();
+        shell.set_endpoint_status(&remote, endpoint::ClientEndpointStatus::Online);
+        assert!(shell.endpoint_is_online(&remote));
+        sync_unresponsive_endpoints(&mut state, &mut endpoints, &None, now).unwrap();
+        assert_eq!(*sent.lock().unwrap(), vec![typed("ls "), typed("-la")]);
+        assert!(state.held_input.is_empty());
+        sync_unresponsive_endpoints(&mut state, &mut endpoints, &None, now).unwrap();
+        assert_eq!(sent.lock().unwrap().len(), 2, "sent once");
     }
 }

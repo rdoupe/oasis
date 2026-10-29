@@ -325,4 +325,4 @@ fn blit_pane_surface(target: &mut FrameData, source: &FrameData, area: Rect) {
 }
 
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
