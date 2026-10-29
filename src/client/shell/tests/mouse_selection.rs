@@ -130,6 +130,15 @@ fn ctrl_click_routes_link_activation_through_endpoint_then_client_host() {
             )
             .1
     };
+    // A browser's own page is copied: browsers drop it when another app opens it.
+    assert!(matches!(
+        &activate(&mut state, "chrome://settings/performance", false)[..],
+        [ClientShellAction::ClipboardWrite(bytes)] if bytes == b"chrome://settings/performance"
+    ));
+    assert!(state
+        .endpoint_error
+        .as_deref()
+        .is_some_and(|notice| notice.starts_with("copied chrome://settings/performance")));
     for url in [
         "https://example.test",
         "file:///C:/Code/note.md",

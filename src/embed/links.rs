@@ -96,6 +96,18 @@ pub fn link_cells_in_text(
     None
 }
 
+/// Whether `url` is one of a browser's own pages (`chrome://settings`, `edge://flags`,
+/// `about:config`). Browsers open these only from their own address bar and drop
+/// them when another app asks, so a front end copies such a link instead.
+pub fn browser_internal_page(url: &str) -> bool {
+    let Some((scheme, rest)) = url.split_once(':') else {
+        return false;
+    };
+    let scheme = scheme.to_ascii_lowercase();
+    ["chrome", "chromium", "edge", "brave", "vivaldi", "opera"].contains(&scheme.as_str())
+        || (scheme == "about" && !rest.eq_ignore_ascii_case("blank"))
+}
+
 /// Whether an OSC 8 hyperlink target is one to open: it names a scheme, and not
 /// one that runs code.
 pub fn openable(target: &str) -> bool {
@@ -306,6 +318,16 @@ mod tests {
             link_in_text(&[row], 60, 0, 8).as_deref(),
             Some("https://x.example")
         );
+    }
+
+    #[test]
+    fn browser_pages_are_told_apart_from_web_pages() {
+        assert!(browser_internal_page("chrome://settings/performance"));
+        assert!(browser_internal_page("Edge://flags"));
+        assert!(browser_internal_page("about:config"));
+        assert!(!browser_internal_page("about:blank"));
+        assert!(!browser_internal_page("https://example.com"));
+        assert!(!browser_internal_page("mailto:a@b.example"));
     }
 
     #[test]
