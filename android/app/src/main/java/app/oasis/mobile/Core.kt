@@ -54,6 +54,7 @@ data class Agent(
  */
 class Core(private val context: Context) {
     val prefs = Prefs(context)
+    val updater = Updater(context, this)
     val machines = mutableStateOf<List<Machine>>(emptyList())
     val agents = mutableStateOf<List<Agent>>(emptyList())
     val notice = mutableStateOf<String?>(null)
@@ -121,7 +122,10 @@ class Core(private val context: Context) {
                 Log.w(TAG, "ssh setup", e)
                 main.post { notice.value = "ssh setup: ${e.message}" }
             }
-            main.post { connect(saved, geometry()) }
+            main.post {
+                connect(saved, geometry())
+                updater.check()
+            }
         }
     }
 
@@ -267,6 +271,28 @@ class Core(private val context: Context) {
             ),
         )
     }
+
+    /** Runs one command on a machine and returns what it printed, or null when it failed. */
+    fun sshOutput(target: String, command: String): String? {
+        val process = sshProcess(target, command)
+        val output = process.inputStream.bufferedReader().readText()
+        return output.takeIf { process.waitFor() == 0 }
+    }
+
+    /** Runs one command on a machine and saves what it printed to [file]. */
+    fun sshDownload(target: String, command: String, file: File): Boolean {
+        val process = sshProcess(target, command)
+        file.outputStream().use { process.inputStream.copyTo(it) }
+        return process.waitFor() == 0
+    }
+
+    private fun sshProcess(target: String, command: String): Process =
+        ProcessBuilder(
+            File(bin, "ssh").path, "-o", "BatchMode=yes", "-o", "ConnectTimeout=8", target, command,
+        ).redirectError(File("/dev/null")).apply {
+            environment()["HOME"] = home.path
+            environment()["PATH"] = "${bin.path}:/system/bin"
+        }.start()
 
     private fun run(command: List<String>): Int {
         val process = ProcessBuilder(command).redirectErrorStream(true).apply {

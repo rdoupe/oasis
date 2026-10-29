@@ -49,6 +49,10 @@ for name in claude:claude-color codex:openai cursor:cursor grok:grok gemini:gemi
 done
 
 cd "$HERE"
+# Numbered by the minute so each build is newer than the last (android/publish.sh).
+VERSION_CODE=$(( $(date +%s) / 60 ))
+VERSION_NAME=0.1.0-$(git rev-parse --short HEAD)
 TASK=assemble$(echo "${VARIANT:0:1}" | tr a-z A-Z)${VARIANT:1}
-gradle --quiet "$TASK"
+gradle --quiet "$TASK" -PoasisVersionCode="$VERSION_CODE" -PoasisVersionName="$VERSION_NAME"
+printf '%s %s\n' "$VERSION_CODE" "$VERSION_NAME" > "$HERE/app/build/outputs/apk/$VARIANT/version"
 ls -l "$HERE/app/build/outputs/apk/$VARIANT/"*.apk

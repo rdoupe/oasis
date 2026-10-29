@@ -14,8 +14,9 @@ android {
         applicationId = "app.oasis.mobile"
         minSdk = 29
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // android/build.sh numbers each build by the minute so a newer one always updates.
+        versionCode = (findProperty("oasisVersionCode") as String?)?.toInt() ?: 1
+        versionName = (findProperty("oasisVersionName") as String?) ?: "0.1.0"
     }
 
     buildTypes {

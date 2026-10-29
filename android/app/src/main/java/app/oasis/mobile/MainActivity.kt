@@ -1,6 +1,12 @@
 package app.oasis.mobile
 
 import android.content.ClipData
+import androidx.compose.ui.input.pointer.changedToDown
+import androidx.compose.ui.input.pointer.PointerEventPass
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.unit.DpOffset
+import androidx.compose.ui.platform.LocalDensity
 import android.content.ClipboardManager
 import android.os.Bundle
 import android.view.ViewGroup
@@ -160,7 +166,10 @@ class MainActivity : ComponentActivity() {
 
     override fun onResume() {
         super.onResume()
-        if (core.handle != 0L) Native.setFocus(core.handle, true)
+        if (core.handle != 0L) {
+            Native.setFocus(core.handle, true)
+            core.updater.check()
+        }
     }
 
     override fun onPause() {
@@ -253,6 +262,7 @@ private fun AgentsScreen(
         )
         val offTailnet = machines.filter { core.waitsForTailscale(it) }
         if (offTailnet.isNotEmpty()) TailscaleBanner(offTailnet)
+        core.updater.available.value?.let { UpdateBanner(core, it) }
         if (starting || machines.isEmpty()) {
             Text(
                 if (starting) "Setting up ssh…" else "Connecting…",
@@ -267,16 +277,17 @@ private fun AgentsScreen(
                 item(key = "agents") { SectionHeader("Agents") }
                 items(agents, key = { "a:" + it.endpoint + it.pane }) { agent ->
                     var menu by remember { mutableStateOf(false) }
+                    val press = remember { PressPoint() }
                     // A machine that stopped answering may have moved on: its agents look stale.
                     val stalled = machines.any { it.id == agent.endpoint && it.status == "not_responding" }
-                    Box {
+                    Box(Modifier.tracksPress(press)) {
                         AgentCard(
                             agent,
                             place = "${agent.machine} · ${spaceName(core, agent)}".trimEnd(' ', '·'),
                             stale = agent.stale || stalled,
                             onLongClick = { menu = true },
                         ) { onAgent(agent) }
-                        LongPressMenu(menu, { menu = false }) {
+                        LongPressMenu(menu, { menu = false }, press) {
                             item("Open") { onAgent(agent) }
                             item("Rename") {
                                 ask = Ask.Rename("Rename this pane", agent.title) { label ->
@@ -299,10 +310,11 @@ private fun AgentsScreen(
                 val counts = agents.filter { it.endpoint == machine.id }.groupingBy { it.space }.eachCount()
                 items(machine.spaces, key = { "s:" + machine.id + it.id }) { space ->
                     var menu by remember { mutableStateOf(false) }
+                    val press = remember { PressPoint() }
                     val name = space.name.ifBlank { "space" }
-                    Box {
+                    Box(Modifier.tracksPress(press)) {
                         SpaceRow(space, counts[space.id] ?: 0, onLongClick = { menu = true }) { onSpace(machine, space) }
-                        LongPressMenu(menu, { menu = false }) {
+                        LongPressMenu(menu, { menu = false }, press) {
                             item("New tab") {
                                 onNewTab(machine, space)
                             }
@@ -348,6 +360,26 @@ private fun StatusDot(status: String, size: Int = 12) {
 }
 
 /** Shown while machines on the tailnet are out of reach because Tailscale is off. */
+@Composable
+private fun UpdateBanner(core: Core, update: Updater.Update) {
+    val state by core.updater.state
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .clip(RoundedCornerShape(14.dp))
+            .background(Raised)
+            .padding(horizontal = 16.dp, vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Column(Modifier.weight(1f)) {
+            Text("Update ready", color = Foreground, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
+            Text(state, color = Dim, fontSize = 13.sp)
+        }
+        Button(onClick = { core.updater.install(update) }) { Text("Install") }
+    }
+}
+
 @Composable
 private fun TailscaleBanner(machines: List<Machine>) {
     val context = androidx.compose.ui.platform.LocalContext.current
@@ -513,8 +545,10 @@ private class MenuItems {
 
 /** The menu a long press opens, under the row it was pressed on. */
 @Composable
-private fun LongPressMenu(open: Boolean, dismiss: () -> Unit, build: MenuItems.() -> Unit) {
-    DropdownMenu(open, dismiss, containerColor = Raised) {
+private fun LongPressMenu(open: Boolean, dismiss: () -> Unit, press: PressPoint, build: MenuItems.() -> Unit) {
+    // A menu anchors below its row; this moves it up to where the finger was.
+    val offset = with(LocalDensity.current) { DpOffset(press.x.toDp(), (press.y - press.height).toDp()) }
+    DropdownMenu(open, dismiss, offset = offset, containerColor = Raised) {
         for ((label, action) in MenuItems().apply(build).items) {
             DropdownMenuItem(
                 text = { Text(label, fontSize = 16.sp) },
@@ -526,6 +560,27 @@ private fun LongPressMenu(open: Boolean, dismiss: () -> Unit, build: MenuItems.(
         }
     }
 }
+
+/** Where the last press landed in a row, so its menu opens under the finger. */
+private class PressPoint {
+    var x by mutableStateOf(0f)
+    var y by mutableStateOf(0f)
+    var height by mutableStateOf(0)
+}
+
+private fun Modifier.tracksPress(press: PressPoint): Modifier = this
+    .onSizeChanged { press.height = it.height }
+    .pointerInput(press) {
+        awaitPointerEventScope {
+            while (true) {
+                val event = awaitPointerEvent(PointerEventPass.Initial)
+                event.changes.firstOrNull { it.changedToDown() }?.let {
+                    press.x = it.position.x
+                    press.y = it.position.y
+                }
+            }
+        }
+    }
 
 /** A question a menu asks before it acts. */
 private sealed interface Ask {
@@ -825,6 +880,19 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
                             restart()
                         },
                     ) { Text("Save and reconnect") }
+                }
+                HorizontalDivider(Modifier.padding(vertical = 12.dp))
+                Heading("App")
+                val updateState by core.updater.state
+                val update by core.updater.available
+                Text(
+                    "Version ${BuildConfig.VERSION_NAME}" + if (updateState.isNotBlank()) " · $updateState" else "",
+                    color = Dim,
+                    fontSize = 14.sp,
+                )
+                Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(onClick = { core.updater.check(always = true) }) { Text("Check for update") }
+                    update?.let { Button(onClick = { core.updater.install(it) }) { Text("Install ${it.versionName}") } }
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 Heading("This phone's ssh key")

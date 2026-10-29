@@ -436,6 +436,12 @@ fn agents_json(model: &SidebarModel) -> Value {
                 let first = lines.remove(0);
                 lines.push(first);
             }
+            // A pane someone renamed leads with that name; the agent's own title
+            // moves down beside its background work.
+            if let Some(label) = &agent.label {
+                lines.retain(|line| line != label);
+                lines.insert(0, label.clone());
+            }
             json!({
                 "endpoint": agent.endpoint,
                 "machine": agent.machine_label,
