@@ -1,6 +1,7 @@
-//! Input for a machine whose connection has stopped answering. It waits here
-//! instead of going into the stalled transport, where a reconnect would discard
-//! it, and goes out in order once the machine answers again.
+//! Input for a machine whose connection has stopped answering, or that is
+//! reconnecting. It waits here instead of going into the stalled transport,
+//! where a reconnect would discard it, or being dropped, and goes out in order
+//! once the machine answers again.
 
 use std::collections::VecDeque;
 use std::time::{Duration, Instant};
