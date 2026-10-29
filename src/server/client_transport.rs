@@ -1006,6 +1006,8 @@ fn client_read_loop_with_endpoint_controls(
     should_quit: &Arc<AtomicBool>,
     endpoint_control_writer: Option<&ClientControlWriter>,
 ) -> io::Result<()> {
+    // The number a sequence control gave the input message expected next.
+    let mut pending_sequence: Option<crate::protocol::endpoint::EndpointInputSequence> = None;
     while !should_quit.load(Ordering::Acquire) {
         #[cfg(unix)]
         let message = protocol::read_message(
@@ -1038,6 +1040,72 @@ fn client_read_loop_with_endpoint_controls(
                 break;
             }
         };
+
+        // Numbered input (see `input_ledger`): input this server already applied,
+        // a replay or a stalled connection's late copy, is acknowledged again and
+        // dropped. New input is recorded once it is queued to the main loop, under
+        // the ledger's lock, so copies arriving on two connections apply once and
+        // in order.
+        if let ClientMessage::EndpointControl { kind, data } = &msg {
+            match kind.as_str() {
+                crate::protocol::endpoint::INPUT_SEQUENCE_KIND => {
+                    pending_sequence = endpoint_control_writer
+                        .and_then(|_| serde_json::from_str(data).ok())
+                        .filter(valid_input_sequence);
+                    continue;
+                }
+                crate::protocol::endpoint::INPUT_RESUME_KIND => {
+                    let resume = serde_json::from_str::<
+                        crate::protocol::endpoint::EndpointInputResume,
+                    >(data);
+                    if let (Some(writer), Ok(resume)) = (endpoint_control_writer, resume) {
+                        let last_applied =
+                            crate::server::input_ledger::lock().last_applied(&resume.token);
+                        let resumed = crate::protocol::endpoint::EndpointInputResumed {
+                            token: resume.token,
+                            instance: crate::server::input_ledger::instance().to_owned(),
+                            last_applied,
+                        };
+                        if !send_json_control(
+                            writer,
+                            crate::protocol::endpoint::INPUT_RESUMED_KIND,
+                            &resumed,
+                        ) {
+                            break;
+                        }
+                    }
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        let sequence = pending_sequence.take().filter(|_| {
+            matches!(
+                msg,
+                ClientMessage::ClientShellPaneInput { .. }
+                    | ClientMessage::ClientShellPopupInput { .. }
+            )
+        });
+        let mut admitted = None;
+        if let Some(sequence) = sequence {
+            let ledger = crate::server::input_ledger::lock();
+            if !ledger.admits(&sequence.token, sequence.seq) {
+                let last = ledger.last_applied(&sequence.token).unwrap_or(sequence.seq);
+                drop(ledger);
+                debug!(
+                    client_id,
+                    seq = sequence.seq,
+                    "dropping input already applied"
+                );
+                if let Some(writer) = endpoint_control_writer {
+                    if !send_input_ack(writer, sequence.token, last) {
+                        break;
+                    }
+                }
+                continue;
+            }
+            admitted = Some((ledger, sequence));
+        }
 
         let event = match msg {
             ClientMessage::Input { data } => {
@@ -1414,10 +1482,50 @@ fn client_read_loop_with_endpoint_controls(
         if server_event_tx.blocking_send(event).is_err() {
             break; // Main loop gone.
         }
+        if let Some((mut ledger, sequence)) = admitted {
+            ledger.record(&sequence.token, sequence.seq, std::time::Instant::now());
+            drop(ledger);
+            if let Some(writer) = endpoint_control_writer {
+                if !send_input_ack(writer, sequence.token, sequence.seq) {
+                    break;
+                }
+            }
+        }
     }
 
     debug!(client_id, "client read thread exiting");
     Ok(())
+}
+
+fn valid_input_sequence(sequence: &crate::protocol::endpoint::EndpointInputSequence) -> bool {
+    !sequence.token.is_empty()
+        && sequence.token.len() <= crate::protocol::endpoint::MAX_INPUT_TOKEN_BYTES
+}
+
+fn send_input_ack(writer: &ClientControlWriter, token: String, seq: u64) -> bool {
+    send_json_control(
+        writer,
+        crate::protocol::endpoint::INPUT_ACK_KIND,
+        &crate::protocol::endpoint::EndpointInputAck {
+            token,
+            seq,
+            instance: crate::server::input_ledger::instance().to_owned(),
+        },
+    )
+}
+
+/// Sends a named control message with a JSON body; false when the client is gone.
+fn send_json_control(
+    writer: &ClientControlWriter,
+    kind: &str,
+    value: &impl serde::Serialize,
+) -> bool {
+    let Some((kind, data)) = crate::protocol::endpoint::json_control(kind, value) else {
+        return true;
+    };
+    let mut framed = Vec::new();
+    protocol::write_message(&mut framed, &ServerMessage::EndpointControl { kind, data }).is_ok()
+        && writer.send(framed).is_ok()
 }
 
 #[cfg(test)]
@@ -2126,6 +2234,129 @@ mod tests {
         server_thread.join().unwrap().unwrap();
         client_thread.join().unwrap();
         drop(writer);
+    }
+
+    #[test]
+    fn numbered_input_is_applied_once_and_acknowledged() {
+        use crate::protocol::endpoint as wire;
+        let token = format!("transport-test-{}", std::process::id());
+        fn control(kind: &str, value: &impl serde::Serialize) -> ClientMessage {
+            let (kind, data) = crate::protocol::endpoint::json_control(kind, value).unwrap();
+            ClientMessage::EndpointControl { kind, data }
+        }
+        let number = |seq| {
+            control(
+                wire::INPUT_SEQUENCE_KIND,
+                &wire::EndpointInputSequence {
+                    token: token.clone(),
+                    seq,
+                },
+            )
+        };
+        let resume = control(
+            wire::INPUT_RESUME_KIND,
+            &wire::EndpointInputResume {
+                token: token.clone(),
+            },
+        );
+        let typed = |text: &str| ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                text.into(),
+            )],
+        };
+
+        let (mut client, server, _path) = local_stream_pair("numbered-input");
+        let (events, mut pending) = mpsc::channel(16);
+        let server_thread = std::thread::spawn(move || {
+            handle_client_handshake(server, 44, &events, &Arc::new(AtomicBool::new(false)))
+        });
+        let mut reader = client.try_clone().unwrap();
+        let (messages, received) = std::sync::mpsc::channel();
+        let client_thread = std::thread::spawn(move || {
+            while let Ok(message) =
+                protocol::read_message::<_, ServerMessage>(&mut reader, MAX_FRAME_SIZE)
+            {
+                if messages.send(message).is_err() {
+                    break;
+                }
+            }
+        });
+        protocol::write_message(&mut client, &endpoint_hello(80, 29)).unwrap();
+        let welcome = endpoint_welcome(received.recv_timeout(Duration::from_secs(2)).unwrap());
+        assert!(welcome
+            .capabilities
+            .iter()
+            .any(|capability| capability == wire::INPUT_SEQUENCE_CAPABILITY));
+        let Some(ServerEvent::ClientShellConnected { writer, .. }) = pending.blocking_recv() else {
+            panic!("expected registration");
+        };
+        for message in [
+            resume.clone(),
+            number(1),
+            typed("a"),
+            // A replayed copy of 1, as after a reconnect.
+            number(1),
+            typed("a"),
+            number(2),
+            typed("b"),
+            resume,
+            ClientMessage::Detach,
+        ] {
+            protocol::write_message(&mut client, &message).unwrap();
+        }
+        let mut applied = Vec::new();
+        while let Some(event) = pending.blocking_recv() {
+            match event {
+                ServerEvent::ClientShellPaneInput { events, .. } => applied.push(events),
+                ServerEvent::ClientDetach { .. } => break,
+                _ => {}
+            }
+        }
+        assert_eq!(
+            applied,
+            vec![
+                vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                    "a".into()
+                )],
+                vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                    "b".into()
+                )],
+            ],
+            "the replayed copy is not applied again"
+        );
+        let mut replies = Vec::new();
+        while replies.len() < 5 {
+            let ServerMessage::EndpointControl { kind, data } =
+                received.recv_timeout(Duration::from_secs(2)).unwrap()
+            else {
+                continue;
+            };
+            replies.push((kind, data));
+        }
+        let resumed = |(kind, data): &(String, String)| {
+            assert_eq!(kind, wire::INPUT_RESUMED_KIND);
+            serde_json::from_str::<wire::EndpointInputResumed>(data)
+                .unwrap()
+                .last_applied
+        };
+        let acked = |(kind, data): &(String, String)| {
+            assert_eq!(kind, wire::INPUT_ACK_KIND);
+            serde_json::from_str::<wire::EndpointInputAck>(data)
+                .unwrap()
+                .seq
+        };
+        assert_eq!(resumed(&replies[0]), None, "nothing applied yet");
+        assert_eq!(
+            [acked(&replies[1]), acked(&replies[2]), acked(&replies[3])],
+            [1, 1, 2],
+            "the replay is acknowledged again"
+        );
+        assert_eq!(resumed(&replies[4]), Some(2));
+        server_thread.join().unwrap().unwrap();
+        drop(writer);
+        drop(client);
+        client_thread.join().unwrap();
     }
 
     #[test]

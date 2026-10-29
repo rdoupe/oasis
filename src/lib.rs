@@ -522,18 +522,40 @@ fn finish_cli(outcome: io::Result<cli::CommandOutcome>) -> io::Result<()> {
 /// `oasis import-herdr` forgets the Herdr import decision, then starts oasis
 /// normally so the first-launch import screen shows again.
 /// `oasis import-herdr --apply <items>` imports without the screen.
+/// `--list` prints what could be imported and `--skip` records a decline, for
+/// the oasis that installs this one from another machine and asks there.
 fn herdr_import_command(mut raw_args: Vec<String>) -> Result<Vec<String>, i32> {
     if raw_args.get(1).map(String::as_str) != Some(herdr_import::REIMPORT_COMMAND) {
         return Ok(raw_args);
     }
     let usage = || {
         eprintln!(
-            "usage: oasis {0}\n       oasis {0} --apply settings,remotes,windows,server",
+            "usage: oasis {0}\n       oasis {0} --apply settings,remotes,windows,server\n       oasis {0} --list | --skip",
             herdr_import::REIMPORT_COMMAND
         );
         2
     };
     let apply = match raw_args.get(2).map(String::as_str) {
+        Some("--list") if raw_args.len() == 3 => {
+            if let Some(install) = herdr_import::detect_current() {
+                for line in herdr_import::offer_lines(&install) {
+                    println!("{line}");
+                }
+            }
+            return Err(0);
+        }
+        Some("--skip") if raw_args.len() == 3 => {
+            let decision = herdr_import::Decision::Skipped;
+            return Err(
+                match herdr_import::record_decision(&config::state_dir(), decision) {
+                    Ok(()) => 0,
+                    Err(err) => {
+                        eprintln!("error: could not record the Herdr import decision: {err}");
+                        1
+                    }
+                },
+            );
+        }
         None => None,
         Some("--apply") if raw_args.len() == 4 => {
             Some(herdr_import::parse_items(&raw_args[3]).map_err(|err| {

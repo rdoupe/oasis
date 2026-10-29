@@ -41,6 +41,7 @@ mod worktrees;
 use text_editor::TextEditor;
 use word_selection::ClientWordSelection;
 
+pub(crate) use endpoint_notices::input_may_be_lost_body;
 pub(in crate::client::shell) use render::sidebar;
 pub(crate) use state::*;
 #[cfg(test)]

@@ -500,7 +500,7 @@ impl RemoteHerdr {
                 RemoteExecutable::WindowsPath("herdr.exe".to_string()),
             )
         } else {
-            let install_suffix = ".local/bin/herdr".to_string();
+            let install_suffix = ".local/bin/oasis".to_string();
             let shell_path = format!("\"$HOME/{install_suffix}\"");
             (install_suffix, RemoteExecutable::PosixShellPath(shell_path))
         };
@@ -1557,6 +1557,12 @@ fn prepare_discovered_remote_herdr(
             require_surface_interest,
         )?;
     }
+    if override_binary.is_none() && !local_binary_can_seed_remote(&remote_herdr.platform) {
+        return Err(no_oasis_build_for(
+            &ssh.destination(),
+            &remote_herdr.platform,
+        ));
+    }
     if !stop_after_install_approved {
         confirm_remote_install(
             &ssh.destination(),
@@ -1571,16 +1577,104 @@ fn prepare_discovered_remote_herdr(
 
     if !remote_binary_supports_endpoint_requirement(ssh, &remote_herdr, require_surface_interest)? {
         return Err(io::Error::other(format!(
-            "installed remote herdr at {}, but it does not support saved SSH endpoint federation",
+            "installed remote oasis at {}, but it does not support saved SSH endpoint federation",
             remote_herdr.executable.display()
         )));
     }
     warn_if_remote_bin_not_on_path(ssh)?;
+    offer_remote_herdr_import(ssh, &remote_herdr);
 
     Ok(PreparedRemoteHerdr {
         remote_herdr,
         stop_after_install_approved,
     })
+}
+
+/// Oasis publishes no builds, so a machine it can't copy its own binary to
+/// needs one built for it: Herdr's downloads would put Herdr there instead.
+fn no_oasis_build_for(target: &str, platform: &RemotePlatform) -> io::Error {
+    io::Error::new(
+        io::ErrorKind::Unsupported,
+        format!(
+            "oasis is not installed on {target}, and this oasis is built for {} while {target} needs {}. \
+             Build oasis there and put it at ~/.local/bin/oasis, or set {REMOTE_BINARY_ENV_VAR} to a build for it.",
+            RemotePlatform::local().asset_key(),
+            platform.asset_key()
+        ),
+    )
+}
+
+/// Asks the Herdr migration question for a machine oasis was just installed
+/// on, when Herdr is set up there, and runs the chosen import on that machine
+/// before its oasis server starts. Taking over Herdr's running server is its
+/// own choice and stays off unless picked. A failure leaves the install as is.
+fn offer_remote_herdr_import(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) {
+    if let Err(err) = ask_remote_herdr_import(ssh, remote_herdr) {
+        eprintln!(
+            "oasis: Herdr was not brought over on {}: {err}",
+            ssh.destination()
+        );
+    }
+}
+
+fn ask_remote_herdr_import(ssh: &RemoteSsh, remote_herdr: &RemoteHerdr) -> io::Result<()> {
+    use crate::herdr_import::ImportItem;
+
+    if !io::stdin().is_terminal() {
+        return Ok(());
+    }
+    let run = |args: &[&str]| {
+        ssh.shell_output(
+            &remote_herdr.platform,
+            &remote_herdr.executable.command(args),
+        )
+    };
+    let output = run(&["import-herdr", "--list"])?;
+    if !output.status.success() {
+        return Ok(());
+    }
+    let offer = crate::herdr_import::parse_offer(&String::from_utf8_lossy(&output.stdout));
+    if !offer.iter().any(|offered| offered.available) {
+        return Ok(());
+    }
+
+    eprintln!(
+        "Herdr is set up on {}. Bring it into oasis there?",
+        ssh.destination()
+    );
+    let mut chosen = Vec::new();
+    for offered in &offer {
+        let label = offered.item.label();
+        if !offered.available {
+            eprintln!("  {label}: {}", offered.note);
+            continue;
+        }
+        let default = offered.item != ImportItem::Server;
+        let prompt = if default { "[Y/n]" } else { "[y/N]" };
+        eprint!("  {label} ({})? {prompt} ", offered.note);
+        io::stderr().flush()?;
+        if read_remote_confirmation(&mut io::stdin().lock(), default)? {
+            chosen.push(offered.item.key());
+        }
+    }
+
+    let items = chosen.join(",");
+    let output = if chosen.is_empty() {
+        run(&["import-herdr", "--skip"])?
+    } else {
+        run(&["import-herdr", "--apply", &items])?
+    };
+    for line in String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .chain(String::from_utf8_lossy(&output.stderr).lines())
+        .filter(|line| !line.trim().is_empty())
+    {
+        eprintln!("  {line}");
+    }
+    if !output.status.success() {
+        return Err(io::Error::other("the import did not finish"));
+    }
+    Ok(())
 }
 
 pub(super) fn find_installed_remote_herdr(ssh: &RemoteSsh) -> io::Result<RemoteHerdr> {
@@ -1865,24 +1959,67 @@ fn remote_binary_candidates(
         ));
     }
 
-    let mut candidates = Vec::new();
+    let path_candidate = remote_binary_on_path_any(ssh, remote_herdr)?;
 
-    if let Some(path_candidate) = remote_binary_on_path_any(ssh, remote_herdr)? {
-        push_if_new_remote_binary_candidate(&mut candidates, path_candidate);
-    }
-
-    let output = ssh.sh_output(&known_remote_binary_candidate_script(
-        &remote_herdr.platform,
+    let output = ssh.sh_output(&format!(
+        "{}\n{}",
+        OASIS_TAKEOVER_CANDIDATE_SCRIPT,
+        known_remote_binary_candidate_script(&remote_herdr.platform)
     ))?;
     if !output.status.success() {
         return Err(command_failed("remote binary discovery failed", &output));
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
-    for candidate in remote_herdrs_from_path_discovery(remote_herdr, &stdout) {
+    let (takeover, known) = split_takeover_candidates(&stdout);
+
+    // Oasis first where it took over Herdr's server: its bridge starts the
+    // Oasis server when none is running, where Herdr's would fail.
+    let mut candidates = remote_herdrs_from_path_discovery(remote_herdr, &takeover);
+    if let Some(path_candidate) = path_candidate {
+        push_if_new_remote_binary_candidate(&mut candidates, path_candidate);
+    }
+    for candidate in remote_herdrs_from_path_discovery(remote_herdr, &known) {
         push_if_new_remote_binary_candidate(&mut candidates, candidate);
     }
 
     Ok(candidates)
+}
+
+/// Prefix on the discovery line naming an Oasis that took over Herdr's server.
+const OASIS_TAKEOVER_PREFIX: &str = "oasis-takeover:";
+
+/// Names `~/.local/bin/oasis` when Herdr's client socket links into Oasis's
+/// directory, which `oasis import-herdr --apply server` leaves behind: Herdr's
+/// paths and Oasis's then reach the same server. A machine whose own Herdr
+/// server still runs is left on Herdr, so a client never lands in an empty
+/// Oasis session beside it.
+const OASIS_TAKEOVER_CANDIDATE_SCRIPT: &str = r#"oasis_home=${HOME:-}
+if [ -n "$oasis_home" ] && [ -x "$oasis_home/.local/bin/oasis" ]; then
+    oasis_link="${XDG_CONFIG_HOME:-$oasis_home/.config}/herdr/herdr-client.sock"
+    if [ -L "$oasis_link" ]; then
+        case "$(readlink "$oasis_link")" in
+            */oasis/*) printf 'oasis-takeover:%s\n' "$oasis_home/.local/bin/oasis" ;;
+        esac
+    fi
+fi"#;
+
+/// Splits discovery output into the takeover Oasis line(s) and the rest.
+fn split_takeover_candidates(stdout: &str) -> (String, String) {
+    let mut takeover = String::new();
+    let mut rest = String::new();
+    for line in stdout.lines() {
+        match line.trim().strip_prefix(OASIS_TAKEOVER_PREFIX) {
+            Some(path) => {
+                takeover.push_str(path);
+                takeover.push('\n');
+            }
+            None => {
+                rest.push_str(line);
+                rest.push('\n');
+            }
+        }
+    }
+    (takeover, rest)
 }
 
 fn windows_remote_binary_candidate_command() -> String {
@@ -1915,15 +2052,15 @@ fn push_if_new_remote_binary_candidate(candidates: &mut Vec<RemoteHerdr>, candid
     }
 }
 
+/// Where an oasis is found on another machine: the per-user install that the
+/// remote setup writes, then the system places a package manager would use.
+/// Herdr's own binaries are never candidates, so a machine running only Herdr
+/// is offered an oasis install (and the Herdr import) rather than being used
+/// as it is.
 fn known_remote_binary_candidate_script(platform: &RemotePlatform) -> String {
     let mut script = String::from(
         r#"home=${HOME:-}
 user=${USER:-}
-version="#,
-    );
-    script.push_str(&shell_quote(&current_version()));
-    script.push_str(
-        r#"
 emit() {
     path=$1
     if [ -n "$path" ] && [ -x "$path" ]; then
@@ -1931,34 +2068,31 @@ emit() {
     fi
 }
 if [ -n "$home" ]; then
-    emit "$home/.local/bin/herdr"
+    emit "$home/.local/bin/oasis"
 fi
 "#,
     );
     if platform.os == "macos" {
         script.push_str(
-            r#"    emit "/opt/homebrew/bin/herdr"
-    emit "/usr/local/bin/herdr"
+            r#"    emit "/opt/homebrew/bin/oasis"
+    emit "/usr/local/bin/oasis"
 "#,
         );
     } else if platform.os == "linux" {
         script.push_str(
-            r#"    emit "/home/linuxbrew/.linuxbrew/bin/herdr"
+            r#"    emit "/home/linuxbrew/.linuxbrew/bin/oasis"
 "#,
         );
     }
     script.push_str(
         r#"if [ -n "$home" ]; then
-    emit "$home/.local/share/mise/installs/herdr/$version/bin/herdr"
-    emit "$home/.local/share/mise/installs/herdr/$version/herdr"
-    emit "$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr"
-    emit "$home/.nix-profile/bin/herdr"
+    emit "$home/.nix-profile/bin/oasis"
 fi
 if [ -n "$user" ]; then
-    emit "/etc/profiles/per-user/$user/bin/herdr"
+    emit "/etc/profiles/per-user/$user/bin/oasis"
 fi
-emit "/nix/var/nix/profiles/default/bin/herdr"
-emit "/run/current-system/sw/bin/herdr"
+emit "/nix/var/nix/profiles/default/bin/oasis"
+emit "/run/current-system/sw/bin/oasis"
 "#,
     );
 
@@ -1969,7 +2103,7 @@ fn remote_binary_on_path_any(
     ssh: &RemoteSsh,
     remote_herdr: &RemoteHerdr,
 ) -> io::Result<Option<RemoteHerdr>> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v oasis")?;
     if output.status.success() {
         let stdout = String::from_utf8_lossy(&output.stdout);
         if let Some(candidate) = remote_herdr_from_path_discovery(remote_herdr, &stdout) {
@@ -1979,7 +2113,7 @@ fn remote_binary_on_path_any(
 
     // Non-POSIX login shells such as xonsh reject `command -v`; retry through
     // /bin/sh while retaining the login-shell probe for shell-initialized PATHs.
-    let output = ssh.sh_output("command -v herdr\n")?;
+    let output = ssh.sh_output("command -v oasis\n")?;
     if !output.status.success() {
         return Ok(None);
     }
@@ -2016,7 +2150,7 @@ fn remote_herdr_from_path(remote_herdr: &RemoteHerdr, path: &str) -> Option<Remo
 }
 
 fn is_mise_shim_path(path: &str) -> bool {
-    path.ends_with("/mise/shims/herdr")
+    path.ends_with("/mise/shims/oasis")
 }
 
 fn remote_client_status(
@@ -2108,7 +2242,7 @@ fn install_source_description_for(
     }
 
     if local_binary_can_seed_remote {
-        "the current local herdr binary".to_string()
+        "the current local oasis binary".to_string()
     } else {
         format!(
             "the {} {} asset for {}",
@@ -2660,7 +2794,7 @@ fn version_label(version: Option<&str>) -> &str {
 }
 
 fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
-    let output = ssh.posix_user_shell_output("command -v herdr")?;
+    let output = ssh.posix_user_shell_output("command -v oasis")?;
     if output.status.success()
         && remote_shell_resolves_managed_install(&String::from_utf8_lossy(&output.stdout))
     {
@@ -2668,7 +2802,7 @@ fn warn_if_remote_bin_not_on_path(ssh: &RemoteSsh) -> io::Result<()> {
     }
 
     eprintln!(
-        "herdr: installed remote binary to ~/.local/bin/herdr, but the remote shell does not resolve `oasis` to that path"
+        "oasis: installed remote binary to ~/.local/bin/oasis, but the remote shell does not resolve `oasis` to that path"
     );
     Ok(())
 }
@@ -2678,7 +2812,7 @@ fn remote_shell_resolves_managed_install(stdout: &str) -> bool {
         .lines()
         .next()
         .map(str::trim)
-        .is_some_and(|path| path.ends_with("/.local/bin/herdr"))
+        .is_some_and(|path| path.ends_with("/.local/bin/oasis"))
 }
 
 fn download_release_asset(platform: &RemotePlatform) -> io::Result<InstallSource> {
@@ -2857,14 +2991,14 @@ fn confirm_remote_install(
 ) -> io::Result<()> {
     if !io::stdin().is_terminal() {
         return Err(io::Error::other(format!(
-            "matching remote herdr {} is not installed at {}; run from an interactive terminal to approve installation",
+            "matching remote oasis {} is not installed at {}; run from an interactive terminal to approve installation",
             current_version(),
             remote_herdr.executable.display()
         )));
     }
 
     eprintln!(
-        "matching herdr {} is not installed on {target} for {}.",
+        "matching oasis {} is not installed on {target} for {}.",
         current_version(),
         remote_herdr.platform.asset_key()
     );
@@ -2878,7 +3012,7 @@ fn confirm_remote_install(
     if !read_remote_confirmation(&mut io::stdin().lock(), true)? {
         return Err(io::Error::new(
             io::ErrorKind::Interrupted,
-            "remote herdr installation cancelled",
+            "remote oasis installation cancelled",
         ));
     }
 
@@ -2889,14 +3023,15 @@ fn posix_remote_api_discovery_script(platform: &RemotePlatform, session: &str) -
     format!(
         r#"set -f
 candidates=$(
-command -v herdr
+{takeover}
+command -v oasis
 {discovery}
 )
 IFS='
 '
 for candidate in $candidates; do
     case "$candidate" in
-        */mise/shims/herdr) continue ;;
+        */mise/shims/oasis) continue ;;
         /*) ;;
         *) continue ;;
     esac
@@ -2908,6 +3043,7 @@ for candidate in $candidates; do
 done
 printf '%s\n' 'remote Herdr does not support machine API forwarding; update Herdr on this machine' >&2
 exit 2"#,
+        takeover = OASIS_TAKEOVER_CANDIDATE_SCRIPT.replace(OASIS_TAKEOVER_PREFIX, ""),
         discovery = known_remote_binary_candidate_script(platform),
         session = shell_quote(session),
     )
@@ -5888,7 +6024,7 @@ function Get-Process {
             assert_eq!(
                 remote_api_bridge_command(&remote_herdr, session, false),
                 posix_remote_output_command(&format!(
-                    "exec \"$HOME/.local/bin/herdr\" --session {session} remote-api-bridge"
+                    "exec \"$HOME/.local/bin/oasis\" --session {session} remote-api-bridge"
                 ))
             );
         }
@@ -5923,11 +6059,11 @@ function Get-Process {
             remote_herdr
                 .executable
                 .bridge_command(crate::session::DEFAULT_SESSION_NAME),
-            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/herdr\" remote-client-bridge"
+            "printf '\n%s\n' 'herdr-remote-output-ready:1'\nexec \"$HOME/.local/bin/oasis\" remote-client-bridge"
         );
         assert_eq!(
             remote_herdr.executable.saved_bridge_command("agents"),
-            "exec \"$HOME/.local/bin/herdr\" --session agents remote-client-bridge </dev/null"
+            "exec \"$HOME/.local/bin/oasis\" --session agents remote-client-bridge </dev/null"
         );
     }
 
@@ -6015,40 +6151,139 @@ function Get-Process {
         });
         let candidates = remote_herdrs_from_path_discovery(
             &remote_herdr,
-            "/home/can/.local/share/mise/shims/herdr\n/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr\n",
+            "/home/can/.local/share/mise/shims/oasis\n/home/can/.local/share/mise/installs/oasis/0.7.1/bin/oasis\n",
         );
 
         assert_eq!(candidates.len(), 1);
         assert_eq!(
             candidates[0].executable,
             RemoteExecutable::PosixShellPath(
-                "/home/can/.local/share/mise/installs/herdr/0.7.1/bin/herdr".to_string()
+                "/home/can/.local/share/mise/installs/oasis/0.7.1/bin/oasis".to_string()
             )
         );
     }
 
     #[test]
-    fn known_remote_binary_candidate_script_includes_mise_and_nix_paths() {
+    fn takeover_lines_are_split_from_the_other_candidates() {
+        let (takeover, rest) = split_takeover_candidates(
+            "oasis-takeover:/tmp/home/.local/bin/oasis\n/tmp/home/.local/bin/herdr\n",
+        );
+        assert_eq!(takeover, "/tmp/home/.local/bin/oasis\n");
+        assert_eq!(rest, "/tmp/home/.local/bin/herdr\n");
+        assert_eq!(split_takeover_candidates("/usr/bin/herdr\n").0, "");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn oasis_is_named_only_where_it_took_over_herdrs_server() {
+        let root = std::env::temp_dir().join(format!(
+            "oasis-takeover-discovery-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let run = |home: &std::path::Path| {
+            let output = std::process::Command::new("/bin/sh")
+                .arg("-c")
+                .arg(OASIS_TAKEOVER_CANDIDATE_SCRIPT)
+                .env_clear()
+                .env("HOME", home)
+                .env("PATH", "/usr/bin:/bin")
+                .output()
+                .unwrap();
+            String::from_utf8(output.stdout).unwrap()
+        };
+        let home = |name: &str, oasis: bool, link: Option<&str>| {
+            let home = root.join(name);
+            std::fs::create_dir_all(home.join(".config/herdr")).unwrap();
+            std::fs::create_dir_all(home.join(".config/oasis")).unwrap();
+            if oasis {
+                std::fs::create_dir_all(home.join(".local/bin")).unwrap();
+                let bin = home.join(".local/bin/oasis");
+                std::fs::write(&bin, "#!/bin/sh\n").unwrap();
+                use std::os::unix::fs::PermissionsExt as _;
+                std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            match link {
+                Some(target) => std::os::unix::fs::symlink(
+                    home.join(target),
+                    home.join(".config/herdr/herdr-client.sock"),
+                )
+                .unwrap(),
+                None => std::fs::write(home.join(".config/herdr/herdr-client.sock"), "").unwrap(),
+            }
+            home
+        };
+
+        let taken = home("taken", true, Some(".config/oasis/herdr-client.sock"));
+        assert_eq!(
+            run(&taken),
+            format!(
+                "oasis-takeover:{}\n",
+                taken.join(".local/bin/oasis").display()
+            )
+        );
+        assert_eq!(
+            run(&home("herdr-runs", true, None)),
+            "",
+            "Herdr still serves its own socket"
+        );
+        assert_eq!(
+            run(&home(
+                "elsewhere",
+                true,
+                Some(".config/other/herdr-client.sock")
+            )),
+            "",
+            "a link that does not lead to Oasis"
+        );
+        assert_eq!(
+            run(&home(
+                "no-oasis",
+                false,
+                Some(".config/oasis/herdr-client.sock")
+            )),
+            "",
+            "no Oasis to run"
+        );
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn api_discovery_tries_a_takeover_oasis_before_oasis_on_path() {
+        let script = posix_remote_api_discovery_script(
+            &RemotePlatform {
+                os: "linux",
+                arch: "x86_64",
+            },
+            "default",
+        );
+        let oasis = script.find("$oasis_home/.local/bin/oasis").unwrap();
+        let path = script.find("command -v oasis").unwrap();
+        assert!(oasis < path);
+        assert!(!script.contains("bin/herdr"), "herdr is never a candidate");
+        assert!(
+            !script.contains(OASIS_TAKEOVER_PREFIX),
+            "API discovery prints bare paths"
+        );
+    }
+
+    #[test]
+    fn known_remote_binary_candidate_script_finds_oasis_never_herdr() {
         let script = known_remote_binary_candidate_script(&RemotePlatform {
             os: "linux",
             arch: "x86_64",
         });
 
-        assert!(script.contains("emit \"$home/.local/bin/herdr\""));
-        assert!(!script.contains("mise/shims/herdr"));
-        assert!(script.contains(&format!("version={}", shell_quote(&current_version()))));
-        assert!(
-            script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/bin/herdr\"")
-        );
-        assert!(script.contains("emit \"$home/.local/share/mise/installs/herdr/$version/herdr\""));
-        assert!(script.contains(
-            "emit \"$home/.local/share/mise/installs/github-ogulcancelik-herdr/$version/herdr\""
-        ));
-        assert!(script.contains("emit \"$home/.nix-profile/bin/herdr\""));
-        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/herdr\""));
-        assert!(script.contains("emit \"/run/current-system/sw/bin/herdr\""));
-        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
-        assert!(!script.contains("emit \"/opt/homebrew/bin/herdr\""));
+        assert!(script.contains("emit \"$home/.local/bin/oasis\""));
+        assert!(script.contains("emit \"$home/.nix-profile/bin/oasis\""));
+        assert!(script.contains("emit \"/etc/profiles/per-user/$user/bin/oasis\""));
+        assert!(script.contains("emit \"/run/current-system/sw/bin/oasis\""));
+        assert!(script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/oasis\""));
+        assert!(!script.contains("emit \"/opt/homebrew/bin/oasis\""));
+        assert!(!script.contains("herdr"));
     }
 
     #[test]
@@ -6058,9 +6293,9 @@ function Get-Process {
             arch: "aarch64",
         });
 
-        assert!(script.contains("emit \"/opt/homebrew/bin/herdr\""));
-        assert!(script.contains("emit \"/usr/local/bin/herdr\""));
-        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/herdr\""));
+        assert!(script.contains("emit \"/opt/homebrew/bin/oasis\""));
+        assert!(script.contains("emit \"/usr/local/bin/oasis\""));
+        assert!(!script.contains("emit \"/home/linuxbrew/.linuxbrew/bin/oasis\""));
     }
 
     #[test]
@@ -6106,13 +6341,13 @@ function Get-Process {
     #[test]
     fn remote_shell_path_warning_accepts_managed_install() {
         assert!(remote_shell_resolves_managed_install(
-            "/home/can/.local/bin/herdr\n"
+            "/home/can/.local/bin/oasis\n"
         ));
         assert!(remote_shell_resolves_managed_install(
-            "/Users/can/.local/bin/herdr\n"
+            "/Users/can/.local/bin/oasis\n"
         ));
         assert!(!remote_shell_resolves_managed_install(
-            "/usr/local/bin/herdr\n"
+            "/home/can/.local/bin/herdr\n"
         ));
         assert!(!remote_shell_resolves_managed_install(""));
     }
@@ -6469,7 +6704,7 @@ function Get-Process {
 
         assert_eq!(
             install_source_description_for(&platform, None, true),
-            "the current local herdr binary"
+            "the current local oasis binary"
         );
     }
 

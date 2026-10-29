@@ -112,3 +112,31 @@ pub(super) fn render_notice(
         palette,
     )
 }
+
+/// What a machine that restarted while its connection was down can't account for.
+pub(crate) fn input_may_be_lost_body(count: usize) -> String {
+    let what = if count == 1 { "1 input" } else { "some input" };
+    format!(
+        "{what} you typed just before the connection dropped may not have arrived: the machine restarted and can't say. Check the pane before typing more."
+    )
+}
+
+impl ClientShellState {
+    /// Input sent before a connection dropped can't be accounted for (the
+    /// machine restarted), so it was not sent again; say so.
+    pub(crate) fn show_input_may_be_lost(&mut self, endpoint_id: &ClientEndpointId, count: usize) {
+        self.visible_endpoint_notice = Some(ClientVisibleEndpointNotice {
+            key: ClientEndpointNoticeKey {
+                boot_id: "input".into(),
+                kind: ClientEndpointNoticeKind::Unavailable,
+                code: "input_unknown".into(),
+            },
+            title: format!(
+                "{}: typing may be missing",
+                self.endpoint_label(endpoint_id)
+            ),
+            body: input_may_be_lost_body(count),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(15),
+        });
+    }
+}

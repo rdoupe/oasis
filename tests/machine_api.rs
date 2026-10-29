@@ -125,7 +125,7 @@ impl Harness {
         std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_oasis"), root.join("remote herdr")).unwrap();
         fs::create_dir_all(root.join("remote bin")).unwrap();
         link_remote_system_tools(&root.join("remote system"));
-        let remote_wrapper = root.join("remote bin/herdr");
+        let remote_wrapper = root.join("remote bin/oasis");
         fs::write(
             &remote_wrapper,
             r#"#!/bin/sh
@@ -364,7 +364,7 @@ fn machine_api_bootstrap_falls_back_from_an_old_path_binary() {
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
         env!("CARGO_BIN_EXE_oasis"),
-        harness.root.join(".local/bin/herdr"),
+        harness.root.join(".local/bin/oasis"),
     )
     .unwrap();
     let server = harness.serve(
@@ -432,11 +432,11 @@ fn machine_api_reuses_discovery_across_commands_without_rewriting_profiles() {
 fn machine_api_recovers_a_stale_path_before_sending_a_mutation() {
     let harness = Harness::new();
     harness.warm_metadata();
-    fs::remove_file(harness.root.join("remote bin/herdr")).unwrap();
+    fs::remove_file(harness.root.join("remote bin/oasis")).unwrap();
     fs::create_dir_all(harness.root.join(".local/bin")).unwrap();
     std::os::unix::fs::symlink(
         env!("CARGO_BIN_EXE_oasis"),
-        harness.root.join(".local/bin/herdr"),
+        harness.root.join(".local/bin/oasis"),
     )
     .unwrap();
     let before = harness.ssh_calls();

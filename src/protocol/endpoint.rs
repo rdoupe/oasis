@@ -35,6 +35,59 @@ pub const AGENT_COMPLETIONS_KIND: &str = "endpoint.agent-completions.v1";
 /// subagents) as reserved `oasis:` agent tokens. Herdr servers lack it, and
 /// the client reads that activity itself.
 pub const BACKGROUND_ACTIVITY_CAPABILITY: &str = "oasis.background_activity";
+/// Typed and pasted input is numbered, so a client can find out after a
+/// connection drops which of it the server applied, and send the rest exactly
+/// once. Herdr servers lack it, and the client sends input unnumbered.
+pub const INPUT_SEQUENCE_CAPABILITY: &str = "oasis.input_sequence";
+/// Client to server: numbers the pane or popup input message right after it.
+pub const INPUT_SEQUENCE_KIND: &str = "endpoint.input.sequence.v1";
+/// Server to client: the token's input up to `seq` is applied.
+pub const INPUT_ACK_KIND: &str = "endpoint.input.ack.v1";
+/// Client to server, on each new connection: how far did this token's input get?
+pub const INPUT_RESUME_KIND: &str = "endpoint.input.resume.v1";
+/// Server to client: the answer to [`INPUT_RESUME_KIND`].
+pub const INPUT_RESUMED_KIND: &str = "endpoint.input.resumed.v1";
+/// The longest input token a server keeps; a client's is 32 hex characters.
+pub const MAX_INPUT_TOKEN_BYTES: usize = 64;
+
+/// Numbers the input message that follows. A client picks a random `token` for
+/// each machine it talks to and numbers its input 1, 2, 3, ...
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointInputSequence {
+    pub token: String,
+    pub seq: u64,
+}
+
+/// `instance` names the server process: one that restarted has forgotten
+/// which input it applied before.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointInputAck {
+    pub token: String,
+    pub seq: u64,
+    pub instance: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointInputResume {
+    pub token: String,
+}
+
+/// `last_applied` is `None` when this server process applied none of the
+/// token's input.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EndpointInputResumed {
+    pub token: String,
+    pub instance: String,
+    #[serde(default)]
+    pub last_applied: Option<u64>,
+}
+
+/// A named control message carrying `value` as JSON.
+pub fn json_control<T: Serialize>(kind: &str, value: &T) -> Option<(String, String)> {
+    serde_json::to_string(value)
+        .ok()
+        .map(|data| (kind.to_owned(), data))
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EndpointAgentCompletions {
@@ -179,6 +232,7 @@ impl EndpointServerWelcome {
                 AGENT_VIEW_PROJECTION_CAPABILITY.into(),
                 AGENT_COMPLETIONS_CAPABILITY.into(),
                 BACKGROUND_ACTIVITY_CAPABILITY.into(),
+                INPUT_SEQUENCE_CAPABILITY.into(),
             ],
             error: None,
         }
@@ -391,7 +445,38 @@ mod tests {
                 AGENT_VIEW_PROJECTION_CAPABILITY.to_string(),
                 AGENT_COMPLETIONS_CAPABILITY.to_string(),
                 BACKGROUND_ACTIVITY_CAPABILITY.to_string(),
+                INPUT_SEQUENCE_CAPABILITY.to_string(),
             ]
+        );
+    }
+
+    #[test]
+    fn input_sequence_controls_round_trip_as_json() {
+        let ack = EndpointInputAck {
+            token: "t".into(),
+            seq: 7,
+            instance: "i".into(),
+        };
+        let (kind, data) = json_control(INPUT_ACK_KIND, &ack).unwrap();
+        assert_eq!(kind, INPUT_ACK_KIND);
+        assert_eq!(
+            serde_json::from_str::<EndpointInputAck>(&data).unwrap(),
+            ack
+        );
+        let resumed: EndpointInputResumed =
+            serde_json::from_str(r#"{"token":"t","instance":"i"}"#).unwrap();
+        assert_eq!(
+            resumed.last_applied, None,
+            "a missing count means none applied"
+        );
+        let sequence = EndpointInputSequence {
+            token: "t".into(),
+            seq: 1,
+        };
+        let (_, data) = json_control(INPUT_SEQUENCE_KIND, &sequence).unwrap();
+        assert_eq!(
+            serde_json::from_str::<EndpointInputSequence>(&data).unwrap(),
+            sequence
         );
     }
 

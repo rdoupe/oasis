@@ -7,6 +7,7 @@ mod activation;
 mod catalog;
 mod control;
 mod health;
+mod input_sequence;
 mod message_policy;
 mod registry;
 mod ssh_metadata;
