@@ -196,6 +196,8 @@ window.clawmux {{ background: {bg}; color: {fg}; }}
 .clawmux-sidebar .meta {{ color: {dim}; font-size: 0.86em; }}
 .clawmux-sidebar .number {{ color: {dim}; font-feature-settings: "tnum"; min-width: 1.2em; }}
 .clawmux-text-size {{ color: {dim}; font-size: 0.86em; padding: 6px 14px; border-top: 1px solid {raised}; }}
+.clawmux-text-size button {{ background: {raised}; color: {fg}; border: none; box-shadow: none; border-radius: 6px; padding: 2px 10px; }}
+.clawmux-text-size button:hover {{ background: alpha({fg}, 0.14); }}
 .touch .clawmux-text-size button {{ min-width: 52px; min-height: 40px; font-size: 1.1em; }}
 .clawmux-status {{ color: {dim}; font-size: 0.82em; padding: 8px 14px; border-top: 1px solid {raised}; }}
 .clawmux-tabs {{ background: {sidebar}; padding: 3px 6px; border-bottom: 1px solid {raised}; font-size: 0.85em; }}
