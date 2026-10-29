@@ -602,3 +602,25 @@ fn hiding_the_first_active_tab_focuses_the_next_and_renumbers() {
     assert_eq!(snapshot.tabs[0].number, 1);
     assert!(!CloseTarget::Tab("tab_1".into()).present_in(&snapshot));
 }
+
+#[test]
+fn an_agent_carries_the_name_its_pane_was_given() {
+    let mut local = snapshot(
+        vec![workspace("ws_l", 1, AgentStatus::Idle)],
+        vec![
+            agent("named", "ws_l", AgentStatus::Idle, 1),
+            agent("plain", "ws_l", AgentStatus::Idle, 2),
+        ],
+    );
+    local.panes[0].label = Some("review".into());
+    let model = SidebarModel::build(&[endpoint("local", &local)], &SidebarPrefs::default());
+    let label = |pane: &str| {
+        model
+            .agents
+            .iter()
+            .find(|agent| agent.pane_id == pane)
+            .and_then(|agent| agent.label.clone())
+    };
+    assert_eq!(label("named").as_deref(), Some("review"));
+    assert_eq!(label("plain"), None);
+}

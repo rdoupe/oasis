@@ -674,6 +674,9 @@ pub struct AgentEntry {
     pub focused: bool,
     /// The endpoint is offline; its rows are the last ones seen.
     pub stale: bool,
+    /// The name the pane was given (`pane.rename`), for front ends that lead
+    /// with it rather than with a token row.
+    pub label: Option<String>,
     pub rows: Vec<TokenRow>,
 }
 
@@ -742,6 +745,12 @@ impl SidebarModel {
                                     .and_then(crate::detect::parse_agent_label),
                                 focused: row.focused,
                                 stale: !endpoint.online,
+                                label: snapshot
+                                    .panes
+                                    .iter()
+                                    .find(|pane| pane.pane_id == agent.pane_id)
+                                    .and_then(|pane| pane.label.clone())
+                                    .filter(|label| !label.trim().is_empty()),
                                 rows: row.rows,
                             },
                         ))
