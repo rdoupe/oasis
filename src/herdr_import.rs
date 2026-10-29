@@ -53,6 +53,26 @@ pub const IMPORT_ITEMS: [ImportItem; 4] = [
 ];
 
 impl ImportItem {
+    /// The name `oasis import-herdr --apply` takes.
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Settings => "settings",
+            Self::Remotes => "remotes",
+            Self::Windows => "windows",
+            Self::Server => "server",
+        }
+    }
+
+    fn from_key(key: &str) -> Option<Self> {
+        match key {
+            "settings" => Some(Self::Settings),
+            "remotes" | "machines" => Some(Self::Remotes),
+            "windows" => Some(Self::Windows),
+            "server" => Some(Self::Server),
+            _ => None,
+        }
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Settings => "Settings",
@@ -488,6 +508,50 @@ pub fn run_import(
     report
 }
 
+/// One item of the offer `oasis import-herdr --list` prints.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OfferedItem {
+    pub item: ImportItem,
+    pub available: bool,
+    /// What the item brings when available, otherwise why it can't.
+    pub note: String,
+}
+
+/// The lines of `oasis import-herdr --list`, which the oasis on another
+/// machine reads to ask the import question when it installs oasis there:
+/// key, `yes` or `no`, then the detail or the reason, tab-separated.
+pub fn offer_lines(install: &HerdrInstall) -> Vec<String> {
+    IMPORT_ITEMS
+        .iter()
+        .map(|&item| match install.availability(item) {
+            Availability::Available => format!("{}\tyes\t{}", item.key(), item.detail()),
+            Availability::Unavailable(reason) => {
+                format!("{}\tno\t{}", item.key(), reason.replace(['\t', '\n'], " "))
+            }
+        })
+        .collect()
+}
+
+/// Reads `oasis import-herdr --list` output, skipping lines it doesn't know.
+pub fn parse_offer(text: &str) -> Vec<OfferedItem> {
+    text.lines()
+        .filter_map(|line| {
+            let mut fields = line.trim_end_matches('\r').splitn(3, '\t');
+            let item = ImportItem::from_key(fields.next()?)?;
+            let available = match fields.next()? {
+                "yes" => true,
+                "no" => false,
+                _ => return None,
+            };
+            Some(OfferedItem {
+                item,
+                available,
+                note: fields.next().unwrap_or_default().to_owned(),
+            })
+        })
+        .collect()
+}
+
 /// Parses the `--apply` item list of `oasis import-herdr`.
 pub fn parse_items(list: &str) -> Result<ImportPlan, String> {
     let mut plan = ImportPlan::default();
@@ -496,16 +560,10 @@ pub fn parse_items(list: &str) -> Result<ImportPlan, String> {
         .map(str::trim)
         .filter(|name| !name.is_empty())
     {
-        let item = match name {
-            "settings" => ImportItem::Settings,
-            "remotes" | "machines" => ImportItem::Remotes,
-            "windows" => ImportItem::Windows,
-            "server" => ImportItem::Server,
-            other => {
-                return Err(format!(
-                    "unknown import item {other:?}; use settings, remotes, windows or server"
-                ))
-            }
+        let Some(item) = ImportItem::from_key(name) else {
+            return Err(format!(
+                "unknown import item {name:?}; use settings, remotes, windows or server"
+            ));
         };
         plan.set(item, true);
     }
@@ -929,6 +987,23 @@ mod tests {
         assert!(parse_items("sessions")
             .unwrap_err()
             .contains("unknown import item"));
+    }
+
+    #[test]
+    fn the_offer_list_reads_back_with_reasons() {
+        let root = scratch_dir("offer");
+        let dirs = dirs(&root);
+        write(dirs.herdr_config.join("config.toml"), "");
+        let install = detect(&dirs, |_| ServerProbe::NotRunning).expect("settings offered");
+        let offer = parse_offer(&format!("banner\n{}\n", offer_lines(&install).join("\n")));
+        assert_eq!(offer.len(), IMPORT_ITEMS.len());
+        assert_eq!(offer[0].item, ImportItem::Settings);
+        assert!(offer[0].available);
+        assert_eq!(offer[0].note, ImportItem::Settings.detail());
+        let server = offer.iter().find(|o| o.item == ImportItem::Server).unwrap();
+        assert!(!server.available);
+        assert_eq!(server.note, "Herdr's server isn't running");
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]

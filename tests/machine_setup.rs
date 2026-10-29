@@ -30,8 +30,8 @@ case "$*" in
         if [ "$FAKE_WINDOWS" = yes ]; then printf '\n%s\n%s\n' 'herdr-remote-output-ready:1' 'herdr-windows:AMD64'; exit 0; fi
         exit 1 ;;
 esac
-if [ "$last" = 'command -v herdr' ]; then
-    if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi
+if [ "$last" = 'command -v oasis' ]; then
+    if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/oasis; fi
     exit 0
 fi
 case "$last" in
@@ -44,9 +44,9 @@ esac
 printf '\n%s\n' 'herdr-remote-output-ready:1'
 case "$script" in
     *'uname -s'*) echo platform >>"$FAKE_ROOT/probes"; uname -s; uname -m ;;
-    *'version='*)
+    *'emit() {'*)
         echo candidates >>"$FAKE_ROOT/probes"
-        if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi ;;
+        if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/oasis; fi ;;
     *'status client --json'*)
         if [ "$FAKE_INSTALLED" = new ] || [ -f "$FAKE_ROOT/installed" ]; then
             printf '%s\n' "$FAKE_CLIENT_STATUS"
@@ -72,7 +72,12 @@ case "$script" in
         echo start >>"$FAKE_ROOT/actions"; echo 'test startup failure' >&2; exit 1 ;;
     *'mkdir -p'*) printf '/fake/tmp\000/fake/herdr\000' ;;
     *'chmod 755'*) echo install >>"$FAKE_ROOT/actions"; touch "$FAKE_ROOT/installed" ;;
-    *'command -v herdr'*) if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/herdr; fi ;;
+    *'import-herdr --list'*)
+        if [ "$FAKE_HERDR" = yes ]; then
+            printf 'settings\tyes\tconfig, keys\nremotes\tno\tno saved machines found\nserver\tyes\tkeep running panes\n'
+        fi ;;
+    *'import-herdr --'*) echo "import ${script##*import-herdr }" >>"$FAKE_ROOT/actions"; echo 'copied config.toml' ;;
+    *'command -v oasis'*) if [ "$FAKE_INSTALLED" != missing ]; then echo /home/remote/.local/bin/oasis; fi ;;
     *'test -x '*) exit 1 ;;
     *) echo "unexpected fake SSH script: $script" >&2; exit 1 ;;
 esac
@@ -96,6 +101,9 @@ struct SetupOptions<'a> {
     noninteractive: bool,
     windows: bool,
     windows_transport_failure: bool,
+    /// A Herdr install on the fake machine, and the answer to every question
+    /// after the first.
+    herdr_answer: Option<&'a str>,
 }
 
 fn setup(installed: &str, answer: &str, handoff: bool) -> SetupResult {
@@ -188,6 +196,14 @@ fn setup_options(
     );
     command.env("FAKE_WINDOWS", if options.windows { "yes" } else { "no" });
     command.env(
+        "FAKE_HERDR",
+        if options.herdr_answer.is_some() {
+            "yes"
+        } else {
+            "no"
+        },
+    );
+    command.env(
         "FAKE_WINDOWS_TRANSPORT_FAILURE",
         if options.windows_transport_failure {
             "yes"
@@ -253,7 +269,7 @@ fn setup_options(
                         .write_all(if prompts == 0 {
                             answer.as_bytes()
                         } else {
-                            b"n\n"
+                            options.herdr_answer.unwrap_or("n\n").as_bytes()
                         })
                         .unwrap();
                     writer.flush().unwrap();
@@ -363,6 +379,69 @@ fn machine_add_fresh_host_offers_installation_and_cancellation_saves_nothing() {
         result.output
     );
     assert!(result.actions.is_empty(), "{}", result.output);
+}
+
+fn fresh_install_with_herdr(herdr_answer: &str) -> SetupResult {
+    setup_options(
+        "missing",
+        "y\n",
+        false,
+        false,
+        SetupOptions {
+            herdr_answer: Some(herdr_answer),
+            ..SetupOptions::default()
+        },
+    )
+}
+
+#[test]
+fn a_fresh_install_asks_the_herdr_import_with_the_server_off_by_default() {
+    let result = fresh_install_with_herdr("\n");
+    assert!(
+        result.output.contains("Herdr is set up on fake-host"),
+        "{}",
+        result.output
+    );
+    assert!(
+        result
+            .output
+            .contains("Saved machines: no saved machines found"),
+        "{}",
+        result.output
+    );
+    assert!(result.output.contains("[y/N]"), "{}", result.output);
+    // The fake machine's old server then asks to restart; that is not ours.
+    assert!(
+        result
+            .actions
+            .starts_with("install\nimport --apply settings\n"),
+        "{}",
+        result.output
+    );
+}
+
+#[test]
+fn a_fresh_install_takes_over_herdr_server_only_when_chosen() {
+    let result = fresh_install_with_herdr("y\n");
+    // The fake machine's old server then asks to restart; that is not ours.
+    assert!(
+        result
+            .actions
+            .starts_with("install\nimport --apply settings,server\n"),
+        "{}",
+        result.output
+    );
+}
+
+#[test]
+fn declining_every_herdr_item_records_the_decline_there() {
+    let result = fresh_install_with_herdr("n\n");
+    // The fake machine's old server then asks to restart; that is not ours.
+    assert!(
+        result.actions.starts_with("install\nimport --skip\n"),
+        "{}",
+        result.output
+    );
 }
 
 #[test]
