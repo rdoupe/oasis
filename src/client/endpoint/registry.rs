@@ -3,6 +3,7 @@ use std::io;
 use std::time::Instant;
 
 use super::health::{EndpointHealth, HealthAction};
+use super::input_sequence::InputSequence;
 use super::ClientEndpointId;
 use crate::protocol::ClientMessage;
 
@@ -63,6 +64,10 @@ impl EndpointNegotiation {
     pub(crate) fn supports_health_check(&self) -> bool {
         self.supports_capability(crate::protocol::endpoint::HEALTH_CHECK_CAPABILITY)
     }
+
+    pub(crate) fn supports_input_sequence(&self) -> bool {
+        self.supports_capability(crate::protocol::endpoint::INPUT_SEQUENCE_CAPABILITY)
+    }
 }
 
 pub(crate) struct EndpointConnection {
@@ -93,6 +98,9 @@ pub(crate) struct EndpointRegistry {
     connections: HashMap<ClientEndpointId, EndpointConnection>,
     failures: Vec<EndpointTransportFailure>,
     last_health_tick: Instant,
+    /// Numbered input per machine; it outlives connections so a reconnect can
+    /// send what the last one didn't deliver.
+    input_sequences: HashMap<ClientEndpointId, InputSequence>,
 }
 
 impl EndpointRegistry {
@@ -103,6 +111,7 @@ impl EndpointRegistry {
             connections: HashMap::new(),
             failures: Vec::new(),
             last_health_tick: Instant::now(),
+            input_sequences: HashMap::new(),
         }
     }
 
@@ -162,8 +171,9 @@ impl EndpointRegistry {
     ) {
         let health = (!endpoint_id.is_local() && negotiation.supports_health_check())
             .then(|| EndpointHealth::new(Instant::now()));
+        let numbered = negotiation.supports_input_sequence();
         if let Some(mut previous) = self.connections.insert(
-            endpoint_id,
+            endpoint_id.clone(),
             EndpointConnection {
                 transport: Box::new(transport),
                 generation,
@@ -174,6 +184,103 @@ impl EndpointRegistry {
         ) {
             previous.transport.disconnect();
         }
+        if numbered {
+            // Input waits until the server says how far this machine's input got.
+            let resume = self
+                .input_sequences
+                .entry(endpoint_id.clone())
+                .or_insert_with(InputSequence::new)
+                .begin_resume(generation);
+            self.send_to(&endpoint_id, &resume);
+        } else if let Some(mut sequence) = self.input_sequences.remove(&endpoint_id) {
+            let left = sequence.abandon();
+            if left.unknown > 0 {
+                tracing::warn!(
+                    endpoint = %endpoint_id.storage_key(),
+                    count = left.unknown,
+                    "input sent before the connection dropped may not have arrived"
+                );
+            }
+            for (_, message) in left.send {
+                if self.send_to(&endpoint_id, &message) != EndpointSendOutcome::Sent {
+                    break;
+                }
+            }
+        }
+    }
+
+    /// The server applied this machine's input up to the acknowledged number.
+    pub(crate) fn input_acked(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        ack: &crate::protocol::endpoint::EndpointInputAck,
+    ) {
+        if !self.accepts(endpoint_id, generation) {
+            return;
+        }
+        if let Some(sequence) = self.input_sequences.get_mut(endpoint_id) {
+            sequence.acked(ack);
+        }
+    }
+
+    /// The server said how far this machine's input got: sends the rest, in
+    /// order, ahead of anything typed since. Returns how many inputs went out
+    /// before the connection dropped and can't be accounted for, because the
+    /// server restarted; those are not sent again.
+    pub(crate) fn input_resumed(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        generation: u64,
+        answer: &crate::protocol::endpoint::EndpointInputResumed,
+    ) -> usize {
+        if !self.accepts(endpoint_id, generation) {
+            return 0;
+        }
+        let Some(resumed) = self
+            .input_sequences
+            .get_mut(endpoint_id)
+            .and_then(|sequence| sequence.resumed(generation, answer))
+        else {
+            return 0;
+        };
+        if !resumed.send.is_empty() {
+            tracing::info!(
+                endpoint = %endpoint_id.storage_key(),
+                count = resumed.send.len(),
+                "sending input the server had not applied"
+            );
+        }
+        for (seq, message) in &resumed.send {
+            if !self.send_numbered(endpoint_id, *seq, message) {
+                break;
+            }
+        }
+        resumed.unknown
+    }
+
+    /// Sends one numbered input: its number, then the input.
+    fn send_numbered(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        seq: u64,
+        message: &ClientMessage,
+    ) -> bool {
+        let Some(marker) = self
+            .input_sequences
+            .get(endpoint_id)
+            .map(|sequence| sequence.marker(seq))
+        else {
+            return false;
+        };
+        let sent = self.send_plain(endpoint_id, &marker) == EndpointSendOutcome::Sent
+            && self.send_plain(endpoint_id, message) == EndpointSendOutcome::Sent;
+        if sent {
+            if let Some(sequence) = self.input_sequences.get_mut(endpoint_id) {
+                sequence.mark_sent(seq);
+            }
+        }
+        sent
     }
 
     pub(crate) fn accepts(&self, endpoint_id: &ClientEndpointId, generation: u64) -> bool {
@@ -323,7 +430,41 @@ impl EndpointRegistry {
         self.send_to(&endpoint_id, message)
     }
 
+    /// Sends a message to a machine. Typed and pasted input to a server that
+    /// numbers it is kept until acknowledged; while a new connection waits to
+    /// hear how far earlier input got, it queues and counts as sent.
     pub(crate) fn send_to(
+        &mut self,
+        endpoint_id: &ClientEndpointId,
+        message: &ClientMessage,
+    ) -> EndpointSendOutcome {
+        // Between a dropped connection and its replacement, input for a machine
+        // that numbers it waits for the replacement as well.
+        let numbered = crate::client::held_input::is_input(message)
+            && match self.connections.get(endpoint_id) {
+                Some(connection) => connection.negotiation.supports_input_sequence(),
+                None => self.input_sequences.contains_key(endpoint_id),
+            };
+        if numbered {
+            let connected = self.connections.contains_key(endpoint_id);
+            let sequence = self
+                .input_sequences
+                .entry(endpoint_id.clone())
+                .or_insert_with(InputSequence::new);
+            let seq = sequence.number(message.clone(), Instant::now());
+            if sequence.awaiting() || !connected {
+                return EndpointSendOutcome::Sent;
+            }
+            return if self.send_numbered(endpoint_id, seq, message) {
+                EndpointSendOutcome::Sent
+            } else {
+                EndpointSendOutcome::NotSent
+            };
+        }
+        self.send_plain(endpoint_id, message)
+    }
+
+    fn send_plain(
         &mut self,
         endpoint_id: &ClientEndpointId,
         message: &ClientMessage,
@@ -643,6 +784,212 @@ mod tests {
         registry.tick_health(now + std::time::Duration::from_secs(80));
         assert!(registry.connection(&ssh_id).is_some());
         assert!(!registry.connection(&ssh_id).unwrap().surface_active);
+    }
+
+    fn numbering() -> EndpointNegotiation {
+        EndpointNegotiation::new(
+            Vec::new(),
+            vec![crate::protocol::endpoint::INPUT_SEQUENCE_CAPABILITY.into()],
+        )
+    }
+
+    fn typed(text: &str) -> ClientMessage {
+        ClientMessage::ClientShellPaneInput {
+            pane_id: "w1:p1".into(),
+            events: vec![crate::protocol::ClientPaneInputEvent::TextCommit(
+                text.into(),
+            )],
+        }
+    }
+
+    /// A server's read loop, as far as numbered input goes: it applies each
+    /// number once, through the same ledger the real server uses.
+    struct FakeServer {
+        ledger: crate::server::input_ledger::InputLedger,
+        instance: String,
+        applied: Vec<ClientMessage>,
+        acks: Vec<crate::protocol::endpoint::EndpointInputAck>,
+    }
+
+    impl FakeServer {
+        fn new(instance: &str) -> Self {
+            Self {
+                ledger: Default::default(),
+                instance: instance.into(),
+                applied: Vec::new(),
+                acks: Vec::new(),
+            }
+        }
+
+        /// Reads what a connection delivered; returns the resume answer, if asked.
+        fn read(
+            &mut self,
+            messages: &[ClientMessage],
+        ) -> Option<crate::protocol::endpoint::EndpointInputResumed> {
+            use crate::protocol::endpoint as wire;
+            let mut pending: Option<wire::EndpointInputSequence> = None;
+            let mut answer = None;
+            for message in messages {
+                match message {
+                    ClientMessage::EndpointControl { kind, data }
+                        if kind == wire::INPUT_SEQUENCE_KIND =>
+                    {
+                        pending = Some(serde_json::from_str(data).unwrap());
+                    }
+                    ClientMessage::EndpointControl { kind, data }
+                        if kind == wire::INPUT_RESUME_KIND =>
+                    {
+                        let resume: wire::EndpointInputResume = serde_json::from_str(data).unwrap();
+                        answer = Some(wire::EndpointInputResumed {
+                            last_applied: self.ledger.last_applied(&resume.token),
+                            token: resume.token,
+                            instance: self.instance.clone(),
+                        });
+                    }
+                    message if crate::client::held_input::is_input(message) => {
+                        let Some(sequence) = pending.take() else {
+                            self.applied.push(message.clone());
+                            continue;
+                        };
+                        if self.ledger.admits(&sequence.token, sequence.seq) {
+                            self.applied.push(message.clone());
+                            self.ledger
+                                .record(&sequence.token, sequence.seq, Instant::now());
+                        }
+                        self.acks.push(wire::EndpointInputAck {
+                            token: sequence.token,
+                            seq: sequence.seq,
+                            instance: self.instance.clone(),
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            answer
+        }
+    }
+
+    fn connect(
+        registry: &mut EndpointRegistry,
+        endpoint: &ClientEndpointId,
+        generation: u64,
+        negotiation: EndpointNegotiation,
+    ) -> Arc<Mutex<Vec<ClientMessage>>> {
+        let sent = Arc::new(Mutex::new(Vec::new()));
+        registry.insert(
+            endpoint.clone(),
+            FakeTransport {
+                sent: sent.clone(),
+                error: None,
+            },
+            generation,
+            negotiation,
+            true,
+        );
+        sent
+    }
+
+    fn drain(sent: &Arc<Mutex<Vec<ClientMessage>>>) -> Vec<ClientMessage> {
+        sent.lock().unwrap().drain(..).collect()
+    }
+
+    #[test]
+    fn input_reaches_the_server_exactly_once_across_a_dropped_connection() {
+        let endpoint = ClientEndpointId::Ssh(profile());
+        let mut server = FakeServer::new("srv");
+        let mut registry = EndpointRegistry::empty();
+
+        let first = connect(&mut registry, &endpoint, 1, numbering());
+        let answer = server.read(&drain(&first)).unwrap();
+        assert_eq!(registry.input_resumed(&endpoint, 1, &answer), 0);
+
+        for text in ["a", "b", "c"] {
+            registry.send_to(&endpoint, &typed(text));
+        }
+        // The server reads a and b; c is stuck in the stalled connection, and
+        // only a's acknowledgement gets back.
+        let in_flight = drain(&first);
+        assert_eq!(in_flight.len(), 6, "each input follows its number");
+        server.read(&in_flight[..4]);
+        let ack = server.acks[0].clone();
+        registry.input_acked(&endpoint, 1, &ack);
+
+        // The connection drops; d is typed before the next one is up.
+        registry.fail(
+            &endpoint,
+            io::Error::new(io::ErrorKind::TimedOut, "stalled"),
+        );
+        registry.send_to(&endpoint, &typed("d"));
+
+        let second = connect(&mut registry, &endpoint, 2, numbering());
+        registry.send_to(&endpoint, &typed("e"));
+        let resume = drain(&second);
+        assert_eq!(resume.len(), 1, "input waits for the server's answer");
+        let answer = server.read(&resume).unwrap();
+        assert_eq!(answer.last_applied, Some(2));
+        assert_eq!(registry.input_resumed(&endpoint, 2, &answer), 0);
+        server.read(&drain(&second));
+        // The stalled connection finally delivers its copy of c.
+        server.read(&in_flight[4..]);
+
+        assert_eq!(
+            server.applied,
+            ["a", "b", "c", "d", "e"].map(typed).to_vec(),
+            "every input once, in the order typed"
+        );
+    }
+
+    #[test]
+    fn a_restarted_server_gets_no_input_it_may_already_have() {
+        let endpoint = ClientEndpointId::Ssh(profile());
+        let mut old = FakeServer::new("old");
+        let mut registry = EndpointRegistry::empty();
+        let first = connect(&mut registry, &endpoint, 1, numbering());
+        let answer = old.read(&drain(&first)).unwrap();
+        registry.input_resumed(&endpoint, 1, &answer);
+        registry.send_to(&endpoint, &typed("a"));
+        drain(&first);
+        registry.fail(&endpoint, io::Error::new(io::ErrorKind::TimedOut, "gone"));
+
+        let mut restarted = FakeServer::new("new");
+        let second = connect(&mut registry, &endpoint, 2, numbering());
+        let answer = restarted.read(&drain(&second)).unwrap();
+        assert_eq!(answer.last_applied, None);
+        assert_eq!(
+            registry.input_resumed(&endpoint, 2, &answer),
+            1,
+            "a's fate is unknown, so it is reported, not typed again"
+        );
+        assert!(second.lock().unwrap().is_empty());
+        registry.send_to(&endpoint, &typed("b"));
+        restarted.read(&drain(&second));
+        assert_eq!(restarted.applied, vec![typed("b")]);
+    }
+
+    #[test]
+    fn a_server_without_numbering_gets_plain_input_as_before() {
+        let endpoint = ClientEndpointId::Ssh(profile());
+        let mut registry = EndpointRegistry::empty();
+        let sent = connect(&mut registry, &endpoint, 1, negotiation());
+        registry.send_to(&endpoint, &typed("a"));
+        assert_eq!(*sent.lock().unwrap(), vec![typed("a")]);
+    }
+
+    #[test]
+    fn answers_for_a_replaced_connection_are_ignored() {
+        let endpoint = ClientEndpointId::Ssh(profile());
+        let mut server = FakeServer::new("srv");
+        let mut registry = EndpointRegistry::empty();
+        let first = connect(&mut registry, &endpoint, 1, numbering());
+        let stale = server.read(&drain(&first)).unwrap();
+        let second = connect(&mut registry, &endpoint, 2, numbering());
+        assert_eq!(registry.input_resumed(&endpoint, 1, &stale), 0);
+        registry.send_to(&endpoint, &typed("a"));
+        assert_eq!(
+            second.lock().unwrap().len(),
+            1,
+            "still waiting on the new connection's answer"
+        );
     }
 
     #[test]

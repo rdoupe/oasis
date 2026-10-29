@@ -1343,6 +1343,26 @@ impl CoreLoop {
                     Ok(super::endpoint::EndpointControlMessage::Snapshot(snapshot)) => {
                         self.snapshot(&endpoint_id, generation, snapshot);
                     }
+                    Ok(super::endpoint::EndpointControlMessage::InputAck(ack)) => {
+                        self.registry.input_acked(&endpoint_id, generation, &ack);
+                    }
+                    Ok(super::endpoint::EndpointControlMessage::InputResumed(answer)) => {
+                        let unknown =
+                            self.registry
+                                .input_resumed(&endpoint_id, generation, &answer);
+                        if unknown > 0 {
+                            let message = format!(
+                                "{label}: {}",
+                                super::shell::input_may_be_lost_body(unknown)
+                            );
+                            self.shared.publish(|outbox| {
+                                outbox.event(CoreEvent::Error {
+                                    endpoint: id.clone(),
+                                    message,
+                                })
+                            });
+                        }
+                    }
                     Ok(_) => {}
                     Err(error) => {
                         tracing::warn!(endpoint = %endpoint_id.storage_key(), %error, "invalid endpoint control");

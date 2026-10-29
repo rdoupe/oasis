@@ -2141,6 +2141,23 @@ async fn run_client_loop(
                         }
                         let snapshot = match endpoint::decode_endpoint_control(&kind, &data) {
                             Ok(endpoint::EndpointControlMessage::HealthPong) => continue,
+                            Ok(endpoint::EndpointControlMessage::InputAck(ack)) => {
+                                write_stream.input_acked(&endpoint_id, generation, &ack);
+                                continue;
+                            }
+                            Ok(endpoint::EndpointControlMessage::InputResumed(answer)) => {
+                                let unknown =
+                                    write_stream.input_resumed(&endpoint_id, generation, &answer);
+                                if unknown > 0 {
+                                    if let Some(frame) = state.shell.as_mut().and_then(|shell| {
+                                        shell.show_input_may_be_lost(&endpoint_id, unknown);
+                                        shell.compose(state.reported_size.0, state.reported_size.1)
+                                    }) {
+                                        state.present_frame(frame);
+                                    }
+                                }
+                                continue;
+                            }
                             Ok(endpoint::EndpointControlMessage::AgentViewProjection(
                                 projection,
                             )) => {
