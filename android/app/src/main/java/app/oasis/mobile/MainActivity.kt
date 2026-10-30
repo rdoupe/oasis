@@ -341,7 +341,7 @@ private fun SectionHeader(text: String) {
     Text(
         text.uppercase(),
         color = Dim,
-        fontSize = 13.sp,
+        fontSize = 16.sp,
         fontWeight = FontWeight.Bold,
         letterSpacing = 1.5.sp,
         modifier = Modifier.padding(start = 20.dp, end = 8.dp, top = 18.dp, bottom = 8.dp),
@@ -373,8 +373,8 @@ private fun UpdateBanner(core: Core, update: Updater.Update) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
-            Text("Update ready", color = Foreground, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
-            Text(state, color = Dim, fontSize = 13.sp)
+            Text("Update ready", color = Foreground, fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+            Text(state, color = Dim, fontSize = 16.sp)
         }
         Button(onClick = { core.updater.install(update) }) { Text("Install") }
     }
@@ -392,11 +392,11 @@ private fun TailscaleBanner(machines: List<Machine>) {
             .background(Raised)
             .padding(16.dp),
     ) {
-        Text("Tailscale is off", color = Foreground, fontSize = 17.sp, fontWeight = FontWeight.SemiBold)
+        Text("Tailscale is off", color = Foreground, fontSize = 20.sp, fontWeight = FontWeight.SemiBold)
         Text(
             "$names ${if (machines.size == 1) "is" else "are"} on your tailnet. Turn Tailscale on and Oasis reconnects by itself.",
             color = Dim,
-            fontSize = 15.sp,
+            fontSize = 18.sp,
             modifier = Modifier.padding(top = 4.dp, bottom = 10.dp),
         )
         val launch = context.packageManager.getLaunchIntentForPackage(Core.TAILSCALE)
@@ -417,10 +417,10 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(machine.status, 10)
             Spacer(Modifier.width(10.dp))
-            Text(machine.label.uppercase(), color = Dim, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
+            Text(machine.label.uppercase(), color = Dim, fontSize = 16.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
             if (machine.status == "not_responding" && !waitsForTailscale) {
                 Spacer(Modifier.width(10.dp))
-                Text("◌ not responding", color = Yellow, fontSize = 13.sp)
+                Text("◌ not responding", color = Yellow, fontSize = 16.sp)
             }
             Spacer(Modifier.weight(1f))
             if (!waitsForTailscale && (machine.status == "attention" || machine.status == "reconnecting")) {
@@ -428,9 +428,9 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
             }
         }
         if (waitsForTailscale) {
-            Text("Waiting for Tailscale", color = Dim, fontSize = 13.sp)
+            Text("Waiting for Tailscale", color = Dim, fontSize = 16.sp)
         } else if (machine.detail.isNotBlank() && machine.status != "online") {
-            Text(machine.detail, color = statusColor(machine.status), fontSize = 13.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
+            Text(machine.detail, color = statusColor(machine.status), fontSize = 16.sp, maxLines = 3, overflow = TextOverflow.Ellipsis)
         }
     }
 }
@@ -445,13 +445,13 @@ private fun SpaceRow(space: Space, agents: Int, onLongClick: () -> Unit, onClick
         Text(
             space.name.ifBlank { "space" },
             color = if (empty) Dim else Foreground,
-            fontSize = 15.sp,
+            fontSize = 18.sp,
             fontWeight = if (empty) FontWeight.Normal else FontWeight.SemiBold,
             maxLines = 1,
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f),
         )
-        Text(if (empty) "open" else if (agents == 1) "1 agent" else "$agents agents", color = Dim, fontSize = 13.sp)
+        Text(if (empty) "open" else if (agents == 1) "1 agent" else "$agents agents", color = Dim, fontSize = 16.sp)
     }
 }
 
@@ -494,26 +494,26 @@ private fun AgentCard(agent: Agent, place: String, stale: Boolean, onLongClick: 
                 Text(
                     agent.title,
                     color = Color.White,
-                    fontSize = 19.sp,
+                    fontSize = 22.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
                     modifier = Modifier.weight(1f, fill = false),
                 )
                 Spacer(Modifier.width(8.dp))
-                Text(statusWord(agent.status), color = statusColor(agent.status), fontSize = 13.sp, maxLines = 1)
+                Text(statusWord(agent.status), color = statusColor(agent.status), fontSize = 16.sp, maxLines = 1)
             }
             if (agent.activity.isNotEmpty() || agent.detail.isNotBlank()) {
                 Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(top = 2.dp)) {
                     ActivityIcons(agent.activity)
                     if (agent.detail.isNotBlank()) {
                         if (agent.activity.isNotEmpty()) Spacer(Modifier.width(10.dp))
-                        Text(agent.detail, color = Dim, fontSize = 14.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                        Text(agent.detail, color = Dim, fontSize = 17.sp, maxLines = 1, overflow = TextOverflow.Ellipsis)
                     }
                 }
             }
             if (place.isNotBlank()) {
-                Text(place, color = Dim, fontSize = 12.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
+                Text(place, color = Dim, fontSize = 15.sp, maxLines = 1, overflow = TextOverflow.Ellipsis, modifier = Modifier.padding(top = 2.dp))
             }
         }
     }
@@ -547,7 +547,7 @@ private fun LongPressMenu(open: Boolean, dismiss: () -> Unit, press: PressPoint,
     DropdownMenu(open, dismiss, offset = offset, containerColor = Raised) {
         for ((label, action) in MenuItems().apply(build).items) {
             DropdownMenuItem(
-                text = { Text(label, fontSize = 16.sp) },
+                text = { Text(label, fontSize = 19.sp) },
                 onClick = {
                     dismiss()
                     action()
@@ -630,13 +630,13 @@ private fun ActivityIcons(parts: List<Activity>) {
                 if (index > 0) append("  ")
                 withStyle(androidx.compose.ui.text.SpanStyle(color = Color(part.color))) {
                     if (part.icon.isNotEmpty()) {
-                        withStyle(androidx.compose.ui.text.SpanStyle(fontFamily = nerd, fontSize = 17.sp)) { append(part.icon) }
+                        withStyle(androidx.compose.ui.text.SpanStyle(fontFamily = nerd, fontSize = 20.sp)) { append(part.icon) }
                     }
                     if (part.detail.isNotEmpty()) append((if (part.icon.isNotEmpty()) " " else "") + part.detail)
                 }
             }
         },
-        fontSize = 14.sp,
+        fontSize = 17.sp,
         maxLines = 1,
     )
 }
@@ -685,13 +685,13 @@ private fun TerminalScreen(
                     Column {
                         Text(
                             live?.title ?: screen.title,
-                            fontSize = 17.sp,
+                            fontSize = 20.sp,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
                             live?.machine ?: screen.subtitle,
-                            fontSize = 13.sp,
+                            fontSize = 16.sp,
                             color = Dim,
                             maxLines = 1,
                             overflow = TextOverflow.Ellipsis,
@@ -726,7 +726,7 @@ private fun StalledBar(machine: String) {
     Text(
         "◌ $machine isn't responding · the connection has stalled · what you type is sent once it answers",
         color = Background,
-        fontSize = 13.sp,
+        fontSize = 16.sp,
         modifier = Modifier.fillMaxWidth().background(Yellow).padding(horizontal = 14.dp, vertical = 6.dp),
     )
 }
@@ -763,7 +763,7 @@ private fun ActionChip(label: String, onClick: () -> Unit) {
             .padding(horizontal = 14.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = Foreground, fontSize = 14.sp)
+        Text(label, color = Foreground, fontSize = 17.sp)
     }
 }
 
@@ -808,7 +808,7 @@ private fun ExtraKey(label: String, active: Boolean = false, onClick: () -> Unit
             .padding(horizontal = 10.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Text(label, color = if (active) Foreground else Foreground.copy(alpha = 0.85f), fontSize = 16.sp, fontFamily = FontFamily.Monospace)
+        Text(label, color = if (active) Foreground else Foreground.copy(alpha = 0.85f), fontSize = 19.sp, fontFamily = FontFamily.Monospace)
     }
 }
 
@@ -829,7 +829,7 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
         LazyColumn(Modifier.fillMaxSize().padding(horizontal = 20.dp)) {
             item {
                 Heading("Terminal text size")
-                Text("${font} sp  (pinch the terminal to change it too)", color = Dim, fontSize = 14.sp)
+                Text("${font} sp  (pinch the terminal to change it too)", color = Dim, fontSize = 17.sp)
                 Slider(
                     value = font,
                     onValueChange = { font = Math.round(it * 2) / 2f },
@@ -851,8 +851,8 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
             items(machines, key = { it.label }) { m ->
                 Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
                     Column(Modifier.weight(1f)) {
-                        Text(m.label, color = Foreground, fontSize = 16.sp)
-                        Text(m.target, color = Dim, fontSize = 13.sp)
+                        Text(m.label, color = Foreground, fontSize = 19.sp)
+                        Text(m.target, color = Dim, fontSize = 16.sp)
                     }
                     IconButton(onClick = { machines = machines - m }) { Icon(Icons.Default.Delete, "Remove", tint = Dim) }
                 }
@@ -884,7 +884,7 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
                 Text(
                     "Version ${BuildConfig.VERSION_NAME}" + if (updateState.isNotBlank()) " · $updateState" else "",
                     color = Dim,
-                    fontSize = 14.sp,
+                    fontSize = 17.sp,
                 )
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { core.updater.check(always = true) }) { Text("Check for update") }
@@ -895,12 +895,12 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
                 Text(
                     "Add it to ~/.ssh/authorized_keys on each machine.",
                     color = Dim,
-                    fontSize = 14.sp,
+                    fontSize = 17.sp,
                 )
                 Text(
                     core.publicKey.ifBlank { "(not made yet)" },
                     fontFamily = FontFamily.Monospace,
-                    fontSize = 12.sp,
+                    fontSize = 15.sp,
                     color = Foreground,
                     modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp).background(Raised).padding(10.dp),
                 )
@@ -916,5 +916,5 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
 
 @Composable
 private fun Heading(text: String) {
-    Text(text, color = Accent, fontSize = 14.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp, bottom = 6.dp))
+    Text(text, color = Accent, fontSize = 17.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(top = 20.dp, bottom = 6.dp))
 }
