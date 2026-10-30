@@ -198,7 +198,7 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
 
     fun openAgent(agent: Agent) {
         core.openAgent(agent)
-        screen = Screen.Terminal(agent.title, "${agent.machine} · ${spaceName(core, agent)}", agent, agent.endpoint)
+        screen = Screen.Terminal(agent.title, agent.machine, agent, agent.endpoint)
     }
 
     Box(Modifier.fillMaxSize()) {
@@ -283,19 +283,19 @@ private fun AgentsScreen(
                     Box(Modifier.tracksPress(press)) {
                         AgentCard(
                             agent,
-                            place = "${agent.machine} · ${spaceName(core, agent)}".trimEnd(' ', '·'),
+                            place = agent.machine,
                             stale = agent.stale || stalled,
                             onLongClick = { menu = true },
                         ) { onAgent(agent) }
                         LongPressMenu(menu, { menu = false }, press) {
                             item("Open") { onAgent(agent) }
                             item("Rename") {
-                                ask = Ask.Rename("Rename this pane", agent.title) { label ->
+                                ask = Ask.Rename("Rename this pane", agent.label.orEmpty()) { label ->
                                     core.request(agent.endpoint, "pane.rename", mapOf("pane_id" to agent.pane, "label" to label))
                                 }
                             }
                             item("Close") {
-                                ask = Ask.Confirm("Close this pane?", "${agent.title} and what runs in it stop.") {
+                                ask = Ask.Confirm("Close this pane?", "${agent.label ?: agent.title} and what runs in it stop.") {
                                     core.request(agent.endpoint, "pane.close", mapOf("pane_id" to agent.pane))
                                 }
                             }
@@ -455,11 +455,6 @@ private fun SpaceRow(space: Space, agents: Int, onLongClick: () -> Unit, onClick
     }
 }
 
-/** The name of the space an agent runs in, as its machine reports it. */
-private fun spaceName(core: Core, agent: Agent) =
-    core.machines.value.firstOrNull { it.id == agent.endpoint }
-        ?.spaces?.firstOrNull { it.id == agent.space }?.name.orEmpty()
-
 /** The agent tool's logo, or nothing when the app has none for it. */
 @Composable
 private fun AgentLogo(agent: Agent, size: Int = 22) {
@@ -495,10 +490,11 @@ private fun AgentCard(agent: Agent, place: String, stale: Boolean, onLongClick: 
         if (agent.logo != null) Spacer(Modifier.width(12.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                // The space's name, big and white, as the tablet and the TUI show it.
                 Text(
                     agent.title,
-                    color = Foreground,
-                    fontSize = 16.sp,
+                    color = Color.White,
+                    fontSize = 19.sp,
                     fontWeight = FontWeight.SemiBold,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -694,7 +690,7 @@ private fun TerminalScreen(
                             overflow = TextOverflow.Ellipsis,
                         )
                         Text(
-                            live?.let { "${it.machine} · ${spaceName(core, it)}" } ?: screen.subtitle,
+                            live?.machine ?: screen.subtitle,
                             fontSize = 13.sp,
                             color = Dim,
                             maxLines = 1,

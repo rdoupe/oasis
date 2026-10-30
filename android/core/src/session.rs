@@ -413,35 +413,7 @@ fn agents_json(model: &SidebarModel) -> Value {
         .iter()
         .map(|agent| {
             let logo = logo(agent.agent);
-            // The app lists agents under their machine and space headings, so the
-            // rows leave those names out; what is left leads with the agent's own
-            // title (Claude's session summary), then its background work.
-            let rows: Vec<TokenRow> = agent
-                .rows
-                .iter()
-                .map(|row| {
-                    row.iter()
-                        .filter(|token| {
-                            !matches!(
-                                token.kind,
-                                ResolvedTokenKind::Workspace(_) | ResolvedTokenKind::Machine(_)
-                            )
-                        })
-                        .cloned()
-                        .collect()
-                })
-                .collect();
-            let mut lines = rows_text(&rows, logo.is_some());
-            if lines.len() > 1 {
-                let first = lines.remove(0);
-                lines.push(first);
-            }
-            // A pane someone renamed leads with that name; the agent's own title
-            // moves down beside its background work.
-            if let Some(label) = &agent.label {
-                lines.retain(|line| line != label);
-                lines.insert(0, label.clone());
-            }
+            let lines = card_lines(&agent.rows, logo.is_some(), agent.label.as_deref());
             json!({
                 "endpoint": agent.endpoint,
                 "machine": agent.machine_label,
@@ -450,6 +422,7 @@ fn agents_json(model: &SidebarModel) -> Value {
                 "status": status_name(agent.status),
                 "agent": agent.agent.map(|a| format!("{a:?}")),
                 "logo": logo,
+                "label": agent.label,
                 "title": lines.first().cloned().unwrap_or_default(),
                 "detail": lines[1.min(lines.len())..].join("  "),
                 "activity": activity_json(&agent.rows),
@@ -458,6 +431,34 @@ fn agents_json(model: &SidebarModel) -> Value {
             })
         })
         .collect()
+}
+
+/// An agent card's lines, title first. Rows keep the order the sidebar config
+/// lays them out, as the TUI and the tablet show them, so the title leads with
+/// the space's name. The card names the machine on a line of its own, so the
+/// machine is left out, and the title drops the tab, as the tablet's does. A
+/// pane someone renamed shows that name first under the title.
+fn card_lines(rows: &[TokenRow], logo: bool, label: Option<&str>) -> Vec<String> {
+    let rows: Vec<TokenRow> = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| {
+            row.iter()
+                .filter(|token| match token.kind {
+                    ResolvedTokenKind::Machine(_) => false,
+                    ResolvedTokenKind::Tab(_) => index > 0,
+                    _ => true,
+                })
+                .cloned()
+                .collect()
+        })
+        .collect();
+    let mut lines = rows_text(&rows, logo);
+    if let Some(label) = label {
+        lines.retain(|line| line != label);
+        lines.insert(1.min(lines.len()), label.to_owned());
+    }
+    lines
 }
 
 /// Each token row as plain text, in the order the person's sidebar config lays it
@@ -628,5 +629,27 @@ mod tests {
         assert_eq!(activity.as_array().map(Vec::len), Some(1), "the mark is not background work");
         assert_eq!(activity[0]["icon"], "\u{f06a9}");
         assert_eq!(activity[0]["detail"], "2");
+    }
+
+    #[test]
+    fn a_card_is_titled_by_its_space_with_the_pane_name_under_it() {
+        use oasis_core::embed::sidebar::{ResolvedToken, SidebarTokenStyle};
+        let token = |kind| ResolvedToken {
+            kind,
+            style: SidebarTokenStyle::default(),
+        };
+        // The default agent rows: machine, space and tab, then the agent.
+        let rows = vec![
+            vec![
+                token(ResolvedTokenKind::StateIcon),
+                token(ResolvedTokenKind::Machine("server".into())),
+                token(ResolvedTokenKind::Workspace("oasis".into())),
+                token(ResolvedTokenKind::Tab("1".into())),
+            ],
+            vec![token(ResolvedTokenKind::Agent("Claude".into()))],
+        ];
+        assert_eq!(card_lines(&rows, false, None), vec!["oasis", "Claude"]);
+        assert_eq!(card_lines(&rows, true, None), vec!["oasis"]);
+        assert_eq!(card_lines(&rows, true, Some("review")), vec!["oasis", "review"]);
     }
 }

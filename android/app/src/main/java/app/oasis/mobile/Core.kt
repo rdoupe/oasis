@@ -42,6 +42,8 @@ data class Agent(
     /** The bundled logo for the agent's tool (`logo_<name>`), when there is one. */
     val logo: String?,
     val title: String,
+    /** The name someone gave the pane, when it was renamed. */
+    val label: String?,
     val detail: String,
     val stale: Boolean,
     val activity: List<Activity>,
@@ -365,6 +367,7 @@ class Core(private val context: Context) {
                 agent = if (a.isNull("agent")) null else a.getString("agent"),
                 logo = if (a.isNull("logo")) null else a.getString("logo"),
                 title = a.getString("title"),
+                label = if (a.isNull("label")) null else a.getString("label").ifBlank { null },
                 detail = a.getString("detail"),
                 stale = a.optBoolean("stale"),
                 activity = a.optJSONArray("activity")?.let { parts ->
