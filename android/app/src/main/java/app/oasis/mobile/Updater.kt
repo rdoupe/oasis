@@ -64,6 +64,8 @@ class Updater(private val context: Context, private val core: Core) {
 
     /** Fetches the update, checks it, and installs it. */
     fun install(update: Update) {
+        if (installing.value) return
+        installing.value = true
         state.value = "downloading ${update.versionName}…"
         thread(name = "oasis-update-install") {
             val apk = File(context.cacheDir, "update.apk")
@@ -83,7 +85,10 @@ class Updater(private val context: Context, private val core: Core) {
             }
             main.post {
                 state.value = failure ?: "installing ${update.versionName}…"
-                failure?.let { core.notice.value = it }
+                failure?.let {
+                    installing.value = false
+                    core.notice.value = it
+                }
             }
         }
     }
@@ -111,6 +116,9 @@ class Updater(private val context: Context, private val core: Core) {
         const val DIR = ".local/share/oasis/android"
         const val CHECK_EVERY_MS = 60 * 60 * 1000L
 
+        /** True from tapping Install until Android replaces the app or the install fails. */
+        val installing = mutableStateOf(false)
+
         fun sha256(file: File): String {
             val digest = MessageDigest.getInstance("SHA-256")
             file.inputStream().use { input ->
@@ -137,6 +145,7 @@ class InstallResult : BroadcastReceiver() {
             }
             PackageInstaller.STATUS_SUCCESS -> Unit
             else -> {
+                Updater.installing.value = false
                 val message = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE)
                 Log.w(Core.TAG, "update not installed: $status $message")
                 android.widget.Toast.makeText(context, "Update not installed: ${message ?: status}", android.widget.Toast.LENGTH_LONG).show()

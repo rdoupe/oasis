@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -399,6 +400,7 @@ private fun StatusDot(status: String, size: Int = 12) {
 @Composable
 private fun UpdateBanner(core: Core, update: Updater.Update) {
     val state by core.updater.state
+    val installing by Updater.installing
     Row(
         Modifier
             .fillMaxWidth()
@@ -412,7 +414,11 @@ private fun UpdateBanner(core: Core, update: Updater.Update) {
             Text("Update ready", color = Foreground, fontSize = 16.sp, fontWeight = FontWeight.SemiBold)
             Text(state, color = Dim, fontSize = 13.sp)
         }
-        Button(onClick = { core.updater.install(update) }) { Text("Install") }
+        if (installing) {
+            CircularProgressIndicator(Modifier.size(28.dp), color = Accent, strokeWidth = 3.dp)
+        } else {
+            Button(onClick = { core.updater.install(update) }) { Text("Install") }
+        }
     }
 }
 
@@ -979,7 +985,12 @@ private fun SettingsScreen(core: Core, terminal: TerminalView, onBack: () -> Uni
                 )
                 Row(Modifier.padding(vertical = 8.dp), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     OutlinedButton(onClick = { core.updater.check(always = true) }) { Text("Check for update") }
-                    update?.let { Button(onClick = { core.updater.install(it) }) { Text("Install ${it.versionName}") } }
+                    val installing by Updater.installing
+                    if (installing) {
+                        CircularProgressIndicator(Modifier.size(28.dp).align(Alignment.CenterVertically), color = Accent, strokeWidth = 3.dp)
+                    } else {
+                        update?.let { Button(onClick = { core.updater.install(it) }) { Text("Install ${it.versionName}") } }
+                    }
                 }
                 HorizontalDivider(Modifier.padding(vertical = 12.dp))
                 Heading("This phone's ssh key")
