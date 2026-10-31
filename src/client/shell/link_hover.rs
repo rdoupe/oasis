@@ -48,6 +48,13 @@ impl ClientShellState {
     }
 
     fn link_hover_target_current(&self, target: &LinkHoverTarget) -> bool {
+        self.link_hover_target_live(target) && self.link_hover_target_on_screen(target)
+    }
+
+    /// The hovered place still exists in the presented surface. Screen hit
+    /// targets are not consulted: a new snapshot clears them until the next
+    /// compose, which says nothing about the pane having moved.
+    fn link_hover_target_live(&self, target: &LinkHoverTarget) -> bool {
         self.link_hover_allowed()
             && self.pane_surface.as_ref().is_some_and(|surface| {
                 self.snapshot.as_ref().is_some_and(|snapshot| {
@@ -61,11 +68,13 @@ impl ClientShellState {
                             == target.offset_from_bottom
                 })
             })
-            && self
-                .hits
-                .panes
-                .iter()
-                .any(|hit| hit.pane_id == target.pane_id && hit.inner_rect == target.inner_rect)
+    }
+
+    fn link_hover_target_on_screen(&self, target: &LinkHoverTarget) -> bool {
+        self.hits
+            .panes
+            .iter()
+            .any(|hit| hit.pane_id == target.pane_id && hit.inner_rect == target.inner_rect)
     }
 
     /// Keeps a hover across redraws of its pane. Agent UIs redraw constantly, so
@@ -75,7 +84,7 @@ impl ClientShellState {
         let Some(hover) = self.link_hover.as_ref() else {
             return;
         };
-        if self.link_hover_target_current(&hover.target) {
+        if self.link_hover_target_live(&hover.target) {
             return;
         }
         let revision = self.pane_surface.as_ref().and_then(|surface| {
@@ -94,7 +103,7 @@ impl ClientShellState {
             content_revision,
             ..hover.target.clone()
         });
-        match retargeted.filter(|target| self.link_hover_target_current(target)) {
+        match retargeted.filter(|target| self.link_hover_target_live(target)) {
             Some(target) => self.retarget_link_hover(target),
             None => {
                 self.clear_link_hover();
@@ -130,10 +139,11 @@ impl ClientShellState {
     }
 
     /// Whether a hover is waiting to be resolved and nothing is in flight.
+    /// It also waits for the next compose to place its pane on screen again.
     pub(super) fn link_hover_resolve_due(&self) -> bool {
         self.link_hover
             .as_ref()
-            .is_some_and(|hover| !hover.resolved)
+            .is_some_and(|hover| !hover.resolved && self.link_hover_target_on_screen(&hover.target))
             && !self.link_hover_resolve_blocked()
     }
 

@@ -250,6 +250,33 @@ fn hover_survives_redraws_and_re_resolves_the_new_revision() {
     assert!(state.timer_delay(now) > std::time::Duration::ZERO);
 }
 
+/// A remote agent's status changes advance the snapshot ahead of its pane
+/// surface. Neither order of the pair may drop a still pointer's underline.
+#[test]
+fn hover_survives_a_new_snapshot_and_its_surface() {
+    for surface_first in [false, true] {
+        let mut state = hovered_state();
+        let mut next_snapshot = snapshot();
+        next_snapshot.revision = 2;
+        let mut next = surface();
+        next.projection_revision = 2;
+        next.surface_revision += 1;
+        next.panes[0].content_revision += 2;
+        if surface_first {
+            state.set_pane_surface(next);
+            state.set_snapshot(Box::new(next_snapshot));
+        } else {
+            state.set_snapshot(Box::new(next_snapshot));
+            state.set_pane_surface(next);
+        }
+        assert_eq!(
+            underlined_cells(&mut state),
+            6,
+            "surface first: {surface_first}"
+        );
+    }
+}
+
 #[test]
 fn hover_survives_content_patches() {
     let mut state = hovered_state();
