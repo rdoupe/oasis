@@ -17,6 +17,7 @@ android {
         // android/build.sh numbers each build by the minute so a newer one always updates.
         versionCode = (findProperty("oasisVersionCode") as String?)?.toInt() ?: 1
         versionName = (findProperty("oasisVersionName") as String?) ?: "0.1.0"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     buildTypes {
@@ -51,4 +52,6 @@ dependencies {
     implementation("androidx.compose.material3:material3")
     implementation("androidx.compose.material:material-icons-extended")
     implementation("androidx.compose.ui:ui")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
 }

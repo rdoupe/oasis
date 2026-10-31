@@ -215,6 +215,7 @@ class Core(private val context: Context) {
     /** Keys for the pane as they are, without the armed Ctrl or Alt from the key row. */
     fun keys(vararg keys: Pair<Int, Int>) {
         if (handle == 0L) return
+        terminal?.resetInput()
         for ((code, modifiers) in keys) Native.key(handle, code, modifiers)
     }
 

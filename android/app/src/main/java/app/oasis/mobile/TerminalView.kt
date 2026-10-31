@@ -23,7 +23,6 @@ import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.ScaleGestureDetector
 import android.view.View
-import android.view.inputmethod.BaseInputConnection
 import android.view.inputmethod.EditorInfo
 import android.view.inputmethod.InputConnection
 import android.view.inputmethod.InputMethodManager
@@ -213,58 +212,48 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
     override fun onCheckIsTextEditor() = true
 
     override fun onCreateInputConnection(outAttrs: EditorInfo): InputConnection {
-        // Plain text without auto-capitalize: suggestions, swipe and voice typing still
-        // work, and each committed word goes straight to the pane.
+        // Plain text without auto-capitalize: suggestions, swipe and voice typing
+        // work as in a text field, and each finished word goes straight to the pane.
         outAttrs.inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_AUTO_CORRECT
         outAttrs.imeOptions = EditorInfo.IME_FLAG_NO_EXTRACT_UI or EditorInfo.IME_FLAG_NO_FULLSCREEN or
             EditorInfo.IME_ACTION_NONE or EditorInfo.IME_FLAG_NO_ENTER_ACTION
-        return TerminalInput()
+        // A fresh, empty line with the cursor at its start; keyboards (Gboard's voice
+        // typing among them) place their text from this and the updates that follow.
+        outAttrs.initialSelStart = 0
+        outAttrs.initialSelEnd = 0
+        setComposing("")
+        return TerminalInputConnection(this, sink).also { input = it }
     }
 
-    private inner class TerminalInput : BaseInputConnection(this@TerminalView, true) {
-        override fun commitText(text: CharSequence, newCursorPosition: Int): Boolean {
-            setComposing("")
-            super.commitText(text, newCursorPosition)
-            send(text.toString())
-            trimEditable()
-            return true
+    private var input: TerminalInputConnection? = null
+
+    private val sink = object : TerminalInputSink {
+        override fun text(text: String) {
+            if (core.handle != 0L) Native.text(core.handle, text)
         }
 
-        override fun setComposingText(text: CharSequence, newCursorPosition: Int): Boolean {
-            super.setComposingText(text, newCursorPosition)
-            setComposing(text.toString())
-            return true
+        override fun key(code: Int) {
+            if (core.handle != 0L) Native.key(core.handle, code, 0)
         }
 
-        override fun finishComposingText(): Boolean {
-            val text = composing
-            setComposing("")
-            super.finishComposingText()
-            if (text.isNotEmpty()) send(text)
-            return true
+        override fun modifierArmed() = core.ctrl.value || core.alt.value
+
+        override fun modifiedChar(text: String) {
+            val mods = armedModifiers()
+            if (core.handle != 0L) Native.key(core.handle, Keys.char(text.lowercase().codePointAt(0)), mods)
         }
 
-        override fun deleteSurroundingText(beforeLength: Int, afterLength: Int): Boolean {
-            repeat(beforeLength.coerceAtMost(64)) { key(Keys.BACKSPACE) }
-            repeat(afterLength.coerceAtMost(64)) { key(Keys.DELETE) }
-            return super.deleteSurroundingText(beforeLength, afterLength)
-        }
+        override fun composing(text: String) = setComposing(text)
+    }
 
-        override fun sendKeyEvent(event: KeyEvent): Boolean {
-            if (event.action == KeyEvent.ACTION_DOWN) onKeyDown(event.keyCode, event)
-            return true
-        }
-
-        override fun performEditorAction(actionCode: Int): Boolean {
-            key(Keys.ENTER)
-            return true
-        }
-
-        /** Keeps a little text for the keyboard's context, never an unbounded buffer. */
-        private fun trimEditable() {
-            val editable = editable ?: return
-            if (editable.length > 200) editable.delete(0, editable.length - 100)
-        }
+    /**
+     * Before a key or other input from outside the keyboard: sends what the keyboard
+     * is still composing, so dictated or typed text lands before the key, then starts
+     * the keyboard on a fresh line.
+     */
+    fun resetInput() {
+        input?.reset()
+        setComposing("")
     }
 
     private fun setComposing(text: String) {
@@ -274,7 +263,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         }
     }
 
-    /** Typed text, sent as a Ctrl/Alt key when one is armed on the extra-keys row. */
+    /** Typed text from a hardware keyboard, sent as a Ctrl/Alt key when one is armed. */
     private fun send(text: String) {
         if (text.isEmpty() || core.handle == 0L) return
         val mods = armedModifiers()
@@ -289,6 +278,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
 
     fun key(code: Int, modifiers: Int = 0) {
         if (core.handle == 0L) return
+        resetInput()
         Native.key(core.handle, code, modifiers or armedModifiers())
     }
 
@@ -325,6 +315,8 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
             else -> null
         }
         if (named != null) {
+            // From a hardware keyboard, or the soft keyboard's Enter: key() first sends
+            // any composing text, so a dictated line is submitted with its text.
             key(named, if (named == Keys.BACK_TAB) mods and Keys.SHIFT.inv() else mods)
             return true
         }
@@ -408,6 +400,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
                 // remote app doesn't also act on it.
                 val link = Native.linkAt(core.handle, col, row)
                 if (link != null && openLink(link)) return true
+                resetInput()
                 Native.tap(core.handle, col, row)
                 showKeyboard()
                 return true
@@ -585,6 +578,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         val clip = context.getSystemService(ClipboardManager::class.java).primaryClip ?: return
         if (clip.itemCount == 0 || core.handle == 0L) return
         val text = clip.getItemAt(0).coerceToText(context).toString()
+        resetInput()
         if (text.isNotEmpty()) Native.paste(core.handle, text)
     }
 
