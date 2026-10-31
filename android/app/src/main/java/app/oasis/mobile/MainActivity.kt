@@ -284,6 +284,27 @@ private fun AgentsScreen(
         TopAppBar(
             title = { Text("Oasis", fontWeight = FontWeight.SemiBold) },
             actions = {
+                // A new space: straight on the one online machine, or pick which.
+                val online = machines.filter { it.status == "online" }
+                if (online.isNotEmpty()) {
+                    var adding by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = {
+                            if (online.size == 1) onNewSpace(online.first()) else adding = true
+                        }) { Icon(Icons.Default.Add, "New space") }
+                        DropdownMenu(adding, { adding = false }, containerColor = Raised) {
+                            for (machine in online) {
+                                DropdownMenuItem(
+                                    text = { Text("New space on ${machine.label}", fontSize = 16.sp) },
+                                    onClick = {
+                                        adding = false
+                                        onNewSpace(machine)
+                                    },
+                                )
+                            }
+                        }
+                    }
+                }
                 IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
             },
             colors = TopAppBarDefaults.topAppBarColors(containerColor = Background),
