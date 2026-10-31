@@ -107,6 +107,75 @@ fn shell_new_controls_use_the_same_client_action_routes_as_keybinds() {
 }
 
 #[test]
+fn sidebar_new_control_spans_its_footer_line_up_to_the_menu() {
+    let mut config = Config::default();
+    config.ui.prompt_new_workspace_name = false;
+    let mut state = ClientShellState::new(ClientShellConfig::from_config(&config));
+    state.set_snapshot(Box::new(snapshot()));
+    state.set_pane_surface(surface());
+    state.compose(106, 20).expect("composed frame");
+
+    let new_workspace = state.hits.new_workspace;
+    let launcher = state.hits.global_launcher;
+    assert_eq!(new_workspace.y, launcher.y);
+    assert_eq!(new_workspace.height, 1);
+    assert_eq!(
+        new_workspace.right(),
+        launcher.x,
+        "the blank run between new and menu belongs to new"
+    );
+
+    let blank = new_workspace.right() - 1;
+    let create_workspace =
+        state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: blank,
+            row: new_workspace.y,
+            modifiers: KeyModifiers::empty(),
+        })]);
+    assert!(matches!(
+        &create_workspace.actions[..],
+        [ClientShellAction::Endpoint { request, .. }]
+            if matches!(request.method, crate::api::schema::Method::WorkspaceCreate(_))
+    ));
+
+    state.compose(106, 20).expect("composed frame");
+    let _ = state.handle_raw_events(vec![RawInputEvent::Mouse(crossterm::event::MouseEvent {
+        kind: MouseEventKind::Down(MouseButton::Left),
+        column: launcher.x,
+        row: launcher.y,
+        modifiers: KeyModifiers::empty(),
+    })]);
+    assert!(matches!(
+        state.overlay,
+        Some(ClientShellOverlay::GlobalMenu(_))
+    ));
+}
+
+#[test]
+fn footer_new_workspace_target_stops_at_the_launcher() {
+    use super::super::sidebar::footer_new_workspace_target;
+    let area = Rect::new(0, 0, 25, 17);
+    assert_eq!(
+        footer_new_workspace_target(area, 16, 5, Rect::new(19, 16, 6, 1)),
+        Rect::new(0, 16, 19, 1)
+    );
+    assert_eq!(
+        footer_new_workspace_target(area, 16, 5, Rect::default()),
+        Rect::new(0, 16, 25, 1)
+    );
+    // A label wider than the gap keeps its own cells.
+    assert_eq!(
+        footer_new_workspace_target(area, 16, 22, Rect::new(19, 16, 6, 1)),
+        Rect::new(0, 16, 22, 1)
+    );
+    assert_eq!(
+        footer_new_workspace_target(Rect::new(0, 0, 25, 0), 0, 5, Rect::default()).height,
+        0
+    );
+}
+
+#[test]
 fn remote_client_preferences_keep_the_same_identity_across_bridge_processes() {
     let first = ClientShellConfig::from_config(&Config::default()).with_endpoint_preferences(
         std::path::Path::new("/tmp/herdr-remote-100-dev-agents.sock"),

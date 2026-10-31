@@ -87,6 +87,34 @@ pub(in crate::client::shell) fn render_sidebar_footer(
     }
 }
 
+/// The footer's "new" button: from the row's left edge across the blank run up
+/// to the menu launcher, so the line is clickable rather than only its letters.
+pub(in crate::client::shell) fn footer_new_workspace_target(
+    workspace_area: Rect,
+    footer_y: u16,
+    label_width: u16,
+    launcher: Rect,
+) -> Rect {
+    if workspace_area.height == 0 {
+        return Rect::new(workspace_area.x, footer_y, 0, 0);
+    }
+    let label_right = workspace_area
+        .x
+        .saturating_add(label_width)
+        .min(workspace_area.right());
+    let right = if launcher.is_empty() {
+        workspace_area.right()
+    } else {
+        launcher.x.clamp(label_right, workspace_area.right())
+    };
+    Rect::new(
+        workspace_area.x,
+        footer_y,
+        right.saturating_sub(workspace_area.x),
+        1,
+    )
+}
+
 pub(in crate::client::shell) fn collapsed_sidebar_sections(
     area: Rect,
 ) -> (Rect, Option<u16>, Rect) {
@@ -442,12 +470,6 @@ pub(crate) fn render_sidebar(
 
     let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            5.min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
         put_text(
             buffer,
             workspace_area.x,
@@ -464,6 +486,8 @@ pub(crate) fn render_sidebar(
             launcher_width,
             1,
         );
+        hits.new_workspace =
+            footer_new_workspace_target(workspace_area, footer_y, 5, hits.global_launcher);
         if attention {
             let start_x = workspace_area.right().saturating_sub(6);
             put_text(

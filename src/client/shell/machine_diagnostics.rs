@@ -19,13 +19,18 @@ impl MachineDiagnostics {
             .is_some_and(|message| crate::remote::ssh_error_requires_authentication(message))
     }
 
+    /// Whether the pointer rests on this machine's reconnect target.
+    pub(super) fn hovered(&self, endpoint: &ClientShellEndpoint) -> bool {
+        self.hover.as_ref() == Some(&endpoint.endpoint_id) && machine_retryable(endpoint)
+    }
+
     pub(super) fn badge_style(
         &self,
         endpoint: &ClientShellEndpoint,
         palette: &Palette,
         style: Style,
     ) -> Style {
-        if self.hover.as_ref() == Some(&endpoint.endpoint_id) && machine_retryable(endpoint) {
+        if self.hovered(endpoint) {
             style
                 .bg(palette.active_row_bg)
                 .add_modifier(Modifier::REVERSED)
@@ -33,6 +38,18 @@ impl MachineDiagnostics {
             style
         }
     }
+}
+
+/// The part of a machine row that hovers and retries a reconnecting machine:
+/// everything to the right of the collapse marker, so the whole line answers
+/// the pointer rather than only the badge's letters.
+pub(super) fn machine_retry_target(row: Rect, collapse_toggle: Rect) -> Rect {
+    let start = if collapse_toggle.is_empty() {
+        row.x
+    } else {
+        collapse_toggle.right().clamp(row.x, row.right())
+    };
+    Rect::new(start, row.y, row.right().saturating_sub(start), row.height)
 }
 
 /// Saved machines wait out a reconnect backoff whenever they are not online or disabled.
@@ -160,7 +177,7 @@ impl ClientShellState {
             .hits
             .machines
             .iter()
-            .find(|hit| contains(hit.status_badge, (mouse.column, mouse.row)))
+            .find(|hit| contains(hit.retry_target, (mouse.column, mouse.row)))
             .filter(|hit| {
                 self.endpoints.iter().any(|endpoint| {
                     endpoint.endpoint_id == hit.endpoint_id && machine_retryable(endpoint)

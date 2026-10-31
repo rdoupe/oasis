@@ -37,7 +37,9 @@ impl ClientShellEndpoint {
 
 pub(super) struct MachineHit {
     pub(super) rect: Rect,
-    pub(super) status_badge: Rect,
+    /// Where pointing at a reconnecting machine highlights it and a click
+    /// retries it: the whole row past the collapse marker, not just the badge.
+    pub(super) retry_target: Rect,
     pub(super) collapse_toggle: Rect,
     pub(super) endpoint_id: ClientEndpointId,
 }

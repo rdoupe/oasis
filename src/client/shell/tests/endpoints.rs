@@ -282,7 +282,10 @@ fn click_machine(state: &mut ClientShellState, id: &ClientEndpointId, badge: boo
         .find(|hit| &hit.endpoint_id == id)
         .unwrap();
     let (column, row) = if badge {
-        (hit.status_badge.x, hit.status_badge.y)
+        (
+            hit.retry_target.right().saturating_sub(1),
+            hit.retry_target.y,
+        )
     } else {
         (hit.rect.x.saturating_add(3), hit.rect.y)
     };
@@ -295,6 +298,112 @@ fn click_machine(state: &mut ClientShellState, id: &ClientEndpointId, badge: boo
     state
         .handle_raw_events(vec![RawInputEvent::Mouse(mouse)])
         .repaint
+}
+
+fn machine_hit(state: &ClientShellState, id: &ClientEndpointId) -> (Rect, Rect, Rect) {
+    let hit = state
+        .hits
+        .machines
+        .iter()
+        .find(|hit| &hit.endpoint_id == id)
+        .expect("machine row hit");
+    (hit.rect, hit.collapse_toggle, hit.retry_target)
+}
+
+fn mouse_at(kind: MouseEventKind, column: u16, row: u16) -> RawInputEvent {
+    RawInputEvent::Mouse(MouseEvent {
+        kind,
+        column,
+        row,
+        modifiers: KeyModifiers::NONE,
+    })
+}
+
+#[test]
+fn reconnecting_machine_row_hovers_and_retries_across_its_whole_line() {
+    for collapsed_sidebar in [false, true] {
+        let (mut state, id) = state_with_remote();
+        state.sidebar_collapsed = collapsed_sidebar;
+        state.mark_endpoint_disconnected(&id);
+        state.compose(120, 40).unwrap();
+        let (row, toggle, target) = machine_hit(&state, &id);
+        assert_eq!(target.y, row.y);
+        assert_eq!(target.height, 1);
+        assert_eq!(target.x, toggle.right(), "the marker keeps collapsing");
+        assert_eq!(
+            target.right(),
+            row.right(),
+            "the target reaches the row's end"
+        );
+
+        let resting = state.compose(120, 40).unwrap();
+        let start = usize::from(row.y) * usize::from(resting.width);
+
+        // Pointing at blank space or the label, not only the badge, hovers the row.
+        for column in [target.x, target.x + target.width / 2] {
+            let moved =
+                state.handle_raw_events(vec![mouse_at(MouseEventKind::Moved, column, row.y)]);
+            assert!(moved.repaint, "hover at column {column} must repaint");
+            let frame = state.compose(120, 40).unwrap();
+            for x in target.x..target.right() {
+                let cell = start + usize::from(x);
+                assert_ne!(
+                    frame.cells[cell].bg, resting.cells[cell].bg,
+                    "hover highlight must cover column {x} of the row"
+                );
+            }
+            let _ = state.handle_raw_events(vec![mouse_at(MouseEventKind::Moved, 0, 39)]);
+        }
+
+        // Moving onto the collapse marker leaves the row unhovered.
+        let _ = state.handle_raw_events(vec![mouse_at(MouseEventKind::Moved, target.x, row.y)]);
+        let left = state.handle_raw_events(vec![mouse_at(MouseEventKind::Moved, toggle.x, row.y)]);
+        assert!(left.repaint, "leaving the target clears its hover");
+
+        // A click in the blank middle of the line retries, like the badge did.
+        let middle = target.x + target.width / 2;
+        let _ = state.handle_raw_events(vec![mouse_at(
+            MouseEventKind::Down(MouseButton::Left),
+            middle,
+            row.y,
+        )]);
+        assert_eq!(state.take_machine_retries(), vec![id.clone()]);
+        assert_eq!(
+            state.endpoint_status(&id),
+            Some(ClientEndpointStatus::Connecting)
+        );
+    }
+}
+
+#[test]
+fn online_machine_row_has_no_reconnect_hover() {
+    let (mut state, id) = state_with_remote();
+    state.compose(120, 40).unwrap();
+    let (row, _, target) = machine_hit(&state, &id);
+    let moved = state.handle_raw_events(vec![mouse_at(
+        MouseEventKind::Moved,
+        target.x + target.width / 2,
+        row.y,
+    )]);
+    assert!(!moved.repaint);
+    assert!(state.take_machine_retries().is_empty());
+}
+
+#[test]
+fn machine_retry_target_spans_the_row_after_the_marker() {
+    let row = Rect::new(3, 7, 20, 1);
+    assert_eq!(
+        super::super::machine_diagnostics::machine_retry_target(row, Rect::new(4, 7, 1, 1)),
+        Rect::new(5, 7, 18, 1)
+    );
+    assert_eq!(
+        super::super::machine_diagnostics::machine_retry_target(row, Rect::default()),
+        row
+    );
+    assert_eq!(
+        super::super::machine_diagnostics::machine_retry_target(row, Rect::new(40, 7, 1, 1)),
+        Rect::new(23, 7, 0, 1)
+    );
 }
 
 #[test]

@@ -69,8 +69,14 @@ pub(super) fn render_collapsed(
         if skip > 0 {
             skip -= 1;
         } else {
+            let collapse_toggle = Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1);
+            let retry_target =
+                super::machine_diagnostics::machine_retry_target(rect, collapse_toggle);
             if active && collapsed {
                 buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+            }
+            if state.machine_diagnostics.hovered(endpoint) {
+                buffer.set_style(retry_target, Style::default().bg(palette.active_row_bg));
             }
             let label = if endpoint.endpoint_id.is_local() {
                 "L".to_owned()
@@ -90,11 +96,8 @@ pub(super) fn render_collapsed(
                     palette.overlay0
                 }),
             );
-            let mut status_badge = Rect::default();
             if !endpoint.endpoint_id.is_local() {
                 let (glyph, _, color) = endpoint_presentation(endpoint, palette);
-                let width = display_width(glyph).min(rect.width);
-                status_badge = Rect::new(rect.right().saturating_sub(width), rect.y, width, 1);
                 put_right_text(
                     buffer,
                     rect,
@@ -109,8 +112,8 @@ pub(super) fn render_collapsed(
             }
             hits.machines.push(MachineHit {
                 rect,
-                status_badge,
-                collapse_toggle: Rect::new(rect.x, rect.y, u16::from(rect.width > 1), 1),
+                retry_target,
+                collapse_toggle,
                 endpoint_id: endpoint.endpoint_id.clone(),
             });
             y = y.saturating_add(1);
@@ -410,9 +413,18 @@ pub(super) fn render_expanded(
                 let rect = Rect::new(body.x, y, content_width, 1);
                 let collapsed = state.collapsed_endpoints.contains(&endpoint.endpoint_id);
                 let marker = if collapsed { "▸" } else { "▾" };
-                let status_badge = render_endpoint_row(
+                let collapse_toggle = Rect::new(
+                    rect.x.saturating_add(1),
+                    rect.y,
+                    u16::from(rect.width > 1),
+                    1,
+                );
+                let retry_target =
+                    super::machine_diagnostics::machine_retry_target(rect, collapse_toggle);
+                render_endpoint_row(
                     buffer,
                     rect,
+                    retry_target,
                     marker,
                     endpoint,
                     collapsed && &endpoint.endpoint_id == state.active_endpoint_id,
@@ -421,13 +433,8 @@ pub(super) fn render_expanded(
                 );
                 hits.machines.push(MachineHit {
                     rect,
-                    status_badge,
-                    collapse_toggle: Rect::new(
-                        rect.x.saturating_add(1),
-                        rect.y,
-                        u16::from(rect.width > 1),
-                        1,
-                    ),
+                    retry_target,
+                    collapse_toggle,
                     endpoint_id: endpoint.endpoint_id.clone(),
                 });
                 y = y
@@ -521,12 +528,6 @@ pub(super) fn render_expanded(
     let footer_y = workspace_area.bottom().saturating_sub(1);
     if config.mouse_capture {
         let label = format!(" new · {}", active_endpoint_label(state));
-        hits.new_workspace = Rect::new(
-            workspace_area.x,
-            footer_y,
-            display_width(&label).min(workspace_area.width),
-            u16::from(workspace_area.height > 0),
-        );
         put_text(
             buffer,
             workspace_area.x,
@@ -542,6 +543,12 @@ pub(super) fn render_expanded(
             footer_y,
             width,
             1,
+        );
+        hits.new_workspace = super::sidebar::footer_new_workspace_target(
+            workspace_area,
+            footer_y,
+            display_width(&label),
+            hits.global_launcher,
         );
         put_right_text(
             buffer,
@@ -597,14 +604,18 @@ fn active_endpoint_label<'a>(state: &'a ShellRenderState<'_>) -> &'a str {
 fn render_endpoint_row(
     buffer: &mut Buffer,
     rect: Rect,
+    retry_target: Rect,
     marker: &str,
     endpoint: &ClientShellEndpoint,
     highlighted: bool,
     auth: &super::machine_diagnostics::MachineDiagnostics,
     palette: &Palette,
-) -> Rect {
+) {
     if highlighted {
         buffer.set_style(rect, Style::default().bg(palette.active_row_bg));
+    }
+    if auth.hovered(endpoint) {
+        buffer.set_style(retry_target, Style::default().bg(palette.active_row_bg));
     }
     let (glyph, state, color) = endpoint_presentation(endpoint, palette);
     let state = if endpoint.responsive() { "" } else { state };
@@ -643,10 +654,4 @@ fn render_endpoint_row(
         &signal,
         auth.badge_style(endpoint, palette, Style::default().fg(color)),
     );
-    Rect::new(
-        rect.right().saturating_sub(signal_width),
-        rect.y,
-        signal_width,
-        1,
-    )
 }
