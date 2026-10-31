@@ -100,7 +100,23 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         cellH.toInt(),
     )
 
-    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) = fitGrid()
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        fitGrid()
+        // The frame is drawn against the new height straight away (see frameTop).
+        invalidate()
+    }
+
+    /**
+     * The keyboard slides in over a few hundred milliseconds and Compose shrinks this
+     * view on every frame of it. Sending each of those sizes made the server reflow
+     * the pane and the program in it redraw a dozen times while the frames that came
+     * back were already too tall for the view, so the prompt sat under the keyboard.
+     * The size goes to the server once the view has stopped changing instead; until
+     * then the frame is drawn with its bottom row on the view's bottom.
+     */
+    private val resizer = Settle(RESIZE_SETTLE_MS, { r, ms -> postDelayed(r, ms) }, { removeCallbacks(it) }) {
+        if (core.handle != 0L && cols > 0) Native.resize(core.handle, cols, rows, cellW.toInt(), cellH.toInt())
+    }
 
     private fun fitGrid() {
         if (width == 0 || height == 0) return
@@ -109,13 +125,14 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         if (c == cols && r == rows) return
         cols = c
         rows = r
-        if (core.handle != 0L) Native.resize(core.handle, c, r, cellW.toInt(), cellH.toInt())
+        resizer.poke()
     }
 
+    /** Where row 0 of the server's frame is drawn; see [frameTop]. */
+    private val frameY get() = frameTop(frameRows, cellH, height)
+
     /** After the core starts, so it lays the surface out for this view. */
-    fun syncSize() {
-        if (core.handle != 0L && cols > 0) Native.resize(core.handle, cols, rows, cellW.toInt(), cellH.toInt())
-    }
+    fun syncSize() = resizer.now()
 
     // Frame: see android/core/src/frame.rs for the layout.
 
@@ -147,8 +164,10 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         // Compose hosts this view without clipping its children.
         canvas.clipRect(0, 0, width, height)
         canvas.drawColor(BACKGROUND)
+        val origin = frameY
         for ((y, runs) in rowRuns.withIndex()) {
-            val top = y * cellH
+            val top = origin + y * cellH
+            if (top + cellH <= 0f) continue
             for (run in runs) {
                 val left = run.col * cellW
                 if (run.bg != BACKGROUND) {
@@ -183,7 +202,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
     private fun drawCursor(canvas: Canvas) {
         if (cursorCol < 0 || cursorRow < 0) return
         val left = cursorCol * cellW
-        val top = cursorRow * cellH
+        val top = frameY + cursorRow * cellH
         if (composing.isNotEmpty()) {
             // Text the keyboard is still composing, shown where it will land.
             val w = paint.measureText(composing)
@@ -378,7 +397,7 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
 
     private fun cellAt(x: Float, y: Float) = Pair(
         floor(x / cellW).toInt().coerceIn(0, (frameCols - 1).coerceAtLeast(0)),
-        floor(y / cellH).toInt().coerceIn(0, (frameRows - 1).coerceAtLeast(0)),
+        floor((y - frameY) / cellH).toInt().coerceIn(0, (frameRows - 1).coerceAtLeast(0)),
     )
 
     private val gestures = GestureDetector(
@@ -508,10 +527,11 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         val (start, end) = ordered(sel)
         fill.color = SELECTION
         fill.alpha = 150
+        val origin = frameY
         for (row in start.second..end.second) {
             val first = if (row == start.second) start.first else sel.left
             val last = if (row == end.second) end.first else sel.right
-            canvas.drawRect(first * cellW, row * cellH, (last + 1) * cellW, (row + 1) * cellH, fill)
+            canvas.drawRect(first * cellW, origin + row * cellH, (last + 1) * cellW, origin + (row + 1) * cellH, fill)
         }
         fill.alpha = 255
     }
@@ -564,9 +584,9 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
                     val (start, end) = ordered(sel)
                     outRect.set(
                         (sel.left * cellW).toInt(),
-                        (start.second * cellH).toInt(),
+                        (frameY + start.second * cellH).toInt(),
                         ((sel.right + 1) * cellW).toInt(),
-                        ((end.second + 1) * cellH).toInt(),
+                        (frameY + (end.second + 1) * cellH).toInt(),
                     )
                 }
             },
@@ -590,9 +610,45 @@ class TerminalView(context: Context, private val core: Core) : View(context) {
         const val COPY = 1
         const val PASTE = 2
 
+        /** How long the view's size must hold before it goes to the server. */
+        const val RESIZE_SETTLE_MS = 150L
+
         val BACKGROUND = Color.parseColor("#1a1b26")
         val CURSOR = Color.parseColor("#c0caf5")
         val SELECTION = Color.parseColor("#33467c")
         val ACCENT = Color.parseColor("#7aa2f7")
+    }
+}
+
+/**
+ * Where row 0 of a frame `frameRows` tall goes in a view `height` pixels tall: at the
+ * top while the frame fits, else raised so its last row (the prompt and cursor, when
+ * the pane follows its output) sits on the view's bottom. A frame is taller than the
+ * view while the keyboard opens, until the server answers the new size.
+ */
+internal fun frameTop(frameRows: Int, cellH: Float, height: Int): Float =
+    (height - frameRows * cellH).coerceAtMost(0f)
+
+/**
+ * Runs `action` once a burst of [poke]s has been quiet for `delayMs`; [now] runs it
+ * at once and drops the wait. `schedule` and `cancel` are the view's postDelayed and
+ * removeCallbacks, or a test's clock.
+ */
+internal class Settle(
+    private val delayMs: Long,
+    private val schedule: (Runnable, Long) -> Unit,
+    private val cancel: (Runnable) -> Unit,
+    private val action: () -> Unit,
+) {
+    private val run = Runnable { action() }
+
+    fun poke() {
+        cancel(run)
+        schedule(run, delayMs)
+    }
+
+    fun now() {
+        cancel(run)
+        action()
     }
 }
