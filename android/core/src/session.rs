@@ -567,6 +567,12 @@ mod tests {
             ("pane.close", json!({ "pane_id": "p_1" })),
             ("pane.rename", json!({ "pane_id": "p_1", "label": "review" })),
             ("tab.create", json!({ "workspace_id": "w_1", "focus": true })),
+            ("tab.create", json!({ "focus": true })),
+            ("workspace.create", json!({ "focus": true })),
+            (
+                "workspace.create",
+                json!({ "focus": true, "label": "notes", "source_workspace_id": "w_1" }),
+            ),
             ("workspace.rename", json!({ "workspace_id": "w_1", "label": "oasis" })),
             ("workspace.close", json!({ "workspace_id": "w_1" })),
         ] {

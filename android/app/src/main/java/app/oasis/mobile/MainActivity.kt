@@ -32,6 +32,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -48,6 +49,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ContentPaste
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Keyboard
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
@@ -201,6 +203,32 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
         screen = Screen.Terminal(agent.title, agent.machine, agent, agent.endpoint)
     }
 
+    var ask by remember { mutableStateOf<Ask?>(null) }
+    ask?.let { AskDialog(it) { ask = null } }
+
+    /** A new tab in `space` (the machine's focused one when null), shown at once. */
+    fun newTab(machine: Machine, space: Space?) {
+        val target = space ?: machine.spaces.firstOrNull { it.focused }
+        // A focused new tab brings its space to the surface too; a
+        // workspace.focus as well would be refused while this one runs.
+        val params = mutableMapOf<String, Any>("focus" to true)
+        target?.let { params["workspace_id"] = it.id }
+        core.request(machine.id, "tab.create", params)
+        screen = Screen.Terminal(target?.name?.ifBlank { null } ?: "New tab", machine.label, null, machine.id)
+    }
+
+    /** Asks for a name (optional), then makes a space on `machine` and shows it. */
+    fun newSpace(machine: Machine) {
+        ask = Ask.Create("New space on ${machine.label}", "Name (optional)") { name ->
+            // As the desktop does: the new space's shell follows the focused space's directory.
+            val params = mutableMapOf<String, Any>("focus" to true)
+            machine.spaces.firstOrNull { it.focused }?.let { params["source_workspace_id"] = it.id }
+            if (name.isNotBlank()) params["label"] = name
+            core.request(machine.id, "workspace.create", params)
+            screen = Screen.Terminal(name.ifBlank { "New space" }, machine.label, null, machine.id)
+        }
+    }
+
     Box(Modifier.fillMaxSize()) {
         when (val s = screen) {
             Screen.Agents -> AgentsScreen(
@@ -210,12 +238,8 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
                     core.openSpace(machine, space)
                     screen = Screen.Terminal(space.name, machine.label, null, machine.id)
                 },
-                onNewTab = { machine, space ->
-                    // A focused new tab brings its space to the surface too; a
-                    // workspace.focus as well would be refused while this one runs.
-                    core.request(machine.id, "tab.create", mapOf("workspace_id" to space.id, "focus" to true))
-                    screen = Screen.Terminal(space.name, machine.label, null, machine.id)
-                },
+                onNewTab = ::newTab,
+                onNewSpace = ::newSpace,
                 onSettings = { screen = Screen.Settings },
             )
             is Screen.Terminal -> TerminalScreen(
@@ -223,6 +247,8 @@ private fun App(core: Core, terminal: TerminalView, restart: () -> Unit) {
                 terminal,
                 s,
                 onBack = { screen = Screen.Agents },
+                onNewTab = { machine -> newTab(machine, null) },
+                onNewSpace = ::newSpace,
                 onSwipe = { step ->
                     val agents = core.agents.value
                     val at = agents.indexOfFirst { it.endpoint == s.agent?.endpoint && it.pane == s.agent.pane }
@@ -245,6 +271,7 @@ private fun AgentsScreen(
     onAgent: (Agent) -> Unit,
     onSpace: (Machine, Space) -> Unit,
     onNewTab: (Machine, Space) -> Unit,
+    onNewSpace: (Machine) -> Unit,
     onSettings: () -> Unit,
 ) {
     val machines by core.machines
@@ -305,7 +332,11 @@ private fun AgentsScreen(
             }
             for (machine in machines) {
                 item(key = "m:" + machine.id) {
-                    MachineHeader(machine, waitsForTailscale = machine in offTailnet) { core.retry(machine) }
+                    MachineHeader(
+                        machine,
+                        waitsForTailscale = machine in offTailnet,
+                        onNewSpace = { onNewSpace(machine) },
+                    ) { core.retry(machine) }
                 }
                 val counts = agents.filter { it.endpoint == machine.id }.groupingBy { it.space }.eachCount()
                 items(machine.spaces, key = { "s:" + machine.id + it.id }) { space ->
@@ -313,7 +344,12 @@ private fun AgentsScreen(
                     val press = remember { PressPoint() }
                     val name = space.name.ifBlank { "space" }
                     Box(Modifier.tracksPress(press)) {
-                        SpaceRow(space, counts[space.id] ?: 0, onLongClick = { menu = true }) { onSpace(machine, space) }
+                        SpaceRow(
+                            space,
+                            counts[space.id] ?: 0,
+                            onNewTab = { onNewTab(machine, space) }.takeIf { machine.status == "online" },
+                            onLongClick = { menu = true },
+                        ) { onSpace(machine, space) }
                         LongPressMenu(menu, { menu = false }, press) {
                             item("New tab") {
                                 onNewTab(machine, space)
@@ -412,7 +448,7 @@ private fun TailscaleBanner(machines: List<Machine>) {
 }
 
 @Composable
-private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry: () -> Unit) {
+private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onNewSpace: () -> Unit, onRetry: () -> Unit) {
     Column(Modifier.fillMaxWidth().padding(start = 20.dp, end = 8.dp, top = 18.dp, bottom = 4.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             StatusDot(machine.status, 10)
@@ -426,6 +462,13 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
             if (!waitsForTailscale && (machine.status == "attention" || machine.status == "reconnecting")) {
                 IconButton(onClick = onRetry) { Icon(Icons.Default.Refresh, "Retry", tint = Dim) }
             }
+            if (machine.status == "online") {
+                TextButton(onClick = onNewSpace) {
+                    Icon(Icons.Default.Add, null, Modifier.size(20.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("New space", fontSize = 15.sp)
+                }
+            }
         }
         if (waitsForTailscale) {
             Text("Waiting for Tailscale", color = Dim, fontSize = 13.sp)
@@ -436,10 +479,12 @@ private fun MachineHeader(machine: Machine, waitsForTailscale: Boolean, onRetry:
 }
 
 @Composable
-private fun SpaceRow(space: Space, agents: Int, onLongClick: () -> Unit, onClick: () -> Unit) {
+private fun SpaceRow(space: Space, agents: Int, onNewTab: (() -> Unit)?, onLongClick: () -> Unit, onClick: () -> Unit) {
     val empty = agents == 0
     Row(
-        Modifier.fillMaxWidth().longPressable(onClick, onLongClick).padding(horizontal = 20.dp, vertical = 10.dp),
+        Modifier.fillMaxWidth().longPressable(onClick, onLongClick)
+            .padding(start = 20.dp, end = if (onNewTab != null) 4.dp else 20.dp, top = 2.dp, bottom = 2.dp)
+            .heightIn(min = 44.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Text(
@@ -452,6 +497,8 @@ private fun SpaceRow(space: Space, agents: Int, onLongClick: () -> Unit, onClick
             modifier = Modifier.weight(1f),
         )
         Text(if (empty) "open" else if (agents == 1) "1 agent" else "$agents agents", color = Dim, fontSize = 13.sp)
+        // A new tab in this space, one tap away; also in the row's long-press menu.
+        onNewTab?.let { IconButton(onClick = it) { Icon(Icons.Default.Add, "New tab in ${space.name.ifBlank { "this space" }}", tint = Accent) } }
     }
 }
 
@@ -582,6 +629,8 @@ private fun Modifier.tracksPress(press: PressPoint): Modifier = this
 private sealed interface Ask {
     data class Confirm(val title: String, val text: String, val yes: () -> Unit) : Ask
     data class Rename(val title: String, val current: String, val rename: (String) -> Unit) : Ask
+    /** A name for something new; left blank, the machine picks one. */
+    data class Create(val title: String, val hint: String, val create: (String) -> Unit) : Ask
 }
 
 @Composable
@@ -611,6 +660,22 @@ private fun AskDialog(ask: Ask, dismiss: () -> Unit) {
                         dismiss()
                         ask.rename(name.trim())
                     }) { Text("Rename") }
+                },
+                dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
+                containerColor = Raised,
+            )
+        }
+        is Ask.Create -> {
+            var name by remember { mutableStateOf("") }
+            AlertDialog(
+                onDismissRequest = dismiss,
+                title = { Text(ask.title) },
+                text = { OutlinedTextField(name, { name = it }, singleLine = true, label = { Text(ask.hint) }) },
+                confirmButton = {
+                    TextButton(onClick = {
+                        dismiss()
+                        ask.create(name.trim())
+                    }) { Text("Create") }
                 },
                 dismissButton = { TextButton(onClick = dismiss) { Text("Cancel") } },
                 containerColor = Raised,
@@ -648,6 +713,8 @@ private fun TerminalScreen(
     terminal: TerminalView,
     screen: Screen.Terminal,
     onBack: () -> Unit,
+    onNewTab: (Machine) -> Unit,
+    onNewSpace: (Machine) -> Unit,
     onSwipe: (Int) -> Unit,
 ) {
     terminal.onSwipe = onSwipe
@@ -700,6 +767,30 @@ private fun TerminalScreen(
                 }
             },
             actions = {
+                // New tab or new space on this pane's machine.
+                if (machine?.status == "online") {
+                    var adding by remember { mutableStateOf(false) }
+                    Box {
+                        IconButton(onClick = { adding = true }) { Icon(Icons.Default.Add, "New tab or space") }
+                        DropdownMenu(adding, { adding = false }, containerColor = Raised) {
+                            val space = machine.spaces.firstOrNull { it.focused }?.name?.ifBlank { null }
+                            DropdownMenuItem(
+                                text = { Text(if (space != null) "New tab in $space" else "New tab", fontSize = 16.sp) },
+                                onClick = {
+                                    adding = false
+                                    onNewTab(machine)
+                                },
+                            )
+                            DropdownMenuItem(
+                                text = { Text("New space", fontSize = 16.sp) },
+                                onClick = {
+                                    adding = false
+                                    onNewSpace(machine)
+                                },
+                            )
+                        }
+                    }
+                }
                 IconButton(onClick = { terminal.paste() }) { Icon(Icons.Default.ContentPaste, "Paste") }
                 IconButton(onClick = { terminal.toggleKeyboard() }) { Icon(Icons.Default.Keyboard, "Keyboard") }
                 IconButton(onClick = { closing = true }) { Icon(Icons.Default.Close, "Close pane") }
