@@ -46,19 +46,23 @@ pub(super) fn background_activity(content: &str) -> Option<BackgroundActivity> {
                 .any(|part| part.trim_start().starts_with("◎ /goal active"))
         });
     // Only the last turn counts: stop at the prompt that started it.
-    let last_turn_shows = |outcome: &str| {
+    let last_turn_shows = |outcomes: &[&str]| {
         !goal_notice
             && lines[..top.unwrap_or(0)]
                 .iter()
                 .rev()
                 .map(|line| line.trim_start())
                 .take_while(|line| !line.starts_with('❯'))
-                .any(|line| line.starts_with(outcome))
+                .any(|line| outcomes.iter().any(|outcome| line.starts_with(outcome)))
     };
     let mut activity = BackgroundActivity {
         goal: goal_notice,
-        goal_achieved: last_turn_shows("✔ Goal achieved"),
-        goal_failed: last_turn_shows("✘ Goal could not be achieved"),
+        goal_achieved: last_turn_shows(&["✔ Goal achieved"]),
+        // 2.1.310 writes `could not`, 2.1.328 `couldn't`.
+        goal_failed: last_turn_shows(&[
+            "✘ Goal could not be achieved",
+            "✘ Goal couldn't be achieved",
+        ]),
         ..BackgroundActivity::default()
     };
     let mut agent_rows = 0u16;
@@ -293,6 +297,12 @@ mod tests {
             "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",
             "  The condition is not satisfied.",
             "✻ Crunched for 2m 33s · done 12:26 PM",
+        ]));
+        // Claude Code 2.1.328 contracts it.
+        assert!(failed(&[
+            "✘ Goal couldn't be achieved (6s · 1 turn · 954 tokens)",
+            "  The condition cannot be met.",
+            "✻ Baked for 6s · done 3:37 PM",
         ]));
         assert!(!failed(&[
             "✘ Goal could not be achieved (2h · 5 turns · 185.5k tokens)",

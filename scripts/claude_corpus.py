@@ -50,8 +50,11 @@ KEEP_WORDS = {
     haiku fable effort low medium high xhigh max context read cached uncached write esc
     interrupt worked crunched cooked baked thinking background running stopped
     email tailnet ip could not be new clear save
+    couldn
     """.split()
 }
+# (`couldn` is `couldn't`, which words split at the apostrophe: Claude Code
+# 2.1.328 writes `✘ Goal couldn't be achieved`.)
 
 # Values kept as they are: record structure, ids, times and versions.
 KEEP_VALUE_KEYS = {

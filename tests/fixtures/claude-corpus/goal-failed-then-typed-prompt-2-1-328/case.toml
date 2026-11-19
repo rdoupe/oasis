@@ -1,0 +1,24 @@
+claude = "2.1.328"
+about = """A goal Claude gave up on (its check recorded `failed`), then the user's next
+typed prompt, which ends the cross. The screen of the same moment is the case
+screen-goal-couldnt-be-achieved."""
+
+[[read]] # the goal set
+after_line = 5
+goal = "active"
+loop = "none"
+
+[[read]] # the check gives up
+after_line = 20
+goal = "failed"
+loop = "none"
+
+[[read]]
+after_line = 28
+goal = "failed"
+loop = "none"
+
+[[read]] # the user's next prompt
+after_line = 29
+goal = "none"
+loop = "none"

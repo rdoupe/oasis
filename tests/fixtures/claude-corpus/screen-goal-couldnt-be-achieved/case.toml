@@ -1,0 +1,7 @@
+claude = "2.1.328"
+about = """An idle session right after Claude gave up on a goal it could not meet. Claude
+Code 2.1.328 words the outcome `✘ Goal couldn't be achieved`, where 2.1.310 wrote
+`could not`. A user statusline below the prompt box shows the goal again."""
+
+[screen]
+goal_failed = true

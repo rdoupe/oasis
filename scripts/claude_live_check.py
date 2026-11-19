@@ -43,7 +43,10 @@ KNOWN_GOAL_KEYS = {
     "type", "met", "sentinel", "failed", "condition", "reason", "iterations",
     "durationMs", "tokens",
 }
-KNOWN_GOAL_SCREEN = ("✔ Goal achieved", "✘ Goal could not be achieved", "◎ /goal active")
+KNOWN_GOAL_SCREEN = (
+    "✔ Goal achieved", "✘ Goal could not be achieved", "✘ Goal couldn't be achieved",
+    "◎ /goal active",
+)
 # Claude's own goal lines start with a glyph and `Goal` or `/goal`; its
 # replies (`● …`) are prose.
 GOAL_GLYPHS = ("✔", "✘", "✗", "◎", "⚠", "✓", "✕")
